@@ -1,10 +1,10 @@
 # Emulator for ESP RISC-V Series SoCs (Beta)
 
-A Rust-based RISC-V emulator that runs ESP32-C3, ESP32-C6, ESP32-P4, and ESP32-S31 firmware binaries — CPU, memory, WiFi, BLE, Thread, Ethernet, crypto, and more. This repo distributes the installer, prebuilt release binaries, user-facing docs, and helper tools.
+A Rust-based RISC-V emulator that runs ESP32-C3, ESP32-C6, ESP32-H2, ESP32-P4, and ESP32-S31 firmware binaries — CPU, memory, WiFi, BLE, Thread, Ethernet, crypto, and more. This repo distributes the installer, prebuilt release binaries, user-facing docs, and helper tools.
 
 ## Install
 
-One-liner (Linux x86_64 / macOS Apple Silicon):
+One-liner (Linux x86_64 / arm64, macOS Apple Silicon):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/espressif/esp-emulator/main/install.sh | sh
@@ -15,7 +15,7 @@ This downloads the latest binary to `$HOME/.local/bin/esp-emu`. If `~/.local/bin
 Pin a specific version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/espressif/esp-emulator/main/install.sh | sh -s -- --version 0.30.0
+curl -fsSL https://raw.githubusercontent.com/espressif/esp-emulator/main/install.sh | sh -s -- --version 0.38.0
 ```
 
 Other options: `--check` (print latest, no install), `--bin-dir DIR`, `--force`, `--quiet`. Full help:
@@ -38,16 +38,16 @@ esp-emu --version        # print currently installed version
 
 ## Features
 
-- **CPU**: Full RV32IMAC on C3/C6; RV32IMAFC (with single-precision FP via Berkeley SoftFloat) on P4. Multi-hart scheduler supports P4's dual HP cores. RV32 PMP and Espressif PMA enforced via a fused two-level page table — catches the same access violations as silicon (IDF panic memprot tests, TEE REE-vs-TEE isolation, IRAM/IROM write protection).
+- **CPU**: Full RV32IMAC on C3/C6/H2; RV32IMAFC (with single-precision FP via Berkeley SoftFloat) on P4. Multi-hart scheduler supports P4's dual HP cores. RV32 PMP and Espressif PMA enforced via a fused two-level page table — catches the same access violations as silicon (IDF panic memprot tests, TEE REE-vs-TEE isolation, IRAM/IROM write protection).
 - **WiFi**: Soft AP with WPA2-PSK, 802.11 management frames, DHCP server, and TAP networking for real connectivity
 - **Ethernet**: OpenCores Ethernet MAC (OpenETH) for QEMU-compatible `CONFIG_ETH_USE_OPENETH` firmware, plus Synopsys DesignWare GMAC for ESP32-P4's built-in EMAC
 - **Networking backends**: user-mode (zero-setup, QEMU-style NAT via smoltcp — DHCP, DNS forwarder, mDNS relay with optional record-rewriting NAT for Matter/HomeKit-style service discovery, IPv6 SLAAC, `hostfwd`, restrict mode, ICMP echo), TAP bridge (Linux), vmnet (macOS)
 - **BLE**: NimBLE host stack support with HCI forwarding to Bumble (virtual controller) or physical Linux HCI adapters
-- **Thread / 802.15.4**: OpenThread `ot_cli` and `ot_br` on ESP32-C6. Single-node forms a partition out of the box; two emulator instances form one Thread mesh (Leader + Child, or Border Router + end device) over a localhost UDP bridge
-- **Crypto**: AES (ECB/CBC/OFB/CTR/CFB), SHA (1/224/256), RSA, ECC, HMAC-SHA256, Digital Signature, XTS-AES flash encryption, ECDSA (P-256/P-384, P4), Key Manager + HUK Generator (P4) — drives flash / HMAC / DS / ECDSA key sourcing for `CONFIG_SECURE_FLASH_ENCRYPTION_KEY_SOURCE_KEY_MGR`
-- **Peripherals**: UART, USB Serial JTAG, GPIO, system timer, timer groups, interrupt controllers (PLIC for C3/C6, CLIC for P4), eFuse, SPI flash, GDMA
+- **Thread / 802.15.4**: OpenThread `ot_cli` and `ot_br` on ESP32-C6 and ESP32-H2. Single-node forms a partition out of the box; two emulator instances form one Thread mesh (Leader + Child, or Border Router + end device) over a localhost UDP bridge
+- **Crypto**: AES (ECB/CBC/OFB/CTR/CFB), SHA (1/224/256), RSA, ECC, HMAC-SHA256, Digital Signature, XTS-AES flash encryption, ECDSA (P-256/P-384 on P4; P-256 on H2), Key Manager + HUK Generator (P4) — drives flash / HMAC / DS / ECDSA key sourcing for `CONFIG_SECURE_FLASH_ENCRYPTION_KEY_SOURCE_KEY_MGR`
+- **Peripherals**: UART, USB Serial JTAG, GPIO, system timer, timer groups, interrupt controllers (PLIC for C3/C6/H2, CLIC for P4), eFuse, SPI flash, GDMA
 - **esptool / espefuse over `socket://`**: a `--uart-tcp HOST:PORT` bridge plus `--strap-mode 0x02` (UART download) lets esptool, espefuse, and `idf.py flash` drive the running emulator over TCP, matching the QEMU-Espressif workflow. See [esptool / espefuse](#esptool--espefuse-over-socket).
-- **Chips**: ESP32-C3, ESP32-C6, and ESP32-P4 with per-chip memory maps and interrupt controllers (additional RISC-V targets are in early bring-up)
+- **Chips**: ESP32-C3, ESP32-C6, ESP32-H2, and ESP32-P4 with per-chip memory maps and interrupt controllers (ESP32-S31 is in early bring-up)
 - **WASM**: Browser-based emulation via WebAssembly with JavaScript API
 - **ROM stubs**: Intercepts key ROM functions (printf, UART, delay, WiFi TX) instead of emulating full ROM
 
@@ -57,7 +57,7 @@ esp-emu --version        # print currently installed version
 
 - A merged flash binary built with ESP-IDF (see [Building Firmware](#building-firmware-images))
 
-Default ROM ELFs (C3 rev3, C6 rev0, P4 rev3) are embedded in the binary, so `--rom` is optional for the common case. Pass `--rom <path>` only to override with a different silicon revision or a custom ROM (e.g. from `~/.espressif/tools/esp-rom-elfs/`).
+Default ROM ELFs (C3 rev3, C6 rev0, H2 rev0, P4 rev3) are embedded in the binary, so `--rom` is optional for the common case. Pass `--rom <path>` only to override with a different silicon revision or a custom ROM (e.g. from `~/.espressif/tools/esp-rom-elfs/`).
 
 ### Running (quick ESP-IDF example)
 
@@ -73,7 +73,7 @@ esp-emu --chip esp32c3 --firmware build/merged-binary.bin
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--chip <CHIP>` | (required) | Target chip: `esp32c3`, `esp32c6`, or `esp32p4` |
+| `--chip <CHIP>` | (required) | Target chip: `esp32c3`, `esp32c6`, `esp32h2`, `esp32p4`, or `esp32s31` |
 | `--firmware <PATH>` | (required) | Path to merged flash binary |
 | `--rom <PATH>` | embedded | Path to ROM ELF file (overrides the built-in default for `--chip`) |
 | `--elf <PATH>` | — | Path to application ELF for BLE symbol lookup (e.g. `build/project.elf`) |
@@ -92,6 +92,7 @@ esp-emu --chip esp32c3 --firmware build/merged-binary.bin
 | `--ble-hci <BACKEND>` | — | BLE HCI backend: `tcp:host:port` for Bumble/virtual controller, `hci0` for Linux adapter |
 | `--thread-sim <SPEC>` | — | IEEE 802.15.4 / Thread bridge, e.g. `bind:9001,peer:127.0.0.1:9002`. Forwards radio frames over localhost UDP to another emulator instance. Requires `--elf`. |
 | `--uart-tcp <HOST:PORT>` | — | Bridge UART0 to a TCP server (e.g. `127.0.0.1:5555`); esptool connects via `socket://`. Mirrors QEMU's `-serial tcp::PORT,server,nowait`. While active, UART RX comes from the socket and TX goes to it (stdin/stdout disconnected). |
+| `--uart1-tcp <HOST:PORT>` | — | Bridge UART1 to a TCP server. Side channel for simulating an external serial device (sensor, GPS, modem) with a host-side script — UART0 keeps stdin/stdout and `--exit-on`/`--inject-on`. Without a connected client, UART1 TX is discarded. |
 | `--strap-mode <HEX>` | — | GPIO_STRAP value at reset. `0x02` = UART download mode (jumps to ROM entry instead of firmware entry); `0x08` = SPI flash boot (default). Mirrors QEMU's `-global driver=esp32cN.gpio,property=strap_mode,value=…`. |
 
 ### UART Injection
@@ -105,6 +106,31 @@ esp-emu \
 ```
 
 Standard input is also forwarded to UART RX line-by-line.
+
+### UART1 TCP Bridge
+
+`--uart1-tcp HOST:PORT` exposes UART1 as a TCP server, independent of the
+UART0 console. Use it to simulate an external serial device (GPS module,
+sensor, modem) with a host-side script:
+
+```sh
+esp-emu --chip esp32c3 \
+  --firmware build/merged_flash.bin \
+  --uart1-tcp 127.0.0.1:5556
+```
+
+```py
+# Host-side mock device: talk to the firmware's UART1
+import socket
+s = socket.create_connection(("127.0.0.1", 5556))
+s.sendall(b"$GPGGA,123519,4807.038,N\n")   # firmware sees it on UART1 RX
+print(s.recv(4096))                         # firmware's UART1 TX
+```
+
+Works on all supported chips (verified with ESP-IDF's `uart_echo` example on
+C3 and P4). One client at a time; the listener stays up across reconnects.
+When no client is connected, firmware TX on UART1 is discarded — same as
+QEMU's unattached chardev.
 
 ### Log Levels
 
@@ -306,7 +332,7 @@ esp-emu \
   --ble-hci tcp:localhost:9544
 ```
 
-The test script scans, connects, discovers GATT services, reads/writes characteristics, and subscribes to notifications. Works with both ESP32-C3 and ESP32-C6.
+The test script scans, connects, discovers GATT services, reads/writes characteristics, and subscribes to notifications. Works with ESP32-C3, ESP32-C6, and ESP32-H2.
 
 ### Physical adapter (Linux)
 
@@ -322,9 +348,10 @@ esp-emu \
   --ble-hci hci0
 ```
 
-## Thread Emulation (ESP32-C6)
+## Thread Emulation (ESP32-C6 / ESP32-H2)
 
-OpenThread `ot_cli` runs on an unmodified ESP32-C6 emulator — the node
+OpenThread `ot_cli` runs on an unmodified ESP32-C6 or ESP32-H2 emulator
+(substitute `esp32h2` for `esp32c6` below) — the node
 boots, drives the CLI (`ot ifconfig up`, `ot thread start`, `ot state`,
 `ot dataset …`), and becomes Leader of its own partition after MLE
 attach times out (no peer to find).
@@ -406,20 +433,22 @@ ESPPORT=socket://localhost:5555 idf.py flash
 
 ### What works
 
-End-to-end verified on **C3, C6, and P4**:
+End-to-end verified on **C3, C6, H2, P4, and S31**:
 
-| command                     | C3 | C6 | P4 |
-|-----------------------------|----|----|----|
-| `esptool chip-id`           | ✅ | ✅ | ✅ |
-| `esptool flash-id`          | ✅ | ✅ | ✅ |
-| `esptool read-mac`          | ✅ | ✅ | ✅ |
-| `esptool read-flash`        | ✅ | ✅ | ✅ |
-| `esptool write-flash`       | ✅ | ✅ | ✅ |
-| `esptool verify-flash`      | ✅ | ✅ | ✅ |
-| `esptool erase-region`      | ✅ | ✅ | ✅ |
-| `espefuse summary`          | ✅ | ✅ | ✅ |
-| `espefuse get-custom-mac`   | ✅ | ✅ | ✅ |
-| `espefuse burn-custom-mac`  | ✅ | ✅ | ✅ |
+| command                     | C3 | C6 | H2 | P4 | S31 |
+|-----------------------------|----|----|----|----|-----|
+| `esptool chip-id`           | ✅ | ✅ | ✅ | ✅ | ✅¹ |
+| `esptool flash-id`          | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `esptool read-mac`          | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `esptool read-flash`        | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `esptool write-flash`       | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `esptool verify-flash`      | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `esptool erase-region`      | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `espefuse summary`          | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `espefuse get-custom-mac`   | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `espefuse burn-custom-mac`  | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+¹ S31 has no chip ID; esptool reports the MAC instead (same as on silicon).
 
 All commands work in both **stub mode** (esptool uploads its RAM flasher — the
 default) and **`--no-stub` ROM mode**. On P4, stub-mode `write-flash` /
@@ -428,9 +457,13 @@ incompressible payloads). eFuse burns persist back to the file passed via
 `--efuse <path>` on graceful exit (timeout, Ctrl+C, or `exit-on` match). Flash
 writes persist with `--save-state`.
 
-The same flash and eFuse flows also work on newer RISC-V targets; pass
-`--strap-mode 0x02` exactly as on the other chips and the emulator handles any
-chip-specific strap decoding internally.
+> **S31 strap note.** `--strap-mode 0x02` is the canonical "enter UART download"
+> request on every chip, but the S31 mask ROM decodes strap bits differently:
+> `0x02` is an *invalid* combination it `assert`s on, and the auto-detect
+> `DOWNLOAD(USB/UART0/SPI)` arm resolves to USB-Serial-JTAG (so the flasher stub
+> would answer over USB, not the TCP UART bridge). The emulator therefore remaps
+> the canonical `0x02` to S31's `UART0_BOOT` strap (`0x04`) internally — you
+> still pass `--strap-mode 0x02` exactly as on the other chips.
 
 ### Caveats
 
@@ -443,16 +476,17 @@ The emulator runs merged flash binaries built with ESP-IDF. Requires ESP-IDF env
 
 ```sh
 cd your-esp-idf-project
-idf.py set-target esp32c3    # or esp32c6, esp32p4
+idf.py set-target esp32c3    # or esp32c6, esp32h2, esp32p4
 idf.py build
 idf.py merge-bin -o build/merged_flash.bin
 ```
 
 ## Releases
 
-Binary tarballs (single-file artifacts containing only the `esp-emu` executable) are published as [GitHub Releases](https://github.com/espressif/esp-emulator/releases). Each release ships three assets:
+Binary tarballs (single-file artifacts containing only the `esp-emu` executable) are published as [GitHub Releases](https://github.com/espressif/esp-emulator/releases). Each release ships these assets:
 
 - `esp-emu-<version>-x86_64-unknown-linux-gnu.tar.gz` — Linux x86_64 native
+- `esp-emu-<version>-aarch64-unknown-linux-gnu.tar.gz` — Linux arm64 native
 - `esp-emu-<version>-aarch64-apple-darwin.tar.gz` — macOS Apple Silicon native
 - `esp-emu-<version>-wasm.tar.gz` — browser WebAssembly bundle
 - `SHA256SUMS` — sha256 for each tarball; verified automatically by `install.sh`

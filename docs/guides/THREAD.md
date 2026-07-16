@@ -1,13 +1,17 @@
 # Thread / 802.15.4 Emulation
 
-Run ESP32-C6 Thread firmware (OpenThread-based `ot_cli` and `ot_br`) in
-ESP-EMU. Single-node operation works out of the box; multi-node Thread
+Run ESP32-C6 and ESP32-H2 Thread firmware (OpenThread-based `ot_cli` and
+`ot_br`) in ESP-EMU. Single-node operation works out of the box; multi-node Thread
 networks use the `--thread-sim` UDP bridge to connect two emulator
 instances into one mesh.
 
 ## Overview
 
-ESP32-C6 has both Wi-Fi and an IEEE 802.15.4 radio on the same die. The
+ESP32-C6 has both Wi-Fi and an IEEE 802.15.4 radio on the same die;
+ESP32-H2 pairs its 802.15.4 radio with BLE. Everything below works the
+same on both chips — substitute `esp32h2` for `esp32c6` in the build and
+run commands (verified: single-node Leader and a two-node Leader + Child
+mesh over the UDP bridge on H2). The
 emulator intercepts the open-source `esp_ieee802154_*` driver API at the
 symbol level (EBREAK-patched via the application ELF), captures TX frames,
 and injects RX frames back as `esp_ieee802154_receive_done()` upcalls via a
