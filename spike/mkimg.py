@@ -10,6 +10,9 @@ def sw(rs2, rs1, imm):
     i = imm & 0xFFF
     return (i >> 5) << 25 | rs2 << 20 | rs1 << 15 | 2 << 12 | (i & 0x1F) << 7 | 0x23
 def lw(rd, rs1, imm):    return (imm & 0xFFF) << 20 | rs1 << 15 | 2 << 12 | rd << 7 | 0x03
+def sb(rs2, rs1, imm):
+    i = imm & 0xFFF
+    return (i >> 5) << 25 | rs2 << 20 | rs1 << 15 | 0 << 12 | (i & 0x1F) << 7 | 0x23
 def lbu(rd, rs1, imm):   return (imm & 0xFFF) << 20 | rs1 << 15 | 4 << 12 | rd << 7 | 0x03
 def beq(rs1, rs2, off):
     o = off & 0x1FFF
@@ -167,6 +170,40 @@ def shim_i2cwrite():
     p += [addi(A0, 0, 0), jalr_ret()]                   # return ESP_OK
     return p
 
+def shim_i2cread():
+    """Replacement body for i2cRead(num, address, buff, size, timeout, readCount).
+
+    Emits "#R<addr><size>\n", then blocks polling UART0's RX FIFO for exactly
+    `size` bytes, storing them into the caller's buffer. Returns ESP_OK.
+    a0=num a1=address a2=buff a3=size a5=readCount*
+    """
+    T0, T1, T2, T3, T4 = 5, 6, 7, 28, 29
+    A0, A1, A2, A3, A5 = 10, 11, 12, 13, 15
+    p = []
+    p += li(T0, UART0_FIFO)
+    p += li(T1, UART0_STATUS)
+    for ch in (ord('#'), ord('R')):
+        p += [addi(T2, 0, ch), sw(T2, T0, 0)]
+    for reg in (A1, A3):                                # address, then length
+        for sh in (4, 0):
+            p += [srli(T2, reg, sh), andi(T2, T2, 15), addi(T2, T2, 97), sw(T2, T0, 0)]
+    p += [addi(T2, 0, 10), sw(T2, T0, 0)]               # newline flushes the request
+    p += [addi(T4, A3, 0)]                              # stash count for *readCount
+
+    rxloop = len(p)
+    p += [0]                                            # placeholder: beq a3,0,done
+    p += [lw(T2, T1, 0), andi(T2, T2, 0xFF)]            # poll RXFIFO_CNT
+    p += [beq(T2, 0, -4 * 2)]                           # spin until a byte arrives
+    p += [lw(T3, T0, 0), sb(T3, A2, 0)]                 # pop FIFO -> *buff
+    p += [addi(A2, A2, 1), addi(A3, A3, -1)]
+    p += [jal(0, -4 * (len(p) - rxloop))]
+    done = len(p)
+    p[rxloop] = beq(A3, 0, 4 * (done - rxloop))
+
+    p += [beq(A5, 0, 8), sw(T4, A5, 0)]                 # *readCount = size, if non-null
+    p += [addi(A0, 0, 0), jalr_ret()]                   # return ESP_OK
+    return p
+
 def jalr_ret():
     return 1 << 15 | 0 << 12 | 0 << 7 | 0x67            # jalr x0, x1, 0
 
@@ -181,6 +218,12 @@ if __name__ == '__main__':
         out = sys.argv[2]
     elif sys.argv[1] == 'shim-i2cwrite':
         words = shim_i2cwrite()
+        blob = b''.join(struct.pack('<I', w) for w in words)
+        open(sys.argv[2], 'wb').write(blob)
+        print(f'wrote {len(blob)} bytes of shim -> {sys.argv[2]}')
+        raise SystemExit
+    elif sys.argv[1] == 'shim-i2cread':
+        words = shim_i2cread()
         blob = b''.join(struct.pack('<I', w) for w in words)
         open(sys.argv[2], 'wb').write(blob)
         print(f'wrote {len(blob)} bytes of shim -> {sys.argv[2]}')

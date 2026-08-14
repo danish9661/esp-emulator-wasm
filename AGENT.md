@@ -103,19 +103,22 @@ bytes, commit as `shim.bin`. It ships with the *simulator*, never with user firm
 
 **Load time (per run, in the worker):**
 
-1. Parse the user's ELF symbol table in JS (ELF32, ~100 lines).
-2. Resolve target symbols (I2C/SPI driver entry points).
-3. Append `shim.bin` by extending the last `PT_LOAD` segment (`p_filesz` / `p_memsz`).
-4. Overwrite the **first 8 bytes** of each target function with `auipc` + `jalr`
-   targeting the shim.
+1. Parse the user's ELF symbol table in JS (`elf.mjs`).
+2. Resolve target symbols (I2C/SPI driver entry points) and pick a hook tier (§7).
+3. Overwrite each target function's body with the shim blob (`espimage.mjs`).
+4. Re-seal the image: checksum + SHA256.
 5. Hand the patched image to `load_firmware()`.
 
-Only 8 bytes are needed at each entry point because the shim **replaces** the
-function rather than resuming it: emit payload → set `a0 = ESP_OK` → `ret` to the
-caller. `auipc`+`jalr` gives ±2GB reach; plain `jal` (±1MB) is not guaranteed safe.
+The shim **replaces** the function rather than resuming it: emit payload →
+set `a0 = ESP_OK` → `ret` to the caller.
 
-**Outcome:** user runs plain `idf.py build`. The identical binary flashes to real
-hardware and runs in the simulator.
+> An earlier revision planned to append the shim by extending the last `PT_LOAD`
+> segment and jump to it via `auipc`+`jalr`. That proved unnecessary — every shim so
+> far fits inside the function it replaces (see Phase 2), so there is no trampoline
+> and no segment surgery. Revisit only if a shim outgrows its host function.
+
+**Outcome:** user runs a plain `arduino-cli compile` / `idf.py build`. The identical
+binary flashes to real hardware and runs in the simulator.
 
 ---
 
@@ -129,6 +132,8 @@ is exactly one `uart_input()`. The protocol therefore shares one pipe with `prin
 Wrap frames in ANSI **APC** (`ESC _ … ESC \`). Terminals — including xterm.js —
 silently discard unrecognized APC strings, so console output stays clean even if a
 frame leaks through. Strip APC frames in the worker before forwarding `uart_output`.
+
+**Implemented and verified** — see Phase 3 for the frame layout and results.
 
 ### 3.2 Peripheral models live in the worker
 
@@ -260,26 +265,48 @@ fits *inside the function it replaces* (`i2cWrite` is 174 B; the shim is 116 B).
 Segment extension and `PT_LOAD` surgery are therefore dropped from the design.
 Keep the size assertion — if a future shim outgrows its host function, revisit.
 
-### Phase 3 — I2C capture ✅ WORKING END-TO-END
-`spike/14-shim-i2c.mjs` replaces `i2cWrite`'s body with `spike/shim_i2cwrite.bin`,
-which emits the transaction over UART0 and returns `ESP_OK`.
+### Phase 3 — I2C bridge ✅ DONE (bidirectional, APC-framed)
 
-Unmodified Arduino sketch doing `Wire.beginTransmission(0x3C); Wire.write(0xAF);
-Wire.endTransmission();` produces:
+`spike/shims.py` generates both blobs; `spike/16-i2c-apc.mjs` patches and runs them.
+
+| Shim | Size / budget | Function |
+| --- | --- | --- |
+| `shim_i2cwrite.bin` | 116 / 174 B | emits payload, returns `ESP_OK` |
+| `shim_i2cread.bin` | 128 / 160 B | emits request, blocks for reply, fills buffer |
+
+**Wire protocol** — ANSI APC frames (`ESC _ … ESC \`), which terminals discard:
 
 ```
-i2c-inited
-#dmkp              <- '#' + "dm" (0x3C address) + "kp" (0xAF payload)
-endTransmission=0
+ESC _ 'W' <addr> <payload nibbles…> ESC \     write, fire-and-forget
+ESC _ 'R' <addr> <len>              ESC \     read request; host replies with
+                                              <len> raw bytes via uart_input()
 ```
 
-Encoding is one char per nibble (`'a'+nibble`), chosen so every byte is printable
-and unambiguous. The shim is position-independent — its only absolute address is the
-UART0 FIFO — so the same blob can be written over any `i2cWrite`.
+Address and length go out as **raw bytes** (both ≤ 0x7F, so they survive the UTF-8
+decode of `run_batch()`'s return). Payload bytes may be ≥ 0x80, so those stay
+nibble-encoded as `'a'+nibble`. Sending address/length raw is what shrank the read
+shim from 160 B (exactly at budget) to 128 B.
 
-**Remaining for Phase 3:** APC framing (§3.1) instead of the `#` prefix, `i2cRead`
-with the host→guest response path (§4 proved the RX mechanism), worker-side bus model
-and virtual devices.
+**Verified on unmodified Arduino sketches:**
+
+```
+Wire.beginTransmission(0x3C); Wire.write(0xAF); Wire.endTransmission();
+  -> I2C WRITE 0x3c <- af          console: endTransmission=0
+
+Wire.requestFrom(0x68, 3);   // host answers de ad be
+  -> I2C READ  0x68 -> de ad be    console: got=3:DEADBE
+```
+
+The console stays clean — no APC bytes leak into user-visible output.
+
+**§4's open risk is closed.** The concern was that IDF's console driver would drain
+UART0's RX FIFO before the shim saw the reply. It does not: the read shim polls
+`RXFIFO_CNT` and receives host bytes correctly under a full Arduino app. No
+separate channel and no `uart_ll` bypass were needed.
+
+**Remaining for Phase 3:** wire this into `worker.js` (host bus model + virtual
+devices in the worker, per §3.2). All of the above currently runs in the node
+harness.
 
 ### Phase 4 — SPI, then GPIO
 SPI reuses the Phase 2/3 machinery. GPIO is a separate mechanism (section 6).
@@ -401,9 +428,16 @@ patch for either bus; `I2CProbe` reports I2C only; `BusProbe` reports both.
 | GPIO out + direction | ✅ done | read `0x827850` / `0x827858` |
 | GPIO input injection | ✅ done | write `0x827860` |
 | RMT (NeoPixel) | reachable | same memory technique, not yet mapped |
-| I2C | needs shim | image patch + UART bridge (Phases 1–3) |
-| SPI master | needs shim | image patch + UART bridge (Phase 4) |
+| I2C read + write | ✅ done | image patch + APC bridge over UART0 |
+| SPI master | next | same technique, `arduino-spi` tier (Phase 4) |
 | SPI flash | ✅ internal | `spimem.rs`, no work needed |
 
-**Current state:** Phase 0 complete, GPIO complete, real-firmware toolchain working.
-Next: startup auto-calibration for the GPIO offsets (§6), then Phase 1.
+**Current state:** Phases 0–3 complete. GPIO is bidirectional; I2C read and write
+both work end-to-end on unmodified Arduino firmware, in the node harness.
+
+**Next, in order:**
+1. Wire the bridge into `worker.js` — host bus model and virtual devices in the
+   worker, not the main thread (§3.2). Until this lands, none of it runs in-browser.
+2. GPIO offset auto-calibration at startup (§6) — the hardcoded offsets break on any
+   wasm rebuild.
+3. Phase 4: SPI, reusing the Phase 2/3 machinery against the `arduino-spi` tier.

@@ -6,3 +6,5 @@ spike/sketches/*/build/
 *.raw
 
 node_modules/
+
+__pycache__/
