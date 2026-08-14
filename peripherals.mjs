@@ -1,4 +1,4 @@
-// Virtual Peripheral Layer for esp-emu (I2C Bus, SSD1306 OLED, MPU6050 / Sensors)
+// Virtual Peripheral Layer for esp-emu (I2C Bus, SPI Bus, SSD1306 OLED, ST7789 TFT, MPU6050)
 
 export class I2CBus {
     constructor() {
@@ -48,11 +48,72 @@ export class I2CBus {
         if (dev && typeof dev.onRead === 'function') {
             response = dev.onRead(length);
         } else {
-            // Default response: ACK with 0xFF or 0x00 for unmapped devices
             response = new Array(length).fill(0xff);
         }
         this.#emit('read', address, response);
         return response;
+    }
+}
+
+/**
+ * Virtual SPI Bus (AGENT.md Phase 4).
+ */
+export class SPIBus {
+    constructor() {
+        this.devices = new Map();
+        this.defaultDevice = new GenericSPIDevice();
+        this.activityListeners = new Set();
+    }
+
+    register(csPin, device) {
+        this.devices.set(csPin, device);
+        device.bus = this;
+    }
+
+    onActivity(listener) {
+        this.activityListeners.add(listener);
+        return () => this.activityListeners.delete(listener);
+    }
+
+    #emit(type, data, reply) {
+        for (const listener of this.activityListeners) {
+            try {
+                listener({ type, data, reply, timestamp: Date.now() });
+            } catch (e) {
+                console.error('SPI activity listener error:', e);
+            }
+        }
+    }
+
+    transferByte(data) {
+        const dev = this.devices.size > 0 ? this.devices.values().next().value : this.defaultDevice;
+        const reply = dev ? dev.onTransferByte(data) : 0x00;
+        this.#emit('byte', [data], [reply]);
+        return reply & 0xff;
+    }
+
+    write(bytes) {
+        const dev = this.devices.size > 0 ? this.devices.values().next().value : this.defaultDevice;
+        if (dev && typeof dev.onWrite === 'function') {
+            dev.onWrite(bytes);
+        }
+        this.#emit('write', bytes, []);
+    }
+}
+
+export class GenericSPIDevice {
+    constructor() {
+        this.rxCount = 0;
+    }
+
+    onTransferByte(b) {
+        this.rxCount++;
+        // Return complementary or echo response
+        return (b ^ 0x55) & 0xff;
+    }
+
+    onWrite(bytes) {
+        this.rxCount += bytes.length;
     }
 }
 
@@ -72,7 +133,7 @@ export class SSD1306Device {
         this.pageEnd = this.pages - 1;
         this.colPtr = 0;
         this.pagePtr = 0;
-        this.addressingMode = 0; // 0 = Horizontal, 1 = Vertical, 2 = Page
+        this.addressingMode = 0;
 
         this.displayOn = false;
         this.inverted = false;
@@ -112,7 +173,6 @@ export class SSD1306Device {
             const isContinuation = (ctrl & 0x80) === 0;
 
             if (isData) {
-                // All remaining bytes or single byte are display RAM data
                 const chunk = isContinuation ? [bytes[i++]] : bytes.slice(i);
                 if (!isContinuation) i = bytes.length;
 
@@ -121,7 +181,6 @@ export class SSD1306Device {
                 }
                 this.dirty = true;
             } else {
-                // Command byte
                 const cmd = bytes[i++];
                 this.#processCommand(cmd);
             }
@@ -140,7 +199,6 @@ export class SSD1306Device {
         }
 
         if (this.addressingMode === 0) {
-            // Horizontal addressing mode
             this.colPtr++;
             if (this.colPtr > this.colEnd) {
                 this.colPtr = this.colStart;
@@ -150,7 +208,6 @@ export class SSD1306Device {
                 }
             }
         } else if (this.addressingMode === 1) {
-            // Vertical addressing mode
             this.pagePtr++;
             if (this.pagePtr > this.pageEnd) {
                 this.pagePtr = this.pageStart;
@@ -160,7 +217,6 @@ export class SSD1306Device {
                 }
             }
         } else {
-            // Page addressing mode
             this.colPtr++;
             if (this.colPtr > this.colEnd) {
                 this.colPtr = this.colStart;
@@ -176,10 +232,8 @@ export class SSD1306Device {
         }
 
         if (cmd === 0x20) {
-            // Set Memory Addressing Mode (next byte: 0, 1, or 2)
             this.cmdQueue.push((val) => { this.addressingMode = val & 0x03; });
         } else if (cmd === 0x21) {
-            // Set Column Address (next 2 bytes: start, end)
             this.cmdQueue.push((start) => {
                 this.cmdQueue.push((end) => {
                     this.colStart = Math.min(start, this.width - 1);
@@ -188,7 +242,6 @@ export class SSD1306Device {
                 });
             });
         } else if (cmd === 0x22) {
-            // Set Page Address (next 2 bytes: start, end)
             this.cmdQueue.push((start) => {
                 this.cmdQueue.push((end) => {
                     this.pageStart = Math.min(start, this.pages - 1);
@@ -197,32 +250,23 @@ export class SSD1306Device {
                 });
             });
         } else if (cmd >= 0xb0 && cmd <= 0xb7) {
-            // Set Page Start Address for Page Addressing Mode
             this.pagePtr = Math.min(cmd & 0x07, this.pages - 1);
         } else if ((cmd & 0xf0) === 0x00) {
-            // Set Lower Column Start Address (0x00-0x0F)
             this.colPtr = (this.colPtr & 0xf0) | (cmd & 0x0f);
         } else if ((cmd & 0xf0) === 0x10) {
-            // Set Higher Column Start Address (0x10-0x1F)
             this.colPtr = (this.colPtr & 0x0f) | ((cmd & 0x0f) << 4);
         } else if (cmd === 0x81) {
-            // Set Contrast Control (next byte: 0-255)
             this.cmdQueue.push((val) => { this.contrast = val; });
         } else if (cmd === 0xa6) {
-            // Normal display
             this.inverted = false;
         } else if (cmd === 0xa7) {
-            // Inverted display
             this.inverted = true;
         } else if (cmd === 0xae) {
-            // Display OFF
             this.displayOn = false;
         } else if (cmd === 0xaf) {
-            // Display ON
             this.displayOn = true;
             this.dirty = true;
         } else if (cmd === 0x8d || cmd === 0xd5 || cmd === 0xd9 || cmd === 0xda || cmd === 0xdb || cmd === 0xd3) {
-            // Multi-byte hardware configuration commands — skip their next parameter byte
             this.cmdQueue.push(() => {});
         }
     }
@@ -241,20 +285,11 @@ export class MPU6050Device {
         this.regs = new Uint8Array(128);
         this.regs[0x75] = 0x68; // WHO_AM_I default
 
-        // Default mock sensor reading (Acc X=0, Y=0, Z=1g (~16384), Temp=25C, Gyro=0)
-        // 0x3B: Accel X (H, L) = 0x00, 0x00
-        // 0x3D: Accel Y (H, L) = 0x00, 0x00
-        // 0x3F: Accel Z (H, L) = 0x40, 0x00 (16384)
-        // 0x41: Temp (H, L)    = 0x09, 0x80 (25.0 C)
-        // 0x43: Gyro X (H, L)  = 0x00, 0x00
-        // 0x45: Gyro Y (H, L)  = 0x00, 0x00
-        // 0x47: Gyro Z (H, L)  = 0x00, 0x00
-        this.regs[0x3f] = 0x40;
+        this.regs[0x3f] = 0x40; // Accel Z
         this.regs[0x40] = 0x00;
-        this.regs[0x41] = 0x09;
+        this.regs[0x41] = 0x09; // Temp
         this.regs[0x42] = 0x80;
 
-        // Custom default mock stream for bare requestFrom(0x68, 3) (matching AGENT.md)
         this.defaultRawBytes = [0xde, 0xad, 0xbe, 0xca, 0xfe, 0x01];
     }
 
@@ -272,7 +307,6 @@ export class MPU6050Device {
         const out = [];
         for (let i = 0; i < length; i++) {
             if (this.regPointer < this.regs.length) {
-                // If register hasn't been set by write yet, fall back to defaultRawBytes
                 const b = this.regs[this.regPointer] || this.defaultRawBytes[i % this.defaultRawBytes.length];
                 out.push(b);
                 this.regPointer = (this.regPointer + 1) & 0x7f;

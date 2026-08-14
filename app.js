@@ -313,8 +313,13 @@
                 case 'patched': {
                     const statusEl = document.getElementById('patch-status');
                     if (statusEl && msg.patched) {
-                        const syms = msg.patched.map(p => `${p.name} (0x${p.addr.toString(16)})`).join(', ');
-                        statusEl.innerHTML = `<span style="color: #10b981;">✓ Hooked Tier: ${msg.plan.i2c?.tier || 'none'}</span><br><span style="color: #06b6d4;">Shims: ${syms}</span>`;
+                        const i2cTier = msg.plan?.i2c?.tier || 'none';
+                        const spiTier = msg.plan?.spi?.tier || 'none';
+                        const syms = msg.patched.map(p => `${p.name}`).join(', ');
+                        statusEl.innerHTML = `
+                            <div style="color: #10b981; margin-bottom: 2px;">✓ Tiers: I2C (${i2cTier}), SPI (${spiTier})</div>
+                            <div style="color: #06b6d4;">Shims: ${syms}</div>
+                        `;
                         terminal.writeln(`\x1b[36m[Patcher] Applied RISC-V shims: ${syms}\x1b[0m`);
                     }
                     break;
@@ -333,8 +338,11 @@
                     break;
 
                 case 'i2c_activity':
-                    logI2cActivity(act => msg);
                     logI2cActivity(msg);
+                    break;
+
+                case 'spi_activity':
+                    logSpiActivity(msg);
                     break;
 
                 case 'status':
@@ -396,6 +404,26 @@
         worker.postMessage({ type: 'init', wasmUrl: './pkg/esp_emu.js' });
     }
 
+    function logSpiActivity(act) {
+        const box = document.getElementById('i2c-log');
+        if (!box) return;
+        if (box.children.length === 1 && box.children[0].textContent.includes('No transactions')) {
+            box.innerHTML = '';
+        }
+        const row = document.createElement('div');
+        row.className = 'i2c-entry';
+        const hexData = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        const hexReply = (act.reply || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        row.innerHTML = `
+            <span style="color: #8b5cf6; font-weight: 600;">[SPI]</span>
+            <span style="color: var(--accent-amber);">TX:${hexData}</span>
+            <span style="color: var(--accent-green);">RX:${hexReply}</span>
+        `;
+        box.appendChild(row);
+        while (box.children.length > 80) box.removeChild(box.firstChild);
+        box.scrollTop = box.scrollHeight;
+    }
+
     // --- Load Preset Firmware Demo ---
     async function loadPresetFirmware(key) {
         if (!worker || !wasmReady) return;
@@ -407,6 +435,8 @@
             oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo' },
             blink: { bin: 'samples/blink.merged.bin', elf: 'samples/blink.elf', title: 'Blink GPIO2 Demo' },
             i2cread: { bin: 'samples/i2cread.merged.bin', elf: 'samples/i2cread.elf', title: 'I2C Sensor Read (0x68)' },
+            spidemo: { bin: 'samples/spidemo.merged.bin', elf: 'samples/spidemo.elf', title: 'SPI Master Transfer' },
+            busprobe: { bin: 'samples/busprobe.merged.bin', elf: 'samples/busprobe.elf', title: 'Dual Bus Probe (I2C + SPI)' },
         };
 
         const target = filenames[key] || filenames.oled_demo;

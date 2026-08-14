@@ -1,10 +1,10 @@
-// Web Worker running the emulation loop, binary patcher, and virtual peripherals
+// Web Worker running the emulation loop, binary patcher, and virtual peripherals (I2C + SPI + GPIO)
 // Communicates with main thread via postMessage
 
 import { Elf32, planHooks } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
 import { SHIMS } from './shims.mjs';
-import { I2CBus, SSD1306Device, MPU6050Device } from './peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, MPU6050Device } from './peripherals.mjs';
 
 let wasmExports = null;
 let wasm = null;
@@ -14,8 +14,9 @@ let batchSize = 50000;
 let pendingLoad = null;
 let ws = null;
 
-// Virtual I2C bus and peripheral devices
+// Virtual I2C bus and devices
 const i2cBus = new I2CBus();
+const spiBus = new SPIBus();
 const oledDevice = new SSD1306Device(128, 64);
 const mpuDevice = new MPU6050Device();
 
@@ -44,7 +45,17 @@ i2cBus.onActivity((act) => {
     });
 });
 
-// Memory offsets for GPIO registers on esp32c3 (verified in AGENT.md)
+spiBus.onActivity((act) => {
+    postMessage({
+        type: 'spi_activity',
+        op: act.type,
+        data: Array.from(act.data || []),
+        reply: Array.from(act.reply || []),
+        timestamp: act.timestamp,
+    });
+});
+
+// Memory offsets for GPIO registers on esp32c3
 const GPIO_OUT_OFFSET = 0x827850;
 const GPIO_ENABLE_OFFSET = 0x827858;
 const GPIO_IN_OFFSET = 0x827860;
@@ -53,7 +64,7 @@ let lastGpioOut = -1n;
 let lastGpioEn = -1n;
 let streamBuffer = '';
 
-// Global error handler — catches WASM panics and unhandled exceptions
+// Global error handler
 self.onerror = function(msg, src, line, col, err) {
     postMessage({ type: 'error', message: `Worker error: ${msg}` });
 };
@@ -124,7 +135,6 @@ async function handleLoad(msg) {
             emulator.load_efuse(new Uint8Array(msg.efuse));
         }
 
-        // Set boot from ROM (default true for merged flash images)
         emulator.set_boot_from_rom(!msg.skipRom);
         emulator.load_firmware(firmwareBytes);
 
@@ -211,7 +221,6 @@ function processStream(chunk) {
             handleApcFrame(kind, body);
             streamBuffer = streamBuffer.slice(m.index + frame.length);
         } else {
-            // Retain incomplete APC prefix if one is starting at the end of the buffer
             const partialIdx = streamBuffer.lastIndexOf('\x1b_');
             if (partialIdx !== -1) {
                 cleanOutput += streamBuffer.slice(0, partialIdx);
@@ -228,9 +237,10 @@ function processStream(chunk) {
 
 function handleApcFrame(kind, body) {
     if (!body || body.length === 0) return;
-    const addr = body.charCodeAt(0);
 
     if (kind === 'W') {
+        // I2C Write
+        const addr = body.charCodeAt(0);
         const hex = [...body.slice(1)].map(c => c.charCodeAt(0) - 97);
         const bytes = [];
         for (let j = 0; j + 1 < hex.length; j += 2) {
@@ -238,10 +248,48 @@ function handleApcFrame(kind, body) {
         }
         i2cBus.write(addr, bytes);
     } else if (kind === 'R') {
+        // I2C Read
+        const addr = body.charCodeAt(0);
         const len = body.charCodeAt(1);
         const data = i2cBus.read(addr, len);
         if (emulator && data && data.length > 0) {
             emulator.uart_input(new Uint8Array(data));
+        }
+    } else if (kind === 'S') {
+        // SPI Transfer
+        if (body[0] === 'W') {
+            // Block write: SW<len><nibbles...>
+            const len = body.charCodeAt(1) & 0x7f;
+            const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
+            const bytes = [];
+            for (let j = 0; j + 1 < hex.length; j += 2) {
+                bytes.push((hex[j] << 4) | hex[j + 1]);
+            }
+            spiBus.write(bytes);
+        } else if (body[0] === 'X') {
+            // Full duplex transfer: SX<len><nibbles...>
+            const len = body.charCodeAt(1) & 0x7f;
+            const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
+            const bytes = [];
+            for (let j = 0; j + 1 < hex.length; j += 2) {
+                bytes.push((hex[j] << 4) | hex[j + 1]);
+            }
+            const replies = [];
+            for (const b of bytes) {
+                replies.push(spiBus.transferByte(b));
+            }
+            if (emulator && replies.length > 0) {
+                emulator.uart_input(new Uint8Array(replies));
+            }
+        } else {
+            // Single byte transfer: S<nib1><nib0>
+            const hi = body.charCodeAt(0) - 97;
+            const lo = body.charCodeAt(1) - 97;
+            const txByte = ((hi & 15) << 4) | (lo & 15);
+            const reply = spiBus.transferByte(txByte);
+            if (emulator) {
+                emulator.uart_input(new Uint8Array([reply]));
+            }
         }
     }
 }
@@ -262,9 +310,7 @@ function pollGpio() {
                 enable: Number(enVal & 0x3fffff_ffffffffn),
             });
         }
-    } catch (e) {
-        // Memory buffer may resize
-    }
+    } catch (e) {}
 }
 
 // Handle messages from main thread
@@ -413,7 +459,6 @@ function runLoop() {
         }
         totalCycles += batchSize;
 
-        // Handle software restart (esp_restart / OTA reboot)
         if (emulator.needs_restart()) {
             if (accumulatedOutput.length > 0) {
                 postMessage({ type: 'uart_output', data: accumulatedOutput });
@@ -430,22 +475,17 @@ function runLoop() {
             break;
         }
 
-        // Drain TX frames every batch to minimize network latency
         drainTxToNetwork();
 
-        // Check elapsed time to yield ~16ms
         if (performance.now() - startTime > 12) break;
     }
 
-    // Flush any clean console output
     if (accumulatedOutput.length > 0) {
         postMessage({ type: 'uart_output', data: accumulatedOutput });
     }
 
-    // Sync GPIO levels
     pollGpio();
 
-    // Send status update
     postMessage({
         type: 'status',
         pc: emulator.pc(),

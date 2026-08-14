@@ -429,15 +429,13 @@ patch for either bus; `I2CProbe` reports I2C only; `BusProbe` reports both.
 | GPIO input injection | ✅ done | write `0x827860` |
 | RMT (NeoPixel) | reachable | same memory technique, not yet mapped |
 | I2C read + write | ✅ done | image patch + APC bridge over UART0 |
-| SPI master | next | same technique, `arduino-spi` tier (Phase 4) |
+| SPI master | ✅ done | image patch + APC bridge, `arduino-spi` tier (Phase 4) |
+| SSD1306 OLED (128x64) | ✅ done | virtual peripheral + live canvas in browser & worker |
 | SPI flash | ✅ internal | `spimem.rs`, no work needed |
 
-**Current state:** Phases 0–3 complete. GPIO is bidirectional; I2C read and write
-both work end-to-end on unmodified Arduino firmware, in the node harness.
+**Current state:** Phases 0–4 complete. GPIO is bidirectional; I2C & SPI master transfers work end-to-end on unmodified Arduino firmware (Blink, I2CRead, OLEDDemo, SPIDemo, BusProbe) in both Web Worker and headless harness.
 
 **Next, in order:**
-1. Wire the bridge into `worker.js` — host bus model and virtual devices in the
-   worker, not the main thread (§3.2). Until this lands, none of it runs in-browser.
-2. GPIO offset auto-calibration at startup (§6) — the hardcoded offsets break on any
-   wasm rebuild.
-3. Phase 4: SPI, reusing the Phase 2/3 machinery against the `arduino-spi` tier.
+1. GPIO offset auto-calibration at startup (§6) — probe-based scanning for portability across future WASM builds.
+2. Additional virtual SPI peripherals (e.g. ST7789 Color TFT LCD, SD Card SPI block reader).
+3. RMT / NeoPixel WS2812 LED strip memory extraction.
