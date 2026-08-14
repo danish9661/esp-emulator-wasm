@@ -1,0 +1,15 @@
+{
+  "name": "esp-emu",
+  "type": "module",
+  "description": "RISC-V emulator for ESP32-C3/C6/H2/P4/S31 IDF binaries",
+  "version": "0.39.0",
+  "license": "Apache-2.0",
+  "files": [
+    "esp_emu_bg.wasm",
+    "esp_emu.js"
+  ],
+  "main": "esp_emu.js",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
