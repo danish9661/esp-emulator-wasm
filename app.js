@@ -1,5 +1,4 @@
-// ESP-EMU Browser Application
-// Orchestrates UI, Web Worker, and terminal
+// ESP-EMU Browser Application with Virtual Peripherals, OLED Display, and Real Arduino Support
 
 (function() {
     'use strict';
@@ -10,30 +9,25 @@
     let fitAddon = null;
     let isRunning = false;
     let firmwareLoaded = false;
-    let romData = null;
-    let romFilename = null;
+    let wasmReady = false;
+
+    let customBinData = null;
+    let customElfData = null;
+    let customBinName = null;
+    let customElfName = null;
+
     let netConnected = false;
+    const gpioInputStates = new Uint8Array(22); // Default all LOW for inputs
 
-    // Labels for the embedded default ROMs (mirrors roms/ at build time).
-    const ROM_DEFAULTS = {
-        esp32c3: 'esp32c3 rev3 (embedded)',
-        esp32c6: 'esp32c6 rev0 (embedded)',
-        esp32h2: 'esp32h2 rev0 (embedded)',
-        esp32p4: 'esp32p4 rev3 (embedded)',
-    };
+    // OLED rendering
+    let oledCanvas = null;
+    let oledCtx = null;
+    let oledImageData = null;
+    let oledFramesRendered = 0;
+    let lastFpsUpdate = performance.now();
+    let currentFps = 0;
 
-    function updateRomBtnLabel() {
-        const btn = document.getElementById('rom-btn');
-        if (!btn) return;
-        if (romFilename) {
-            btn.textContent = 'Custom: ' + romFilename;
-        } else {
-            const chip = document.getElementById('chip-select').value;
-            btn.textContent = ROM_DEFAULTS[chip] || 'Select ROM...';
-        }
-    }
-
-    // --- Register names ---
+    // Register names for RISC-V RV32
     const REG_NAMES = [
         'zero', 'ra', 'sp', 'gp', 'tp', 't0', 't1', 't2',
         's0', 's1', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5',
@@ -45,23 +39,32 @@
     function initTerminal() {
         terminal = new Terminal({
             theme: {
-                background: '#0a0a1a',
-                foreground: '#e0e0e0',
-                cursor: '#e94560',
-                selectionBackground: '#533483',
+                background: '#05080f',
+                foreground: '#f3f4f6',
+                cursor: '#3b82f6',
+                selectionBackground: '#1d4ed8',
+                black: '#000000',
+                red: '#f43f5e',
+                green: '#10b981',
+                yellow: '#f59e0b',
+                blue: '#3b82f6',
+                magenta: '#8b5cf6',
+                cyan: '#06b6d4',
+                white: '#ffffff',
             },
-            fontFamily: "'Menlo', 'Consolas', 'Courier New', monospace",
-            fontSize: 13,
+            fontFamily: "'Fira Code', 'Menlo', 'Consolas', monospace",
+            fontSize: 12,
+            lineHeight: 1.2,
             convertEol: true,
             cursorBlink: true,
             scrollback: 10000,
         });
+
         fitAddon = new FitAddon.FitAddon();
         terminal.loadAddon(fitAddon);
         terminal.open(document.getElementById('terminal-container'));
         fitAddon.fit();
 
-        // Handle terminal input -> UART RX
         terminal.onData(data => {
             if (worker && firmwareLoaded) {
                 const encoder = new TextEncoder();
@@ -72,53 +75,193 @@
             }
         });
 
-        // Resize handling
         window.addEventListener('resize', () => {
             if (fitAddon) fitAddon.fit();
         });
 
-        terminal.writeln('\x1b[1;35m╔══════════════════════════════════════╗');
-        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.39.0    ║');
-        terminal.writeln('║   Load a firmware .bin to begin      ║');
-        terminal.writeln('╚══════════════════════════════════════╝\x1b[0m');
-        terminal.writeln('');
+        terminal.writeln('\x1b[1;36m╔══════════════════════════════════════════════════════════════╗');
+        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.39.0                            ║');
+        terminal.writeln('║   Wokwi-style Virtual Peripherals: SSD1306 OLED, I2C, GPIO   ║');
+        terminal.writeln('║   Click "Load Demo Firmware" or upload .bin + .elf to start  ║');
+        terminal.writeln('╚══════════════════════════════════════════════════════════════╝\x1b[0m\r\n');
     }
 
-    // --- Initialize GPIO Panel ---
+    // --- Initialize Virtual SSD1306 OLED Display ---
+    function initOled() {
+        oledCanvas = document.getElementById('oled-canvas');
+        oledCtx = oledCanvas.getContext('2d', { alpha: false });
+        oledImageData = oledCtx.createImageData(128, 64);
+        clearOledDisplay();
+    }
+
+    function clearOledDisplay() {
+        if (!oledImageData || !oledCtx) return;
+        const data = oledImageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            data[i] = 3;     // R
+            data[i + 1] = 8; // G
+            data[i + 2] = 13;// B
+            data[i + 3] = 255;
+        }
+        oledCtx.putImageData(oledImageData, 0, 0);
+    }
+
+    function renderOledFrame(msg) {
+        if (!oledCtx || !oledImageData) return;
+        const buf = msg.buffer;
+        const width = msg.width || 128;
+        const height = msg.height || 64;
+        const pages = Math.ceil(height / 8);
+        const data = oledImageData.data;
+
+        // SSD1306 page memory format: 8 pages, each page has 128 vertical byte slices
+        for (let page = 0; page < pages; page++) {
+            for (let col = 0; col < width; col++) {
+                const byte = buf[page * width + col] || 0;
+                for (let bit = 0; bit < 8; bit++) {
+                    const y = page * 8 + bit;
+                    if (y >= height) continue;
+                    const pixelIndex = (y * width + col) * 4;
+                    const isOn = (byte & (1 << bit)) !== 0;
+
+                    if (isOn) {
+                        data[pixelIndex] = 0;     // Cyan R
+                        data[pixelIndex + 1] = 255; // Cyan G
+                        data[pixelIndex + 2] = 255; // Cyan B
+                    } else {
+                        data[pixelIndex] = 3;     // BG R
+                        data[pixelIndex + 1] = 8; // BG G
+                        data[pixelIndex + 2] = 13;// BG B
+                    }
+                    data[pixelIndex + 3] = 255;
+                }
+            }
+        }
+
+        oledCtx.putImageData(oledImageData, 0, 0);
+        oledFramesRendered++;
+
+        const now = performance.now();
+        if (now - lastFpsUpdate >= 1000) {
+            currentFps = Math.round((oledFramesRendered * 1000) / (now - lastFpsUpdate));
+            document.getElementById('oled-fps').textContent = `${currentFps} FPS`;
+            oledFramesRendered = 0;
+            lastFpsUpdate = now;
+        }
+
+        const oledStatus = document.getElementById('oled-status');
+        if (oledStatus) {
+            oledStatus.textContent = msg.displayOn ? 'Display ACTIVE (Streaming frames)' : 'Display Standby';
+            oledStatus.style.color = msg.displayOn ? '#10b981' : '#9ca3af';
+        }
+    }
+
+    // --- Initialize GPIO Grid ---
     function initGpioPanel() {
         const grid = document.getElementById('gpio-grid');
+        grid.innerHTML = '';
         for (let i = 0; i < 22; i++) {
             const pin = document.createElement('div');
-            pin.className = 'gpio-pin low';
+            pin.className = 'gpio-pin dir-in';
             pin.id = `gpio-${i}`;
-            pin.textContent = i;
-            pin.title = `GPIO ${i}`;
+            pin.innerHTML = `
+                <span class="pin-num">G${i}</span>
+                <div class="pin-indicator"></div>
+                <span class="pin-dir">IN</span>
+            `;
+            pin.title = `GPIO ${i} (Click to toggle input level)`;
             pin.addEventListener('click', () => toggleGpioInput(i, pin));
             grid.appendChild(pin);
         }
     }
 
     function toggleGpioInput(pin, el) {
-        el.classList.toggle('high');
-        el.classList.toggle('low');
-        // TODO: Send GPIO input to worker when implemented
+        gpioInputStates[pin] = gpioInputStates[pin] ? 0 : 1;
+        if (worker) {
+            worker.postMessage({
+                type: 'gpio_set',
+                pin: pin,
+                level: gpioInputStates[pin],
+            });
+        }
+        updatePinUi(pin, gpioInputStates[pin] === 1, false);
     }
 
-    // --- Initialize Register Table ---
+    function updateGpioState(outMask, enableMask) {
+        for (let i = 0; i < 22; i++) {
+            const isOutput = ((enableMask >> i) & 1) === 1;
+            const level = isOutput ? ((outMask >> i) & 1) === 1 : (gpioInputStates[i] === 1);
+            updatePinUi(i, level, isOutput);
+        }
+    }
+
+    function updatePinUi(pinIndex, isHigh, isOutput) {
+        const el = document.getElementById(`gpio-${pinIndex}`);
+        if (!el) return;
+        if (isHigh) {
+            el.classList.add('high');
+        } else {
+            el.classList.remove('high');
+        }
+
+        const dirEl = el.querySelector('.pin-dir');
+        if (isOutput) {
+            el.classList.remove('dir-in');
+            el.classList.add('dir-out');
+            if (dirEl) dirEl.textContent = 'OUT';
+        } else {
+            el.classList.remove('dir-out');
+            el.classList.add('dir-in');
+            if (dirEl) dirEl.textContent = 'IN';
+        }
+    }
+
+    // --- I2C Activity Log ---
+    function logI2cActivity(act) {
+        const box = document.getElementById('i2c-log');
+        if (!box) return;
+
+        // If first entry, clear placeholder
+        if (box.children.length === 1 && box.children[0].textContent.includes('No transactions')) {
+            box.innerHTML = '';
+        }
+
+        const row = document.createElement('div');
+        row.className = 'i2c-entry';
+        const hexAddr = '0x' + act.addr.toString(16).toUpperCase().padStart(2, '0');
+        const hexBytes = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        const opClass = act.op === 'write' ? 'op-write' : 'op-read';
+        const opName = act.op.toUpperCase();
+
+        row.innerHTML = `
+            <span class="${opClass}">[${opName}]</span>
+            <span class="addr">${hexAddr}</span>
+            <span class="bytes">${hexBytes.slice(0, 30)}${hexBytes.length > 30 ? '...' : ''}</span>
+        `;
+        box.appendChild(row);
+
+        // Keep maximum 80 rows
+        while (box.children.length > 80) {
+            box.removeChild(box.firstChild);
+        }
+        box.scrollTop = box.scrollHeight;
+    }
+
+    // --- Register Table ---
     function initRegTable() {
         const table = document.getElementById('reg-table');
         const tbody = document.createElement('tbody');
-        // PC row
         const pcRow = document.createElement('tr');
-        pcRow.innerHTML = `<td class="name">pc</td><td class="val" id="reg-pc">00000000</td>
-                           <td class="name"></td><td class="val"></td>`;
+        pcRow.innerHTML = `<td class="name">pc</td><td class="val" id="reg-pc">00000000</td><td class="name"></td><td class="val"></td>`;
         tbody.appendChild(pcRow);
-        // x0-x31 in two columns
+
         for (let i = 0; i < 16; i++) {
             const row = document.createElement('tr');
             const j = i + 16;
-            row.innerHTML = `<td class="name">x${i} (${REG_NAMES[i]})</td><td class="val" id="reg-${i}">00000000</td>` +
-                            `<td class="name">x${j} (${REG_NAMES[j]})</td><td class="val" id="reg-${j}">00000000</td>`;
+            row.innerHTML = `
+                <td class="name">x${i} (${REG_NAMES[i]})</td><td class="val" id="reg-${i}">00000000</td>
+                <td class="name">x${j} (${REG_NAMES[j]})</td><td class="val" id="reg-${j}">00000000</td>
+            `;
             tbody.appendChild(row);
         }
         table.appendChild(tbody);
@@ -133,40 +276,65 @@
         }
     }
 
-    // --- Initialize Worker ---
+    // --- Initialize Web Worker ---
     function initWorker() {
-        terminal.writeln('\x1b[33m[System] Initializing WASM module...\x1b[0m');
-
         try {
             worker = new Worker('worker.js', { type: 'module' });
         } catch (e) {
-            terminal.writeln(`\x1b[31m[Error] Failed to create worker: ${e.message}\x1b[0m`);
-            terminal.writeln('\x1b[31m[Error] Make sure you are serving via HTTP (not file://)\x1b[0m');
+            terminal.writeln(`\x1b[31m[Error] Failed to create Web Worker: ${e.message}\x1b[0m`);
             return;
         }
 
         worker.onerror = function(e) {
-            terminal.writeln(`\x1b[31m[Error] Worker failed: ${e.message || e}\x1b[0m`);
-            terminal.writeln('\x1b[31m[Error] Check browser console (F12) for details\x1b[0m');
+            terminal.writeln(`\x1b[31m[Error] Worker exception: ${e.message || e}\x1b[0m`);
         };
 
         worker.onmessage = function(e) {
             const msg = e.data;
             switch (msg.type) {
                 case 'ready':
-                    terminal.writeln('\x1b[32m[System] WASM module loaded\x1b[0m');
+                    wasmReady = true;
+                    document.getElementById('status-text').textContent = 'WASM Ready';
+                    document.getElementById('load-preset-btn').disabled = false;
+                    terminal.writeln('\x1b[32m[System] WASM Emulator Core initialized.\x1b[0m');
+                    // Automatically load the default OLED demo preset on launch!
+                    loadPresetFirmware('oled_demo');
                     break;
 
                 case 'loaded':
                     firmwareLoaded = true;
+                    isRunning = false;
                     updateButtons();
-                    terminal.writeln(`\x1b[32m[System] Firmware loaded, PC=0x${msg.pc.toString(16)}\x1b[0m`);
-                    terminal.writeln('');
-                    document.getElementById('status-text').textContent = 'Ready';
+                    document.getElementById('status-dot').className = 'status-dot';
+                    document.getElementById('status-text').textContent = 'Loaded (Ready)';
+                    terminal.writeln(`\x1b[32m[System] Firmware loaded successfully, initial PC = 0x${msg.pc.toString(16)}\x1b[0m\r\n`);
                     break;
+
+                case 'patched': {
+                    const statusEl = document.getElementById('patch-status');
+                    if (statusEl && msg.patched) {
+                        const syms = msg.patched.map(p => `${p.name} (0x${p.addr.toString(16)})`).join(', ');
+                        statusEl.innerHTML = `<span style="color: #10b981;">✓ Hooked Tier: ${msg.plan.i2c?.tier || 'none'}</span><br><span style="color: #06b6d4;">Shims: ${syms}</span>`;
+                        terminal.writeln(`\x1b[36m[Patcher] Applied RISC-V shims: ${syms}\x1b[0m`);
+                    }
+                    break;
+                }
 
                 case 'uart_output':
                     terminal.write(msg.data);
+                    break;
+
+                case 'oled_frame':
+                    renderOledFrame(msg);
+                    break;
+
+                case 'gpio_update':
+                    updateGpioState(msg.out, msg.enable);
+                    break;
+
+                case 'i2c_activity':
+                    logI2cActivity(act => msg);
+                    logI2cActivity(msg);
                     break;
 
                 case 'status':
@@ -184,38 +352,40 @@
                     break;
 
                 case 'restarted':
-                    terminal.writeln('\x1b[33m[System] Software restart (esp_restart)\x1b[0m');
+                    terminal.writeln('\x1b[33m\r\n[System] Software reset detected (esp_restart)\x1b[0m\r\n');
                     break;
 
                 case 'reset':
                     terminal.clear();
                     isRunning = false;
+                    clearOledDisplay();
                     if (msg.reloaded) {
-                        terminal.writeln('\x1b[33m[System] Emulator reset\x1b[0m');
-                        terminal.writeln(`\x1b[32m[System] Firmware reloaded, PC=0x${msg.pc.toString(16)}\x1b[0m`);
+                        terminal.writeln('\x1b[33m[System] Emulator reset completed\x1b[0m');
                         firmwareLoaded = true;
                         document.getElementById('status-text').textContent = 'Ready';
                     } else {
-                        terminal.writeln('\x1b[33m[System] Emulator reset (no firmware)\x1b[0m');
                         firmwareLoaded = false;
                         document.getElementById('status-text').textContent = 'Reset';
                     }
                     updateButtons();
                     break;
 
-                case 'net_status':
-                    netConnected = msg.connected;
-                    const netBtn = document.getElementById('net-btn');
-                    if (msg.connected) {
-                        terminal.writeln('\x1b[32m[Network] Connected to WebSocket proxy\x1b[0m');
-                        netBtn.textContent = 'Disconnect';
-                        netBtn.classList.add('primary');
+                case 'mem_data': {
+                    const disp = document.getElementById('mem-display');
+                    if (msg.bytes) {
+                        let text = '';
+                        for (let i = 0; i < msg.bytes.length; i += 16) {
+                            const chunk = msg.bytes.slice(i, i + 16);
+                            const hex = chunk.map(b => b.toString(16).padStart(2, '0')).join(' ');
+                            const ascii = chunk.map(b => (b >= 32 && b <= 126 ? String.fromCharCode(b) : '.')).join('');
+                            text += `0x${(msg.addr + i).toString(16).padStart(8, '0')}:  ${hex.padEnd(48, ' ')}  |${ascii}|\n`;
+                        }
+                        disp.textContent = text;
                     } else {
-                        terminal.writeln('\x1b[33m[Network] Disconnected\x1b[0m');
-                        netBtn.textContent = 'Connect Net';
-                        netBtn.classList.remove('primary');
+                        disp.textContent = `Error: ${msg.error}`;
                     }
                     break;
+                }
 
                 case 'error':
                     terminal.writeln(`\x1b[31m[Error] ${msg.message}\x1b[0m`);
@@ -226,7 +396,81 @@
         worker.postMessage({ type: 'init', wasmUrl: './pkg/esp_emu.js' });
     }
 
-    // --- Button Handlers ---
+    // --- Load Preset Firmware Demo ---
+    async function loadPresetFirmware(key) {
+        if (!worker || !wasmReady) return;
+        const btn = document.getElementById('load-preset-btn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Loading Demo...';
+
+        const filenames = {
+            oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo' },
+            blink: { bin: 'samples/blink.merged.bin', elf: 'samples/blink.elf', title: 'Blink GPIO2 Demo' },
+            i2cread: { bin: 'samples/i2cread.merged.bin', elf: 'samples/i2cread.elf', title: 'I2C Sensor Read (0x68)' },
+        };
+
+        const target = filenames[key] || filenames.oled_demo;
+        terminal.writeln(`\x1b[35m[Preset] Fetching ${target.title}...\x1b[0m`);
+
+        try {
+            const [binRes, elfRes] = await Promise.all([
+                fetch(target.bin),
+                fetch(target.elf),
+            ]);
+
+            if (!binRes.ok || !elfRes.ok) {
+                throw new Error(`Failed to fetch preset files: ${binRes.statusText} / ${elfRes.statusText}`);
+            }
+
+            const binBuf = await binRes.arrayBuffer();
+            const elfBuf = await elfRes.arrayBuffer();
+
+            terminal.writeln(`\x1b[35m[Preset] ${target.title} loaded (${binBuf.byteLength} B Flash, ${elfBuf.byteLength} B ELF)\x1b[0m`);
+
+            const chip = document.getElementById('chip-select').value;
+            const bootRom = document.getElementById('boot-rom-chk').checked;
+
+            worker.postMessage({
+                type: 'load',
+                chip: chip,
+                firmware: binBuf,
+                elf: elfBuf,
+                skipRom: !bootRom,
+            });
+
+            // Automatically start running the demo!
+            setTimeout(() => {
+                if (firmwareLoaded && !isRunning) {
+                    startExecution();
+                }
+            }, 300);
+
+        } catch (err) {
+            terminal.writeln(`\x1b[31m[Error] Failed to load preset: ${err.message}\x1b[0m`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '⚡ Load Demo Firmware';
+        }
+    }
+
+    // --- Execution Controls ---
+    function startExecution() {
+        if (!firmwareLoaded) return;
+        isRunning = true;
+        updateButtons();
+        document.getElementById('status-dot').className = 'status-dot active';
+        document.getElementById('status-text').textContent = 'Running';
+        worker.postMessage({ type: 'start' });
+    }
+
+    function pauseExecution() {
+        isRunning = false;
+        updateButtons();
+        document.getElementById('status-dot').className = 'status-dot paused';
+        document.getElementById('status-text').textContent = 'Paused';
+        worker.postMessage({ type: 'stop' });
+    }
+
     function updateButtons() {
         document.getElementById('run-btn').disabled = !firmwareLoaded || isRunning;
         document.getElementById('pause-btn').disabled = !isRunning;
@@ -234,96 +478,90 @@
         document.getElementById('reset-btn').disabled = !firmwareLoaded;
     }
 
+    // --- Setup UI Event Listeners ---
     function setupControls() {
-        // ROM ELF upload (optional — overrides the chip's embedded default)
-        document.getElementById('rom-file').addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            romData = await file.arrayBuffer();
-            romFilename = file.name;
-            terminal.writeln(`\x1b[36m[System] ROM ELF override loaded: ${file.name} (${romData.byteLength} bytes)\x1b[0m`);
-            updateRomBtnLabel();
+        // Preset selector button
+        document.getElementById('load-preset-btn').addEventListener('click', () => {
+            const key = document.getElementById('preset-select').value;
+            loadPresetFirmware(key);
         });
 
-        // Reflect the embedded default in the ROM button when the chip changes.
-        document.getElementById('chip-select').addEventListener('change', updateRomBtnLabel);
-        updateRomBtnLabel();
-
-        // Firmware upload
+        // Firmware Bin upload
         document.getElementById('firmware-file').addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-            const chip = document.getElementById('chip-select').value;
-            const buffer = await file.arrayBuffer();
-            terminal.writeln(`\x1b[36m[System] Loading ${file.name} (${buffer.byteLength} bytes) for ${chip}...\x1b[0m`);
-            document.getElementById('upload-btn').textContent = 'FW: ' + file.name;
+            customBinData = await file.arrayBuffer();
+            customBinName = file.name;
+            document.getElementById('upload-bin-btn').textContent = `FW: ${file.name}`;
+            terminal.writeln(`\x1b[36m[Upload] Selected Flash binary: ${file.name} (${customBinData.byteLength} bytes)\x1b[0m`);
+            triggerCustomLoadIfReady();
+        });
 
-            const transferList = [buffer];
-            const msg = {
+        // App ELF upload
+        document.getElementById('elf-file').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            customElfData = await file.arrayBuffer();
+            customElfName = file.name;
+            document.getElementById('upload-elf-btn').textContent = `ELF: ${file.name}`;
+            terminal.writeln(`\x1b[36m[Upload] Selected ELF symbols: ${file.name} (${customElfData.byteLength} bytes)\x1b[0m`);
+            triggerCustomLoadIfReady();
+        });
+
+        function triggerCustomLoadIfReady() {
+            if (!customBinData || !worker) return;
+            const chip = document.getElementById('chip-select').value;
+            const bootRom = document.getElementById('boot-rom-chk').checked;
+
+            terminal.writeln(`\x1b[36m[System] Loading custom firmware into ${chip}...\x1b[0m`);
+            worker.postMessage({
                 type: 'load',
                 chip: chip,
-                firmware: buffer,
-                ssid: document.getElementById('wifi-ssid').value,
-                password: document.getElementById('wifi-password').value,
-            };
-            if (romData) {
-                const romCopy = romData.slice(0);
-                msg.rom = romCopy;
-                transferList.push(romCopy);
-            }
-            if (worker) {
-                worker.postMessage(msg, transferList);
-            }
-        });
+                firmware: customBinData.slice(0),
+                elf: customElfData ? customElfData.slice(0) : null,
+                skipRom: !bootRom,
+            });
+        }
 
-        // Run
-        document.getElementById('run-btn').addEventListener('click', () => {
-            isRunning = true;
-            updateButtons();
-            worker.postMessage({ type: 'start' });
-            document.getElementById('status-text').textContent = 'Running';
-        });
-
-        // Pause
-        document.getElementById('pause-btn').addEventListener('click', () => {
-            isRunning = false;
-            updateButtons();
-            worker.postMessage({ type: 'stop' });
-            document.getElementById('status-text').textContent = 'Paused';
-        });
-
-        // Step
+        // Control buttons
+        document.getElementById('run-btn').addEventListener('click', startExecution);
+        document.getElementById('pause-btn').addEventListener('click', pauseExecution);
         document.getElementById('step-btn').addEventListener('click', () => {
-            worker.postMessage({ type: 'step' });
+            if (worker) worker.postMessage({ type: 'step' });
         });
-
-        // Reset
         document.getElementById('reset-btn').addEventListener('click', () => {
-            const chip = document.getElementById('chip-select').value;
-            worker.postMessage({ type: 'reset', chip: chip });
+            if (worker) {
+                const chip = document.getElementById('chip-select').value;
+                worker.postMessage({ type: 'reset', chip: chip });
+            }
         });
 
-        // Network connect/disconnect
-        document.getElementById('net-btn').addEventListener('click', () => {
-            if (netConnected) {
-                worker.postMessage({ type: 'net_disconnect' });
-            } else {
-                const url = document.getElementById('net-url').value;
-                worker.postMessage({ type: 'net_connect', url: url });
-            }
+        // Clear terminal & I2C log
+        document.getElementById('clear-term-btn').addEventListener('click', () => {
+            if (terminal) terminal.clear();
+        });
+        document.getElementById('clear-i2c-btn').addEventListener('click', () => {
+            document.getElementById('i2c-log').innerHTML = '<div style="color: var(--text-dim);">Log cleared.</div>';
         });
 
         // Memory inspector
         document.getElementById('mem-read-btn').addEventListener('click', () => {
-            // Memory reading would need to be added to the worker protocol
-            const addrStr = document.getElementById('mem-addr').value;
-            document.getElementById('mem-display').textContent = `Memory view at ${addrStr}\n(requires wasm build)`;
+            const addrStr = document.getElementById('mem-addr').value.trim();
+            const addr = parseInt(addrStr, 16);
+            if (isNaN(addr)) {
+                document.getElementById('mem-display').textContent = 'Invalid hex address';
+                return;
+            }
+            if (worker) {
+                worker.postMessage({ type: 'mem_read', addr: addr, length: 64 });
+            }
         });
     }
 
     // --- Init ---
     document.addEventListener('DOMContentLoaded', () => {
         initTerminal();
+        initOled();
         initGpioPanel();
         initRegTable();
         setupControls();

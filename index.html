@@ -3,139 +3,292 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP-EMU — RISC-V Emulator for ESP32-C3/C6</title>
+    <title>ESP-EMU — RISC-V WebAssembly Emulator with Virtual Peripherals</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-base: #0b0f19;
+            --bg-surface: #111827;
+            --bg-card: #1f2937;
+            --bg-card-hover: #374151;
+            --border-color: #2e3a4e;
+            --border-highlight: #3b82f6;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --text-dim: #6b7280;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --accent-green: #10b981;
+            --accent-green-glow: rgba(16, 185, 129, 0.4);
+            --accent-cyan: #06b6d4;
+            --accent-cyan-glow: rgba(6, 182, 212, 0.35);
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --oled-pixel-on: #00ffff;
+            --oled-pixel-bg: #03080d;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #e0e0e0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-base);
+            color: var(--text-main);
             display: flex;
             flex-direction: column;
             height: 100vh;
+            overflow: hidden;
+            user-select: none;
         }
+
+        /* Top Header */
         header {
-            background: #16213e;
-            padding: 8px 16px;
+            background: var(--bg-surface);
+            padding: 10px 18px;
             display: flex;
             align-items: center;
-            gap: 12px;
-            border-bottom: 1px solid #0f3460;
+            justify-content: space-between;
+            gap: 16px;
+            border-bottom: 1px solid var(--border-color);
             flex-shrink: 0;
+            z-index: 10;
         }
-        header h1 {
-            font-size: 18px;
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .brand-icon {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #3b82f6, #06b6d4);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 14px;
+            color: white;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+        }
+
+        .brand h1 {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .chip-badge {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(6, 182, 212, 0.3);
+            font-size: 11px;
             font-weight: 600;
-            color: #e94560;
-            white-space: nowrap;
+            padding: 2px 7px;
+            border-radius: 12px;
+            font-family: 'Fira Code', monospace;
         }
-        header h1 span { color: #e0e0e0; font-weight: 400; font-size: 14px; }
+
         .controls {
             display: flex;
             align-items: center;
             gap: 8px;
-            margin-left: auto;
         }
-        select, button, input[type="file"] {
-            background: #0f3460;
-            color: #e0e0e0;
-            border: 1px solid #533483;
-            padding: 4px 10px;
-            border-radius: 4px;
+
+        button {
+            background: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 6px 14px;
+            border-radius: 6px;
             font-size: 13px;
+            font-weight: 500;
             cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s ease;
         }
-        button:hover { background: #533483; }
-        button:disabled { opacity: 0.4; cursor: default; }
-        button.primary { background: #e94560; border-color: #e94560; color: #fff; }
-        button.primary:hover { background: #c73450; }
+
+        button:hover:not(:disabled) {
+            background: var(--bg-card-hover);
+            border-color: var(--text-dim);
+            transform: translateY(-1px);
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+            filter: grayscale(0.5);
+        }
+
+        button.primary {
+            background: linear-gradient(135deg, var(--primary), #2563eb);
+            border-color: var(--primary);
+            color: #ffffff;
+            font-weight: 600;
+            box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+        }
+
+        button.primary:hover:not(:disabled) {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.5);
+        }
+
+        button.danger {
+            background: rgba(244, 63, 94, 0.15);
+            border-color: rgba(244, 63, 94, 0.4);
+            color: #fb7185;
+        }
+
+        button.danger:hover:not(:disabled) {
+            background: rgba(244, 63, 94, 0.3);
+            border-color: #f43f5e;
+        }
+
         .status-bar {
             display: flex;
             align-items: center;
             gap: 16px;
             font-size: 12px;
-            color: #888;
-            white-space: nowrap;
+            font-family: 'Fira Code', monospace;
+            background: rgba(0, 0, 0, 0.25);
+            padding: 4px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
         }
-        .status-bar #status-text {
-            min-width: 60px;
-            text-align: center;
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-muted);
         }
-        .status-bar .mips {
-            color: #4ecca3;
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-dim);
+            transition: all 0.3s;
+        }
+
+        .status-dot.active {
+            background: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green-glow);
+        }
+
+        .status-dot.paused {
+            background: var(--accent-amber);
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+        }
+
+        .mips {
+            color: var(--accent-cyan);
             font-weight: 600;
-            font-family: 'Menlo', 'Consolas', monospace;
-            min-width: 80px;
-            text-align: right;
         }
-        .status-bar #cycle-display {
-            font-family: 'Menlo', 'Consolas', monospace;
-            min-width: 120px;
-            text-align: right;
+
+        .cycles {
+            color: var(--text-muted);
         }
-        .main-area {
+
+        /* Main Workspace Layout */
+        .main-layout {
             display: flex;
             flex: 1;
             overflow: hidden;
         }
+
+        /* Left Config & Demo Panel */
         .left-panel {
-            width: 200px;
-            background: #16213e;
-            border-right: 1px solid #0f3460;
+            width: 260px;
+            background: var(--bg-surface);
+            border-right: 1px solid var(--border-color);
             display: flex;
             flex-direction: column;
             overflow-y: auto;
             flex-shrink: 0;
         }
-        .left-panel .panel-section {
-            padding: 10px 12px;
-            border-bottom: 1px solid #0f3460;
+
+        .panel-section {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border-color);
         }
-        .left-panel .panel-section h3 {
+
+        .panel-section h3 {
             font-size: 11px;
+            font-weight: 700;
             text-transform: uppercase;
-            color: #666;
-            margin-bottom: 8px;
+            letter-spacing: 0.5px;
+            color: var(--text-dim);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
         }
-        .config-field {
-            margin-bottom: 8px;
+
+        .field {
+            margin-bottom: 10px;
         }
-        .config-field:last-child {
+
+        .field:last-child {
             margin-bottom: 0;
         }
-        .config-field label {
+
+        .field label {
             display: block;
             font-size: 11px;
-            color: #888;
-            margin-bottom: 3px;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 4px;
         }
-        .config-field select,
-        .config-field button,
-        .config-field input[type="text"] {
+
+        select, input[type="text"] {
             width: 100%;
+            background: var(--bg-base);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 6px 10px;
+            border-radius: 6px;
             font-size: 12px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.15s;
         }
-        .config-field input[type="text"] {
-            background: #0a0a1a;
-            color: #e0e0e0;
-            border: 1px solid #333;
-            padding: 5px 8px;
-            border-radius: 4px;
+
+        select:focus, input[type="text"]:focus {
+            border-color: var(--primary);
         }
-        .file-upload {
+
+        .file-upload-box {
             position: relative;
             overflow: hidden;
             display: block;
+            margin-bottom: 6px;
         }
-        .file-upload button {
+
+        .file-upload-box button {
             width: 100%;
             text-align: left;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .file-upload input[type="file"] {
+
+        .file-upload-box input[type="file"] {
             position: absolute;
             left: 0; top: 0;
             opacity: 0;
@@ -143,176 +296,405 @@
             height: 100%;
             cursor: pointer;
         }
-        .terminal-panel {
+
+        /* Center Column: OLED Screen & UART Terminal */
+        .center-panel {
             flex: 1;
             display: flex;
             flex-direction: column;
-            padding: 8px;
+            overflow: hidden;
+            background: #080c14;
             min-width: 0;
         }
-        .terminal-panel h2 {
-            font-size: 12px;
-            text-transform: uppercase;
-            color: #666;
-            margin-bottom: 4px;
+
+        /* Virtual Hardware / OLED Container */
+        .oled-viewport {
+            background: #0d131f;
+            border-bottom: 1px solid var(--border-color);
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-shrink: 0;
         }
-        #terminal-container {
-            flex: 1;
-            background: #000;
+
+        .oled-bezel {
+            background: #05080f;
+            border: 2px solid #1f293d;
+            border-radius: 8px;
+            padding: 10px;
+            box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.8), 0 4px 16px rgba(0, 0, 0, 0.4);
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .oled-header {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 10px;
+            font-family: 'Fira Code', monospace;
+            color: var(--text-dim);
+            padding: 0 2px;
+        }
+
+        .oled-canvas-wrap {
+            border: 1px solid #142033;
             border-radius: 4px;
             overflow: hidden;
-            padding-bottom: 4px;
+            background: var(--oled-pixel-bg);
+            box-shadow: 0 0 16px rgba(0, 255, 255, 0.05);
         }
-        .side-panel {
-            width: 320px;
-            background: #16213e;
-            border-left: 1px solid #0f3460;
+
+        #oled-canvas {
+            display: block;
+            width: 384px; /* 128px * 3 */
+            height: 192px; /* 64px * 3 */
+            image-rendering: pixelated;
+        }
+
+        .oled-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-size: 12px;
+        }
+
+        .oled-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: 'Fira Code', monospace;
+            font-size: 11px;
+            padding: 3px 8px;
+            background: rgba(6, 182, 212, 0.1);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(6, 182, 212, 0.25);
+            border-radius: 4px;
+            width: fit-content;
+        }
+
+        .terminal-container-wrap {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 10px 14px;
+            min-height: 0;
+        }
+
+        .terminal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+
+        .terminal-header span {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-dim);
+        }
+
+        #terminal-container {
+            flex: 1;
+            background: #05080f;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            overflow: hidden;
+            padding: 4px;
+        }
+
+        /* Right Panel: GPIO, I2C Log, Registers */
+        .right-panel {
+            width: 340px;
+            background: var(--bg-surface);
+            border-left: 1px solid var(--border-color);
             display: flex;
             flex-direction: column;
             overflow-y: auto;
             flex-shrink: 0;
         }
-        .panel-section {
-            padding: 8px 12px;
-            border-bottom: 1px solid #0f3460;
-        }
-        .panel-section h3 {
-            font-size: 11px;
-            text-transform: uppercase;
-            color: #666;
-            margin-bottom: 6px;
-        }
+
+        /* GPIO Matrix */
         .gpio-grid {
             display: grid;
-            grid-template-columns: repeat(8, 1fr);
-            gap: 4px;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 6px;
         }
+
         .gpio-pin {
-            width: 28px; height: 28px;
-            border-radius: 50%;
-            border: 2px solid #333;
+            background: var(--bg-base);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 6px 4px;
             display: flex;
+            flex-direction: column;
             align-items: center;
-            justify-content: center;
-            font-size: 9px;
+            gap: 2px;
             cursor: pointer;
             transition: all 0.15s;
         }
-        .gpio-pin.high { background: #4ecca3; border-color: #4ecca3; color: #000; }
-        .gpio-pin.low { background: #333; border-color: #555; }
-        .reg-table {
-            font-family: 'Menlo', 'Consolas', monospace;
-            font-size: 11px;
-            width: 100%;
+
+        .gpio-pin:hover {
+            border-color: var(--text-dim);
+            background: var(--bg-card);
         }
-        .reg-table td { padding: 1px 4px; }
-        .reg-table .name { color: #888; }
-        .reg-table .val { color: #4ecca3; }
+
+        .gpio-pin .pin-num {
+            font-family: 'Fira Code', monospace;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .gpio-pin .pin-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #222938;
+            border: 1px solid #374151;
+            transition: all 0.15s;
+        }
+
+        .gpio-pin.high .pin-indicator {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green-glow);
+        }
+
+        .gpio-pin .pin-dir {
+            font-size: 8px;
+            font-weight: 600;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+
+        .gpio-pin.dir-out .pin-dir { color: var(--accent-cyan); }
+        .gpio-pin.dir-in .pin-dir { color: var(--accent-amber); }
+
+        /* I2C Inspector Log */
+        .i2c-log-box {
+            background: var(--bg-base);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            height: 130px;
+            overflow-y: auto;
+            font-family: 'Fira Code', monospace;
+            font-size: 10px;
+            padding: 6px 8px;
+            line-height: 1.5;
+        }
+
+        .i2c-entry {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 2px;
+        }
+
+        .i2c-entry .op-write { color: #f43f5e; font-weight: 600; }
+        .i2c-entry .op-read { color: #10b981; font-weight: 600; }
+        .i2c-entry .addr { color: var(--accent-cyan); }
+        .i2c-entry .bytes { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* Register Table */
+        .reg-table {
+            font-family: 'Fira Code', monospace;
+            font-size: 10px;
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .reg-table td { padding: 2px 4px; }
+        .reg-table .name { color: var(--text-dim); width: 30%; }
+        .reg-table .val { color: var(--accent-cyan); text-align: right; }
+
+        /* Footer */
         footer {
-            background: #16213e;
-            padding: 4px 16px;
+            background: var(--bg-surface);
+            padding: 6px 18px;
             font-size: 11px;
-            color: #555;
-            border-top: 1px solid #0f3460;
+            color: var(--text-dim);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
             flex-shrink: 0;
         }
+
+        footer a { color: var(--accent-cyan); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
     <header>
-        <h1>ESP-EMU <span>v0.39.0</span></h1>
-        <div class="controls">
-            <button id="run-btn" class="primary" disabled>&#9654; Run</button>
-            <button id="pause-btn" disabled>&#9646;&#9646; Pause</button>
-            <button id="step-btn" disabled>&#9197; Step</button>
-            <button id="reset-btn" disabled>&#8635; Reset</button>
+        <div class="brand">
+            <div class="brand-icon">E</div>
+            <h1>ESP-EMU <span>v0.39.0</span></h1>
+            <span class="chip-badge" id="chip-badge">ESP32-C3 (RV32)</span>
         </div>
+
+        <div class="controls">
+            <button id="run-btn" class="primary" disabled>▶ Run</button>
+            <button id="pause-btn" disabled>⏸ Pause</button>
+            <button id="step-btn" disabled>⏯ Step</button>
+            <button id="reset-btn" class="danger" disabled>↺ Reset</button>
+        </div>
+
         <div class="status-bar">
-            <span id="status-text">No firmware loaded</span>
+            <div class="status-pill">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">WASM Initializing...</span>
+            </div>
             <span class="mips" id="mips-display">0.0 MIPS</span>
-            <span id="cycle-display">0 cycles</span>
+            <span class="cycles" id="cycle-display">0 cycles</span>
         </div>
     </header>
 
-    <div class="main-area">
+    <div class="main-layout">
+        <!-- Left Panel: Demos, Config, Uploads -->
         <div class="left-panel">
             <div class="panel-section">
-                <h3>Target</h3>
-                <div class="config-field">
-                    <label>Chip</label>
-                    <select id="chip-select">
-                        <option value="esp32c3">ESP32-C3</option>
-                        <option value="esp32c6">ESP32-C6</option>
-                        <option value="esp32h2">ESP32-H2</option>
-                        <option value="esp32p4">ESP32-P4</option>
+                <h3>Bundled Arduino Demos</h3>
+                <div class="field">
+                    <label>Select Preset Firmware</label>
+                    <select id="preset-select">
+                        <option value="oled_demo" selected>SSD1306 OLED Graphics (128x64)</option>
+                        <option value="blink">Blink LED (GPIO2 Output)</option>
+                        <option value="i2cread">I2C Sensor Read (0x68 IMU)</option>
                     </select>
                 </div>
-                <div class="config-field">
-                    <label>ROM ELF (optional)</label>
-                    <div class="file-upload">
-                        <button id="rom-btn">Override ROM...</button>
-                        <input type="file" id="rom-file" accept=".elf">
-                    </div>
-                </div>
-                <div class="config-field">
-                    <label>Firmware</label>
-                    <div class="file-upload">
-                        <button id="upload-btn">Load .bin...</button>
+                <button id="load-preset-btn" class="primary" style="width: 100%; justify-content: center;" disabled>
+                    ⚡ Load Demo Firmware
+                </button>
+            </div>
+
+            <div class="panel-section">
+                <h3>Custom Firmware Upload</h3>
+                <div class="field">
+                    <label>Flash Image (.merged.bin or .bin)</label>
+                    <div class="file-upload-box">
+                        <button id="upload-bin-btn">Choose .bin file...</button>
                         <input type="file" id="firmware-file" accept=".bin">
                     </div>
                 </div>
-            </div>
-            <div class="panel-section">
-                <h3>WiFi</h3>
-                <div class="config-field">
-                    <label>SSID</label>
-                    <input type="text" id="wifi-ssid" value="myssid" placeholder="WiFi SSID">
-                </div>
-                <div class="config-field">
-                    <label>Password</label>
-                    <input type="text" id="wifi-password" value="mypassword" placeholder="Password">
+                <div class="field">
+                    <label>App ELF for Patcher (.ino.elf)</label>
+                    <div class="file-upload-box">
+                        <button id="upload-elf-btn">Choose .elf symbol file...</button>
+                        <input type="file" id="elf-file" accept=".elf">
+                    </div>
                 </div>
             </div>
+
             <div class="panel-section">
-                <h3>Network</h3>
-                <div class="config-field">
-                    <label>WebSocket URL</label>
-                    <input type="text" id="net-url" value="ws://localhost:8765" placeholder="ws://host:port">
+                <h3>Target Options</h3>
+                <div class="field">
+                    <label>Target Chip</label>
+                    <select id="chip-select">
+                        <option value="esp32c3" selected>ESP32-C3 (RV32IMAC)</option>
+                        <option value="esp32c6">ESP32-C6 (RV32IMAC)</option>
+                        <option value="esp32h2">ESP32-H2 (RV32IMAC)</option>
+                        <option value="esp32p4">ESP32-P4 (Dual RV32IMAFC)</option>
+                    </select>
                 </div>
-                <div class="config-field">
-                    <button id="net-btn">Connect</button>
+                <div class="field">
+                    <label>
+                        <input type="checkbox" id="boot-rom-chk" checked> Boot via ROM (recommended)
+                    </label>
                 </div>
+            </div>
+
+            <div class="panel-section">
+                <h3>Networking (TAP WebSocket)</h3>
+                <div class="field">
+                    <label>WebSocket Bridge URL</label>
+                    <input type="text" id="net-url" value="ws://localhost:8765">
+                </div>
+                <button id="net-btn" style="width: 100%; justify-content: center;">Connect Network</button>
             </div>
         </div>
 
-        <div class="terminal-panel">
-            <h2>UART0 Console</h2>
-            <div id="terminal-container"></div>
+        <!-- Center Panel: Virtual OLED + UART0 Console -->
+        <div class="center-panel">
+            <!-- OLED Display Viewport -->
+            <div class="oled-viewport">
+                <div class="oled-bezel">
+                    <div class="oled-header">
+                        <span>SSD1306 OLED</span>
+                        <span id="oled-fps">0 FPS</span>
+                    </div>
+                    <div class="oled-canvas-wrap">
+                        <canvas id="oled-canvas" width="128" height="64"></canvas>
+                    </div>
+                </div>
+                <div class="oled-meta">
+                    <div class="oled-badge">I2C: 0x3C / 0x3D</div>
+                    <div class="oled-badge">Resolution: 128 × 64 Mono</div>
+                    <div style="font-size: 11px; color: var(--text-muted);" id="oled-status">
+                        Awaiting display initialization from firmware...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Terminal Output -->
+            <div class="terminal-container-wrap">
+                <div class="terminal-header">
+                    <span>UART0 Serial Console (115200 Baud)</span>
+                    <button id="clear-term-btn" style="padding: 2px 8px; font-size: 11px;">Clear</button>
+                </div>
+                <div id="terminal-container"></div>
+            </div>
         </div>
 
-        <div class="side-panel">
+        <!-- Right Panel: GPIO Matrix, I2C Inspector, Registers -->
+        <div class="right-panel">
             <div class="panel-section">
-                <h3>GPIO Output</h3>
+                <h3>GPIO Status & Injection (22 Pins)</h3>
                 <div class="gpio-grid" id="gpio-grid"></div>
             </div>
+
             <div class="panel-section">
-                <h3>Registers</h3>
+                <h3>
+                    <span>I2C Bus Activity Log</span>
+                    <button id="clear-i2c-btn" style="padding: 2px 6px; font-size: 10px;">Clear</button>
+                </h3>
+                <div class="i2c-log-box" id="i2c-log">
+                    <div style="color: var(--text-dim);">No transactions yet.</div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h3>Patch Status</h3>
+                <div id="patch-status" style="font-size: 11px; font-family: 'Fira Code', monospace; color: var(--text-muted);">
+                    No firmware patched.
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h3>RISC-V Registers</h3>
                 <table class="reg-table" id="reg-table"></table>
             </div>
+
             <div class="panel-section">
                 <h3>Memory Inspector</h3>
-                <div style="display:flex;gap:4px;margin-bottom:4px;">
-                    <input type="text" id="mem-addr" placeholder="0x3FC80000"
-                        style="flex:1;background:#0a0a1a;color:#e0e0e0;border:1px solid #333;padding:3px 6px;font-family:monospace;font-size:11px;border-radius:3px;">
-                    <button id="mem-read-btn" style="font-size:11px;">Read</button>
+                <div style="display: flex; gap: 4px; margin-bottom: 6px;">
+                    <input type="text" id="mem-addr" placeholder="0x827850" value="0x827850" style="font-family: 'Fira Code', monospace; font-size: 11px;">
+                    <button id="mem-read-btn" style="font-size: 11px;">Inspect</button>
                 </div>
-                <pre id="mem-display" style="font-size:10px;color:#4ecca3;line-height:1.4;max-height:200px;overflow-y:auto;"></pre>
+                <pre id="mem-display" style="font-family: 'Fira Code', monospace; font-size: 10px; color: var(--accent-cyan); max-height: 120px; overflow-y: auto; background: var(--bg-base); padding: 6px; border-radius: 4px; border: 1px solid var(--border-color);"></pre>
             </div>
         </div>
     </div>
 
     <footer>
-        ESP-EMU v0.39.0 | Emulates ESP32-C3/C6 (RV32IMAC) and ESP32-P4 (RV32IMAFC, dual-core)
+        <span>ESP-EMU WebAssembly • Wokwi-style Virtual Peripheral Bridge (I2C / GPIO / SSD1306)</span>
+        <span>Built with Google DeepMind Antigravity</span>
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
