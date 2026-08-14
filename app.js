@@ -1,4 +1,4 @@
-// ESP-EMU Browser Application with Virtual Peripherals, OLED, ST7789 Color TFT, and Real Arduino Support
+// ESP-EMU Browser Application with Virtual Peripherals, OLED, ST7789 Color TFT, NeoPixel, and Real Arduino Support
 
 (function() {
     'use strict';
@@ -87,11 +87,11 @@
             if (fitAddon) fitAddon.fit();
         });
 
-        terminal.writeln('\x1b[1;36m╔══════════════════════════════════════════════════════════════════════════╗');
-        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.39.0                                        ║');
-        terminal.writeln('║   Virtual Peripherals: ST7789 Color TFT, SSD1306 OLED, SPI & I2C Bridge  ║');
-        terminal.writeln('║   Dynamic GPIO Auto-Calibration • Load Demo Firmware to start            ║');
-        terminal.writeln('╚══════════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n');
+        terminal.writeln('\x1b[1;36m╔════════════════════════════════════════════════════════════════════════════╗');
+        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.39.0                                          ║');
+        terminal.writeln('║   Virtual Peripherals: ST7789 TFT, SSD1306 OLED, WS2812 NeoPixels, SPI/I2C ║');
+        terminal.writeln('║   Dynamic GPIO Auto-Calibration • Load Demo Firmware to start              ║');
+        terminal.writeln('╚════════════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n');
     }
 
     // --- Initialize Displays ---
@@ -110,6 +110,50 @@
             tftCtx = tftCanvas.getContext('2d', { alpha: false });
             tftImageData = tftCtx.createImageData(240, 240);
             clearTftDisplay();
+        }
+
+        // Initialize NeoPixel 8-LED Strip
+        initNeoPixels();
+    }
+
+    function initNeoPixels() {
+        const strip = document.getElementById('neopixel-strip');
+        if (!strip) return;
+        strip.innerHTML = '';
+        for (let i = 0; i < 8; i++) {
+            const led = document.createElement('div');
+            led.id = `neopixel-led-${i}`;
+            led.style.width = '20px';
+            led.style.height = '20px';
+            led.style.borderRadius = '50%';
+            led.style.backgroundColor = '#111827';
+            led.style.border = '2px solid #374151';
+            led.style.boxShadow = '0 0 4px rgba(0, 0, 0, 0.5)';
+            led.style.transition = 'all 0.08s ease-out';
+            led.title = `LED ${i}`;
+            strip.appendChild(led);
+        }
+    }
+
+    function renderNeoPixels(msg) {
+        const pinBadge = document.getElementById('neopixel-pin-badge');
+        if (pinBadge && typeof msg.pin === 'number') {
+            pinBadge.textContent = `Pin: G${msg.pin}`;
+        }
+        if (!msg.pixels) return;
+        for (let i = 0; i < msg.pixels.length && i < 8; i++) {
+            const led = document.getElementById(`neopixel-led-${i}`);
+            if (!led) continue;
+            const { r, g, b } = msg.pixels[i];
+            led.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+            const isLit = r > 10 || g > 10 || b > 10;
+            if (isLit) {
+                led.style.boxShadow = `0 0 10px rgb(${r}, ${g}, ${b}), 0 0 20px rgba(${r}, ${g}, ${b}, 0.5)`;
+                led.style.borderColor = `rgba(255, 255, 255, 0.8)`;
+            } else {
+                led.style.boxShadow = `0 0 4px rgba(0, 0, 0, 0.5)`;
+                led.style.borderColor = `#374151`;
+            }
         }
     }
 
@@ -173,11 +217,7 @@
 
     function renderTftFrame(msg) {
         if (!tftCtx || !tftImageData) return;
-        const width = msg.width || 240;
-        const height = msg.height || 240;
         const buf = msg.buffer;
-
-        // Copy RGBA buffer directly to canvas ImageData
         tftImageData.data.set(buf);
         tftCtx.putImageData(tftImageData, 0, 0);
         tftFramesRendered++;
@@ -352,8 +392,8 @@
                     document.getElementById('status-text').textContent = 'WASM Ready';
                     document.getElementById('load-preset-btn').disabled = false;
                     terminal.writeln('\x1b[32m[System] WASM Emulator Core initialized.\x1b[0m');
-                    // Automatically load ST7789 Color Demo on launch!
-                    loadPresetFirmware('st7789_demo');
+                    // Automatically load NeoPixel Demo on launch!
+                    loadPresetFirmware('neopixel_demo');
                     break;
 
                 case 'calibrated':
@@ -374,9 +414,10 @@
                     if (statusEl && msg.patched) {
                         const i2cTier = msg.plan?.i2c?.tier || 'none';
                         const spiTier = msg.plan?.spi?.tier || 'none';
+                        const neoTier = msg.plan?.neopixel?.tier || 'none';
                         const syms = msg.patched.map(p => `${p.name}`).join(', ');
                         statusEl.innerHTML = `
-                            <div style="color: #10b981; margin-bottom: 2px;">✓ Tiers: I2C (${i2cTier}), SPI (${spiTier})</div>
+                            <div style="color: #10b981; margin-bottom: 2px;">✓ Tiers: I2C (${i2cTier}), SPI (${spiTier}), NeoPixel (${neoTier})</div>
                             <div style="color: #06b6d4;">Shims: ${syms}</div>
                         `;
                         terminal.writeln(`\x1b[36m[Patcher] Applied RISC-V shims: ${syms}\x1b[0m`);
@@ -394,6 +435,10 @@
 
                 case 'tft_frame':
                     renderTftFrame(msg);
+                    break;
+
+                case 'neopixel_frame':
+                    renderNeoPixels(msg);
                     break;
 
                 case 'gpio_update':
@@ -431,6 +476,7 @@
                     isRunning = false;
                     clearOledDisplay();
                     clearTftDisplay();
+                    initNeoPixels();
                     if (msg.reloaded) {
                         terminal.writeln('\x1b[33m[System] Emulator reset completed\x1b[0m');
                         firmwareLoaded = true;
@@ -476,6 +522,7 @@
         btn.textContent = '⏳ Loading Demo...';
 
         const filenames = {
+            neopixel_demo: { bin: 'samples/neopixel_demo.merged.bin', elf: 'samples/neopixel_demo.elf', title: 'Adafruit NeoPixel 8-LED Strip' },
             st7789_demo: { bin: 'samples/st7789_demo.merged.bin', elf: 'samples/st7789_demo.elf', title: 'Adafruit ST7789 Color TFT Demo (240x240)' },
             oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo (128x64)' },
             blink: { bin: 'samples/blink.merged.bin', elf: 'samples/blink.elf', title: 'Blink GPIO2 Demo' },
@@ -484,7 +531,7 @@
             busprobe: { bin: 'samples/busprobe.merged.bin', elf: 'samples/busprobe.elf', title: 'Dual Bus Probe (I2C + SPI)' },
         };
 
-        const target = filenames[key] || filenames.st7789_demo;
+        const target = filenames[key] || filenames.neopixel_demo;
         terminal.writeln(`\x1b[35m[Preset] Fetching ${target.title}...\x1b[0m`);
 
         try {

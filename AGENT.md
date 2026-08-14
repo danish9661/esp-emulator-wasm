@@ -425,17 +425,18 @@ patch for either bus; `I2CProbe` reports I2C only; `BusProbe` reports both.
 | --- | --- | --- |
 | UART TX/RX | ✅ done | already wired; RX round trip proven (§4) |
 | WiFi / Ethernet | ✅ done | already wired |
-| GPIO out + direction | ✅ done | read `0x827850` / `0x827858` |
-| GPIO input injection | ✅ done | write `0x827860` |
-| RMT (NeoPixel) | reachable | same memory technique, not yet mapped |
+| GPIO out + direction | ✅ done | dynamic auto-calibration at boot (§6) |
+| GPIO input injection | ✅ done | dynamic auto-calibration at boot (§6) |
+| RMT (NeoPixel WS2812) | ✅ done | image patch (`espShow` / `neopixelWrite`) + APC bridge |
 | I2C read + write | ✅ done | image patch + APC bridge over UART0 |
 | SPI master | ✅ done | image patch + APC bridge, `arduino-spi` tier (Phase 4) |
 | SSD1306 OLED (128x64) | ✅ done | virtual peripheral + live canvas in browser & worker |
+| ST7789 Color TFT (240x240) | ✅ done | virtual SPI peripheral + live RGB565 canvas |
 | SPI flash | ✅ internal | `spimem.rs`, no work needed |
 
-**Current state:** Phases 0–4 complete. GPIO is bidirectional; I2C & SPI master transfers work end-to-end on unmodified Arduino firmware (Blink, I2CRead, OLEDDemo, SPIDemo, BusProbe) in both Web Worker and headless harness.
+**Current state:** Phases 0–4 + RMT + Dynamic Calibration complete. All 7 real Arduino firmwares (Blink, I2CRead, OLEDDemo, SPIDemo, BusProbe, ST7789Demo, NeoPixelDemo) pass automated end-to-end testing in both Web Worker and headless harness.
 
 **Next, in order:**
-1. GPIO offset auto-calibration at startup (§6) — probe-based scanning for portability across future WASM builds.
-2. Additional virtual SPI peripherals (e.g. ST7789 Color TFT LCD, SD Card SPI block reader).
-3. RMT / NeoPixel WS2812 LED strip memory extraction.
+1. Virtual SD Card over SPI (FAT32 filesystem / block reader).
+2. ESP-IDF direct hook tier (`idf-i2c-v5` / `idf-spi`).
+3. Interactive visual circuit wiring diagram.

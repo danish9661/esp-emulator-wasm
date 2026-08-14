@@ -1,9 +1,9 @@
-// Comprehensive Verification Suite for esp-emu Virtual Peripherals (I2C, SPI, GPIO, SSD1306, ST7789)
+// Comprehensive Verification Suite for esp-emu Virtual Peripherals (I2C, SPI, GPIO, SSD1306, ST7789, NeoPixel)
 import { readFileSync } from 'node:fs';
 import { Elf32, planHooks } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS } from '../shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, MPU6050Device } from '../peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device } from '../peripherals.mjs';
 import { boot } from './harness.mjs';
 
 const APC = /\x1b_(.)([\s\S]*?)\x1b\\/;
@@ -16,9 +16,12 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const flash = new Uint8Array(readFileSync(binPath));
     const elf = new Elf32(readFileSync(elfPath));
     const hookPlan = planHooks(elf);
-    const hooks = Object.fromEntries(
-        (hookPlan?.i2c?.hooks || []).concat(hookPlan?.spi?.hooks || []).map(h => [h.name, h])
-    );
+    const allHooks = []
+        .concat(hookPlan?.i2c?.hooks || [])
+        .concat(hookPlan?.spi?.hooks || [])
+        .concat(hookPlan?.neopixel?.hooks || []);
+
+    const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
 
     const img = new EspImage(flash);
     const patched = [];
@@ -39,6 +42,7 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const spiBus = new SPIBus();
     const oled = new SSD1306Device(128, 64);
     const tft = new ST7789Device(240, 240);
+    const neoPixel = new NeoPixelStrip(8);
     const mpu = new MPU6050Device();
     i2cBus.register(0x3c, oled);
     i2cBus.register(0x3d, oled);
@@ -89,6 +93,13 @@ async function runTest(testName, binPath, elfPath, customVerify) {
                         const reply = spiBus.transferByte(txByte);
                         emu.uart_input(new Uint8Array([reply]));
                     }
+                } else if (kind === 'N') {
+                    const pin = body.charCodeAt(0);
+                    const len = body.charCodeAt(1);
+                    const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
+                    const bytes = [];
+                    for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
+                    neoPixel.update(pin, bytes);
                 }
                 streamBuffer = streamBuffer.slice(m.index + frame.length);
             } else {
@@ -118,6 +129,7 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         spiBus,
         oled,
         tft,
+        neoPixel,
         mpu,
         getConsole: () => cleanConsole,
     });
@@ -182,12 +194,21 @@ await runTest('Adafruit ST7789 Color TFT (240x240 RGB565)', 'samples/st7789_demo
     let frameCount = 0;
     tft.onFrame(() => frameCount++);
     stepBatches(1500);
-    const cons = getConsole();
-    console.log('Console snippet:', JSON.stringify(cons.slice(-200)));
     console.log(`ST7789 Color TFT frames rendered: ${frameCount} -> ${frameCount >= 5 ? 'PASS' : 'FAIL'}`);
     if (frameCount < 5) throw new Error('ST7789Demo test failed');
 });
 
-console.log('\n========================================================================');
-console.log('ALL 6 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + ST7789 + OLED + GPIO)! ✅');
-console.log('========================================================================\n');
+// 7. Test NeoPixelDemo
+await runTest('Adafruit NeoPixel 8-LED Strip (WS2812 RMT)', 'samples/neopixel_demo.merged.bin', 'samples/neopixel_demo.elf', async ({ stepBatches, neoPixel, getConsole }) => {
+    let frameCount = 0;
+    neoPixel.onFrame(() => frameCount++);
+    stepBatches(1000);
+    const cons = getConsole();
+    const matched = cons.includes('Rainbow frame:') && frameCount >= 10;
+    console.log(`NeoPixel color frames captured: ${frameCount} -> ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) throw new Error('NeoPixelDemo test failed');
+});
+
+console.log('\n================================================================================');
+console.log('ALL 7 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + GPIO)! ✅');
+console.log('================================================================================\n');

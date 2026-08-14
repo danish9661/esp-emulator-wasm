@@ -147,6 +147,9 @@ export const HOOK_TARGETS = {
         'spiTransferBits', 'spiTransaction', 'spiStartBus', 'spiStopBus',
         'spiSetClockDivider', 'spiSetBitOrder', 'spiSetDataMode',
     ],
+    'arduino-neopixel': [
+        'espShow', 'neopixelWrite', 'rmtInit', '_rmtWrite', 'rmtWrite', '_rmtDetachBus',
+    ],
     'idf-i2c-v5': [
         'i2c_master_transmit', 'i2c_master_receive', 'i2c_master_transmit_receive',
         'i2c_master_probe', 'i2c_master_bus_add_device', 'i2c_new_master_bus',
@@ -163,7 +166,7 @@ export const HOOK_TARGETS = {
 
 /**
  * Decide which tier to patch for each bus. Prefers the Arduino HAL when present.
- * Returns { i2c: {tier, hooks}|null, spi: {tier, hooks}|null }.
+ * Returns { i2c: {tier, hooks}|null, spi: {tier, hooks}|null, neopixel: {tier, hooks}|null }.
  */
 export function planHooks(elf) {
     const pick = (tiers) => {
@@ -176,5 +179,6 @@ export function planHooks(elf) {
     return {
         i2c: pick(['arduino-i2c', 'idf-i2c-v5', 'idf-i2c-legacy']),
         spi: pick(['arduino-spi', 'idf-spi']),
+        neopixel: pick(['arduino-neopixel']),
     };
 }

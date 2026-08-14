@@ -1,10 +1,10 @@
-// Web Worker running the emulation loop, binary patcher, and virtual peripherals (I2C + SPI + GPIO + OLED + TFT)
+// Web Worker running the emulation loop, binary patcher, and virtual peripherals (I2C + SPI + GPIO + OLED + TFT + NeoPixel)
 // Communicates with main thread via postMessage
 
 import { Elf32, planHooks } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
 import { SHIMS } from './shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, MPU6050Device } from './peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device } from './peripherals.mjs';
 
 let wasmExports = null;
 let wasm = null;
@@ -14,11 +14,12 @@ let batchSize = 50000;
 let pendingLoad = null;
 let ws = null;
 
-// Virtual I2C & SPI buses and devices
+// Virtual buses and devices
 const i2cBus = new I2CBus();
 const spiBus = new SPIBus();
 const oledDevice = new SSD1306Device(128, 64);
 const tftDevice = new ST7789Device(240, 240);
+const neoPixel = new NeoPixelStrip(8);
 const mpuDevice = new MPU6050Device();
 
 i2cBus.register(0x3c, oledDevice);
@@ -44,6 +45,14 @@ tftDevice.onFrame((frame) => {
         height: frame.height,
         buffer: frame.buffer,
         displayOn: frame.displayOn,
+    });
+});
+
+neoPixel.onFrame((frame) => {
+    postMessage({
+        type: 'neopixel_frame',
+        pin: frame.pin,
+        pixels: frame.pixels,
     });
 });
 
@@ -150,9 +159,12 @@ async function handleLoad(msg) {
             try {
                 const elf = new Elf32(new Uint8Array(msg.elf));
                 const hookPlan = planHooks(elf);
-                const hooks = Object.fromEntries(
-                    (hookPlan?.i2c?.hooks || []).concat(hookPlan?.spi?.hooks || []).map(h => [h.name, h])
-                );
+                const allHooks = []
+                    .concat(hookPlan?.i2c?.hooks || [])
+                    .concat(hookPlan?.spi?.hooks || [])
+                    .concat(hookPlan?.neopixel?.hooks || []);
+
+                const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
                 const img = new EspImage(firmwareBytes);
                 const patched = [];
                 for (const [fn, shim] of Object.entries(SHIMS)) {
@@ -308,7 +320,6 @@ function handleApcFrame(kind, body) {
     } else if (kind === 'S') {
         // SPI Transfer
         if (body[0] === 'W') {
-            // Block write: SW<len><nibbles...>
             const len = body.charCodeAt(1) & 0x7f;
             const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
             const bytes = [];
@@ -317,7 +328,6 @@ function handleApcFrame(kind, body) {
             }
             spiBus.write(bytes);
         } else if (body[0] === 'X') {
-            // Full duplex transfer: SX<len><nibbles...>
             const len = body.charCodeAt(1) & 0x7f;
             const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
             const bytes = [];
@@ -332,7 +342,6 @@ function handleApcFrame(kind, body) {
                 emulator.uart_input(new Uint8Array(replies));
             }
         } else {
-            // Single byte transfer: S<nib1><nib0>
             const hi = body.charCodeAt(0) - 97;
             const lo = body.charCodeAt(1) - 97;
             const txByte = ((hi & 15) << 4) | (lo & 15);
@@ -341,6 +350,16 @@ function handleApcFrame(kind, body) {
                 emulator.uart_input(new Uint8Array([reply]));
             }
         }
+    } else if (kind === 'N') {
+        // NeoPixel Frame: N<pin><len><nibbles...>
+        const pin = body.charCodeAt(0);
+        const len = body.charCodeAt(1);
+        const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
+        const bytes = [];
+        for (let j = 0; j + 1 < hex.length; j += 2) {
+            bytes.push((hex[j] << 4) | hex[j + 1]);
+        }
+        neoPixel.update(pin, bytes);
     }
 }
 

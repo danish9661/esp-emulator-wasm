@@ -1,4 +1,4 @@
-// Virtual Peripheral Layer for esp-emu (I2C Bus, SPI Bus, SSD1306 OLED, ST7789 Color TFT, MPU6050)
+// Virtual Peripheral Layer for esp-emu (I2C Bus, SPI Bus, NeoPixel Strip, SSD1306 OLED, ST7789 Color TFT, MPU6050)
 
 export class I2CBus {
     constructor() {
@@ -128,13 +128,55 @@ export class GenericSPIDevice {
 }
 
 /**
+ * Virtual WS2812 / NeoPixel RGB LED Strip
+ */
+export class NeoPixelStrip {
+    constructor(numPixels = 8) {
+        this.numPixels = numPixels;
+        this.pixels = Array.from({ length: numPixels }, () => ({ r: 0, g: 0, b: 0 }));
+        this.onFrameCallback = null;
+    }
+
+    onFrame(cb) {
+        this.onFrameCallback = cb;
+    }
+
+    update(pin, rawBytes, isGrb = true) {
+        for (let i = 0; i < this.numPixels; i++) {
+            const offset = i * 3;
+            if (offset + 2 < rawBytes.length) {
+                if (isGrb) {
+                    this.pixels[i] = {
+                        g: rawBytes[offset],
+                        r: rawBytes[offset + 1],
+                        b: rawBytes[offset + 2],
+                    };
+                } else {
+                    this.pixels[i] = {
+                        r: rawBytes[offset],
+                        g: rawBytes[offset + 1],
+                        b: rawBytes[offset + 2],
+                    };
+                }
+            }
+        }
+        if (this.onFrameCallback) {
+            this.onFrameCallback({
+                pin,
+                pixels: this.pixels.map(p => ({ ...p })),
+            });
+        }
+    }
+}
+
+/**
  * Emulates the ST7789 240x240 16-bit RGB565 Color TFT Display Controller.
  */
 export class ST7789Device {
     constructor(width = 240, height = 240) {
         this.width = width;
         this.height = height;
-        this.rgbaBuffer = new Uint8Array(width * height * 4); // 240x240x4 = 230,400 bytes
+        this.rgbaBuffer = new Uint8Array(width * height * 4);
 
         this.colStart = 0;
         this.colEnd = width - 1;
@@ -205,24 +247,19 @@ export class ST7789Device {
 
         // Parse commands
         if (b === 0x01) {
-            // SWRESET
             this.inRamWrite = false;
             this.highByte = null;
         } else if (b === 0x11) {
-            // SLPOUT
             this.inRamWrite = false;
         } else if (b === 0x29) {
-            // DISPON
             this.displayOn = true;
             this.inRamWrite = false;
             this.dirty = true;
             this.notifyFrame();
         } else if (b === 0x28) {
-            // DISPOFF
             this.displayOn = false;
             this.inRamWrite = false;
         } else if (b === 0x2a) {
-            // CASET (4 bytes: x_start_H, x_start_L, x_end_H, x_end_L)
             this.inRamWrite = false;
             this.paramQueue.push((x0h) => {
                 this.paramQueue.push((x0l) => {
@@ -236,7 +273,6 @@ export class ST7789Device {
                 });
             });
         } else if (b === 0x2b) {
-            // RASET (4 bytes: y_start_H, y_start_L, y_end_H, y_end_L)
             this.inRamWrite = false;
             this.paramQueue.push((y0h) => {
                 this.paramQueue.push((y0l) => {
@@ -250,13 +286,11 @@ export class ST7789Device {
                 });
             });
         } else if (b === 0x2c) {
-            // RAMWR (Memory Write)
             this.inRamWrite = true;
             this.highByte = null;
             this.colPtr = this.colStart;
             this.rowPtr = this.rowStart;
         } else if (b === 0x36 || b === 0x3a) {
-            // 1-parameter configuration commands
             this.inRamWrite = false;
             this.paramQueue.push(() => {});
         }
@@ -265,7 +299,6 @@ export class ST7789Device {
     #writePixelRgb565(c) {
         if (this.rowPtr < this.height && this.colPtr < this.width) {
             const idx = (this.rowPtr * this.width + this.colPtr) * 4;
-            // RGB565 to RGBA conversion
             const r5 = (c >> 11) & 0x1f;
             const g6 = (c >> 5) & 0x3f;
             const b5 = c & 0x1f;
