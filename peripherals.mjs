@@ -1,4 +1,4 @@
-// Virtual Peripheral Layer for esp-emu (I2C Bus, SPI Bus, SSD1306 OLED, ST7789 TFT, MPU6050)
+// Virtual Peripheral Layer for esp-emu (I2C Bus, SPI Bus, SSD1306 OLED, ST7789 Color TFT, MPU6050)
 
 export class I2CBus {
     constructor() {
@@ -56,7 +56,7 @@ export class I2CBus {
 }
 
 /**
- * Virtual SPI Bus (AGENT.md Phase 4).
+ * Virtual SPI Bus with multi-device and display dispatch.
  */
 export class SPIBus {
     constructor() {
@@ -65,8 +65,8 @@ export class SPIBus {
         this.activityListeners = new Set();
     }
 
-    register(csPin, device) {
-        this.devices.set(csPin, device);
+    register(name, device) {
+        this.devices.set(name, device);
         device.bus = this;
     }
 
@@ -86,16 +86,27 @@ export class SPIBus {
     }
 
     transferByte(data) {
-        const dev = this.devices.size > 0 ? this.devices.values().next().value : this.defaultDevice;
-        const reply = dev ? dev.onTransferByte(data) : 0x00;
+        let reply = 0x00;
+        for (const dev of this.devices.values()) {
+            if (typeof dev.onTransferByte === 'function') {
+                reply = dev.onTransferByte(data);
+            }
+        }
+        if (this.devices.size === 0) {
+            reply = this.defaultDevice.onTransferByte(data);
+        }
         this.#emit('byte', [data], [reply]);
         return reply & 0xff;
     }
 
     write(bytes) {
-        const dev = this.devices.size > 0 ? this.devices.values().next().value : this.defaultDevice;
-        if (dev && typeof dev.onWrite === 'function') {
-            dev.onWrite(bytes);
+        for (const dev of this.devices.values()) {
+            if (typeof dev.onWrite === 'function') {
+                dev.onWrite(bytes);
+            }
+        }
+        if (this.devices.size === 0) {
+            this.defaultDevice.onWrite(bytes);
         }
         this.#emit('write', bytes, []);
     }
@@ -108,7 +119,6 @@ export class GenericSPIDevice {
 
     onTransferByte(b) {
         this.rxCount++;
-        // Return complementary or echo response
         return (b ^ 0x55) & 0xff;
     }
 
@@ -118,14 +128,174 @@ export class GenericSPIDevice {
 }
 
 /**
- * Emulates the SSD1306 128x64 / 128x32 Monochrome OLED Display Controller.
+ * Emulates the ST7789 240x240 16-bit RGB565 Color TFT Display Controller.
+ */
+export class ST7789Device {
+    constructor(width = 240, height = 240) {
+        this.width = width;
+        this.height = height;
+        this.rgbaBuffer = new Uint8Array(width * height * 4); // 240x240x4 = 230,400 bytes
+
+        this.colStart = 0;
+        this.colEnd = width - 1;
+        this.rowStart = 0;
+        this.rowEnd = height - 1;
+        this.colPtr = 0;
+        this.rowPtr = 0;
+
+        this.displayOn = false;
+        this.curCommand = 0;
+        this.paramQueue = [];
+        this.inRamWrite = false;
+        this.highByte = null;
+
+        this.onFrameCallback = null;
+        this.dirty = false;
+    }
+
+    onFrame(cb) {
+        this.onFrameCallback = cb;
+    }
+
+    notifyFrame() {
+        if (this.onFrameCallback) {
+            this.onFrameCallback({
+                width: this.width,
+                height: this.height,
+                buffer: this.rgbaBuffer.slice(),
+                displayOn: this.displayOn,
+            });
+        }
+        this.dirty = false;
+    }
+
+    onTransferByte(b) {
+        this.#processByte(b);
+        return 0x00;
+    }
+
+    onWrite(bytes) {
+        if (!bytes || bytes.length === 0) return;
+        for (let i = 0; i < bytes.length; i++) {
+            this.#processByte(bytes[i]);
+        }
+        if (this.dirty) {
+            this.notifyFrame();
+        }
+    }
+
+    #processByte(b) {
+        if (this.paramQueue.length > 0) {
+            const handler = this.paramQueue.shift();
+            handler(b);
+            return;
+        }
+
+        if (this.inRamWrite) {
+            if (this.highByte === null) {
+                this.highByte = b;
+            } else {
+                const rgb565 = (this.highByte << 8) | b;
+                this.highByte = null;
+                this.#writePixelRgb565(rgb565);
+                this.dirty = true;
+            }
+            return;
+        }
+
+        // Parse commands
+        if (b === 0x01) {
+            // SWRESET
+            this.inRamWrite = false;
+            this.highByte = null;
+        } else if (b === 0x11) {
+            // SLPOUT
+            this.inRamWrite = false;
+        } else if (b === 0x29) {
+            // DISPON
+            this.displayOn = true;
+            this.inRamWrite = false;
+            this.dirty = true;
+            this.notifyFrame();
+        } else if (b === 0x28) {
+            // DISPOFF
+            this.displayOn = false;
+            this.inRamWrite = false;
+        } else if (b === 0x2a) {
+            // CASET (4 bytes: x_start_H, x_start_L, x_end_H, x_end_L)
+            this.inRamWrite = false;
+            this.paramQueue.push((x0h) => {
+                this.paramQueue.push((x0l) => {
+                    this.paramQueue.push((x1h) => {
+                        this.paramQueue.push((x1l) => {
+                            this.colStart = Math.min((x0h << 8) | x0l, this.width - 1);
+                            this.colEnd = Math.min((x1h << 8) | x1l, this.width - 1);
+                            this.colPtr = this.colStart;
+                        });
+                    });
+                });
+            });
+        } else if (b === 0x2b) {
+            // RASET (4 bytes: y_start_H, y_start_L, y_end_H, y_end_L)
+            this.inRamWrite = false;
+            this.paramQueue.push((y0h) => {
+                this.paramQueue.push((y0l) => {
+                    this.paramQueue.push((y1h) => {
+                        this.paramQueue.push((y1l) => {
+                            this.rowStart = Math.min((y0h << 8) | y0l, this.height - 1);
+                            this.rowEnd = Math.min((y1h << 8) | y1l, this.height - 1);
+                            this.rowPtr = this.rowStart;
+                        });
+                    });
+                });
+            });
+        } else if (b === 0x2c) {
+            // RAMWR (Memory Write)
+            this.inRamWrite = true;
+            this.highByte = null;
+            this.colPtr = this.colStart;
+            this.rowPtr = this.rowStart;
+        } else if (b === 0x36 || b === 0x3a) {
+            // 1-parameter configuration commands
+            this.inRamWrite = false;
+            this.paramQueue.push(() => {});
+        }
+    }
+
+    #writePixelRgb565(c) {
+        if (this.rowPtr < this.height && this.colPtr < this.width) {
+            const idx = (this.rowPtr * this.width + this.colPtr) * 4;
+            // RGB565 to RGBA conversion
+            const r5 = (c >> 11) & 0x1f;
+            const g6 = (c >> 5) & 0x3f;
+            const b5 = c & 0x1f;
+
+            this.rgbaBuffer[idx] = Math.round((r5 * 255) / 31);
+            this.rgbaBuffer[idx + 1] = Math.round((g6 * 255) / 63);
+            this.rgbaBuffer[idx + 2] = Math.round((b5 * 255) / 31);
+            this.rgbaBuffer[idx + 3] = 255;
+        }
+
+        this.colPtr++;
+        if (this.colPtr > this.colEnd) {
+            this.colPtr = this.colStart;
+            this.rowPtr++;
+            if (this.rowPtr > this.rowEnd) {
+                this.rowPtr = this.rowStart;
+            }
+        }
+    }
+}
+
+/**
+ * Emulates the SSD1306 128x64 Monochrome OLED Display Controller.
  */
 export class SSD1306Device {
     constructor(width = 128, height = 64) {
         this.width = width;
         this.height = height;
         this.pages = Math.ceil(height / 8);
-        this.buffer = new Uint8Array(this.width * this.pages); // 1024 bytes for 128x64
+        this.buffer = new Uint8Array(this.width * this.pages);
 
         this.colStart = 0;
         this.colEnd = width - 1;
@@ -283,11 +453,11 @@ export class MPU6050Device {
     constructor() {
         this.regPointer = 0;
         this.regs = new Uint8Array(128);
-        this.regs[0x75] = 0x68; // WHO_AM_I default
+        this.regs[0x75] = 0x68;
 
-        this.regs[0x3f] = 0x40; // Accel Z
+        this.regs[0x3f] = 0x40;
         this.regs[0x40] = 0x00;
-        this.regs[0x41] = 0x09; // Temp
+        this.regs[0x41] = 0x09;
         this.regs[0x42] = 0x80;
 
         this.defaultRawBytes = [0xde, 0xad, 0xbe, 0xca, 0xfe, 0x01];

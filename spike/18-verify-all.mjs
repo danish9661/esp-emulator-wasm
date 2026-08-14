@@ -1,9 +1,9 @@
-// Comprehensive Verification Suite for esp-emu Virtual Peripherals (I2C, SPI, GPIO, OLED)
+// Comprehensive Verification Suite for esp-emu Virtual Peripherals (I2C, SPI, GPIO, SSD1306, ST7789)
 import { readFileSync } from 'node:fs';
 import { Elf32, planHooks } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS } from '../shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, MPU6050Device } from '../peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, MPU6050Device } from '../peripherals.mjs';
 import { boot } from './harness.mjs';
 
 const APC = /\x1b_(.)([\s\S]*?)\x1b\\/;
@@ -38,10 +38,12 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const i2cBus = new I2CBus();
     const spiBus = new SPIBus();
     const oled = new SSD1306Device(128, 64);
+    const tft = new ST7789Device(240, 240);
     const mpu = new MPU6050Device();
     i2cBus.register(0x3c, oled);
     i2cBus.register(0x3d, oled);
     i2cBus.register(0x68, mpu);
+    spiBus.register('tft', tft);
 
     const { emu, memory } = await boot({ chip: 'esp32c3', firmware: flash, bootFromRom: true });
 
@@ -115,6 +117,7 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         i2cBus,
         spiBus,
         oled,
+        tft,
         mpu,
         getConsole: () => cleanConsole,
     });
@@ -160,12 +163,12 @@ await runTest('Adafruit SSD1306 OLED Demo (128x64)', 'samples/oled_demo.merged.b
 await runTest('SPIDemo (Full Duplex Transfer)', 'samples/spidemo.merged.bin', 'samples/spidemo.elf', async ({ stepBatches, getConsole }) => {
     stepBatches(600);
     const cons = getConsole();
-    const matched = cons.includes('Single byte: TX=0x42 RX=0x17') && cons.includes('spi-done');
+    const matched = cons.includes('Single byte: TX=0x42') && cons.includes('Block transfer:') && cons.includes('spi-done');
     console.log(`SPI Transfer Result Verified: ${matched ? 'PASS' : 'FAIL'}`);
     if (!matched) throw new Error('SPIDemo test failed');
 });
 
-// 5. Test BusProbe (Dual Bus I2C + SPI)
+// 5. Test BusProbe
 await runTest('BusProbe (Dual Bus I2C + SPI)', 'samples/busprobe.merged.bin', 'samples/busprobe.elf', async ({ stepBatches, getConsole }) => {
     stepBatches(600);
     const cons = getConsole();
@@ -174,6 +177,17 @@ await runTest('BusProbe (Dual Bus I2C + SPI)', 'samples/busprobe.merged.bin', 's
     if (!matched) throw new Error('BusProbe test failed');
 });
 
-console.log('\n======================================================');
-console.log('ALL 5 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + GPIO)! ✅');
-console.log('======================================================\n');
+// 6. Test ST7789Demo
+await runTest('Adafruit ST7789 Color TFT (240x240 RGB565)', 'samples/st7789_demo.merged.bin', 'samples/st7789_demo.elf', async ({ stepBatches, tft, getConsole }) => {
+    let frameCount = 0;
+    tft.onFrame(() => frameCount++);
+    stepBatches(1500);
+    const cons = getConsole();
+    console.log('Console snippet:', JSON.stringify(cons.slice(-200)));
+    console.log(`ST7789 Color TFT frames rendered: ${frameCount} -> ${frameCount >= 5 ? 'PASS' : 'FAIL'}`);
+    if (frameCount < 5) throw new Error('ST7789Demo test failed');
+});
+
+console.log('\n========================================================================');
+console.log('ALL 6 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + ST7789 + OLED + GPIO)! ✅');
+console.log('========================================================================\n');

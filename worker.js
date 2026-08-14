@@ -1,10 +1,10 @@
-// Web Worker running the emulation loop, binary patcher, and virtual peripherals (I2C + SPI + GPIO)
+// Web Worker running the emulation loop, binary patcher, and virtual peripherals (I2C + SPI + GPIO + OLED + TFT)
 // Communicates with main thread via postMessage
 
 import { Elf32, planHooks } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
 import { SHIMS } from './shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, MPU6050Device } from './peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, MPU6050Device } from './peripherals.mjs';
 
 let wasmExports = null;
 let wasm = null;
@@ -14,15 +14,17 @@ let batchSize = 50000;
 let pendingLoad = null;
 let ws = null;
 
-// Virtual I2C bus and devices
+// Virtual I2C & SPI buses and devices
 const i2cBus = new I2CBus();
 const spiBus = new SPIBus();
 const oledDevice = new SSD1306Device(128, 64);
+const tftDevice = new ST7789Device(240, 240);
 const mpuDevice = new MPU6050Device();
 
 i2cBus.register(0x3c, oledDevice);
 i2cBus.register(0x3d, oledDevice);
 i2cBus.register(0x68, mpuDevice);
+spiBus.register('tft', tftDevice);
 
 oledDevice.onFrame((frame) => {
     postMessage({
@@ -31,6 +33,16 @@ oledDevice.onFrame((frame) => {
         height: frame.height,
         buffer: frame.buffer,
         inverted: frame.inverted,
+        displayOn: frame.displayOn,
+    });
+});
+
+tftDevice.onFrame((frame) => {
+    postMessage({
+        type: 'tft_frame',
+        width: frame.width,
+        height: frame.height,
+        buffer: frame.buffer,
         displayOn: frame.displayOn,
     });
 });
@@ -55,16 +67,26 @@ spiBus.onActivity((act) => {
     });
 });
 
-// Memory offsets for GPIO registers on esp32c3
-const GPIO_OUT_OFFSET = 0x827850;
-const GPIO_ENABLE_OFFSET = 0x827858;
-const GPIO_IN_OFFSET = 0x827860;
+// Dynamic GPIO calibration probe (80 bytes RV32 writing 0xCAFE1234 to OUT and 0xBEEF5678 to ENABLE)
+const GPIO_CALIBRATION_PROBE = new Uint8Array([
+    233, 1, 2, 32, 0, 0, 56, 64, 238, 0, 0, 0,
+    5, 0, 0, 0, 0, 255, 255, 0, 0, 0, 0, 0,
+    0, 0, 56, 64, 44, 0, 0, 0, 183, 66, 0, 96,
+    147, 130, 2, 2, 55, 83, 239, 190, 19, 3, 131, 103,
+    35, 160, 98, 0, 183, 66, 0, 96, 147, 130, 66, 0,
+    55, 19, 254, 202, 19, 3, 67, 35, 35, 160, 98, 0,
+    111, 0, 0, 0, 0, 0, 0, 99
+]);
+
+let gpioOutOffset = 0x827850;
+let gpioEnableOffset = 0x827858;
+let gpioInOffset = 0x827860;
 
 let lastGpioOut = -1n;
 let lastGpioEn = -1n;
 let streamBuffer = '';
 
-// Global error handler
+// Global error handlers
 self.onerror = function(msg, src, line, col, err) {
     postMessage({ type: 'error', message: `Worker error: ${msg}` });
 };
@@ -72,12 +94,40 @@ self.onunhandledrejection = function(e) {
     postMessage({ type: 'error', message: `Worker promise rejected: ${e.reason}` });
 };
 
+function calibrateGpio(chip) {
+    try {
+        const calEmu = new wasm.WasmEmulator(chip || 'esp32c3');
+        calEmu.set_boot_from_rom(false);
+        calEmu.load_firmware(GPIO_CALIBRATION_PROBE);
+        calEmu.run_batch(200);
+
+        const u32 = new Uint32Array(wasmExports.memory.buffer);
+        for (let i = 0; i < u32.length; i++) {
+            if (u32[i] === 0xCAFE1234) gpioOutOffset = i * 4;
+            if (u32[i] === 0xBEEF5678) gpioEnableOffset = i * 4;
+        }
+        gpioInOffset = gpioEnableOffset + 8;
+        postMessage({
+            type: 'calibrated',
+            out: gpioOutOffset,
+            enable: gpioEnableOffset,
+            in: gpioInOffset,
+        });
+    } catch (e) {
+        console.warn('Dynamic GPIO calibration error, using defaults:', e);
+    }
+}
+
 // Import and initialize WASM module
 async function initWasm(wasmUrl) {
     try {
         const { default: init, WasmEmulator } = await import(wasmUrl);
         wasmExports = await init();
         wasm = { WasmEmulator, memory: wasmExports.memory };
+
+        // Run dynamic GPIO calibration at boot
+        calibrateGpio('esp32c3');
+
         postMessage({ type: 'ready' });
 
         if (pendingLoad) {
@@ -298,8 +348,8 @@ function pollGpio() {
     if (!wasmExports?.memory) return;
     try {
         const view = new DataView(wasmExports.memory.buffer);
-        const outVal = view.getBigUint64(GPIO_OUT_OFFSET, true);
-        const enVal = view.getBigUint64(GPIO_ENABLE_OFFSET, true);
+        const outVal = view.getBigUint64(gpioOutOffset, true);
+        const enVal = view.getBigUint64(gpioEnableOffset, true);
 
         if (outVal !== lastGpioOut || enVal !== lastGpioEn) {
             lastGpioOut = outVal;
@@ -399,14 +449,14 @@ onmessage = async function(e) {
             if (wasmExports?.memory && typeof msg.pin === 'number') {
                 try {
                     const view = new DataView(wasmExports.memory.buffer);
-                    let curr = view.getBigUint64(GPIO_IN_OFFSET, true);
+                    let curr = view.getBigUint64(gpioInOffset, true);
                     const mask = 1n << BigInt(msg.pin);
                     if (msg.level) {
                         curr |= mask;
                     } else {
                         curr &= ~mask;
                     }
-                    view.setBigUint64(GPIO_IN_OFFSET, curr, true);
+                    view.setBigUint64(gpioInOffset, curr, true);
                 } catch (err) {
                     console.error('GPIO set failed:', err);
                 }

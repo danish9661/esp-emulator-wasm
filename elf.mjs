@@ -143,7 +143,9 @@ export const HOOK_TARGETS = {
     'arduino-i2c': ['i2cWrite', 'i2cRead', 'i2cWriteReadNonStop', 'i2cInit', 'i2cSetClock'],
     'arduino-spi': [
         'spiTransferByte', 'spiTransferByteNL', 'spiTransferBytes', 'spiTransferBytesNL',
-        'spiWriteNL', 'spiTransferBits', 'spiTransaction', 'spiStartBus',
+        'spiWriteNL', 'spiWritePixelsNL', 'spiWriteByteNL', 'spiWriteShortNL', 'spiWriteLongNL',
+        'spiTransferBits', 'spiTransaction', 'spiStartBus', 'spiStopBus',
+        'spiSetClockDivider', 'spiSetBitOrder', 'spiSetDataMode',
     ],
     'idf-i2c-v5': [
         'i2c_master_transmit', 'i2c_master_receive', 'i2c_master_transmit_receive',

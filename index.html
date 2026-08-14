@@ -564,7 +564,8 @@
                 <div class="field">
                     <label>Select Preset Firmware</label>
                     <select id="preset-select">
-                        <option value="oled_demo" selected>SSD1306 OLED Graphics (128x64)</option>
+                        <option value="st7789_demo" selected>ST7789 Color TFT Graphics (240x240)</option>
+                        <option value="oled_demo">SSD1306 OLED Graphics (128x64)</option>
                         <option value="blink">Blink LED (GPIO2 Output)</option>
                         <option value="i2cread">I2C Sensor Read (0x68 IMU)</option>
                         <option value="spidemo">SPI Master Transfer (Full Duplex)</option>
@@ -622,24 +623,37 @@
             </div>
         </div>
 
-        <!-- Center Panel: Virtual OLED + UART0 Console -->
+        <!-- Center Panel: Virtual Displays + UART0 Console -->
         <div class="center-panel">
-            <!-- OLED Display Viewport -->
-            <div class="oled-viewport">
-                <div class="oled-bezel">
+            <!-- Hardware Display Viewport -->
+            <div class="oled-viewport" style="display: flex; gap: 16px; overflow-x: auto;">
+                <!-- ST7789 Color TFT Display -->
+                <div class="oled-bezel" id="tft-bezel">
                     <div class="oled-header">
-                        <span>SSD1306 OLED</span>
+                        <span style="color: #ec4899; font-weight: 600;">ST7789 Color TFT (SPI)</span>
+                        <span id="tft-fps">0 FPS</span>
+                    </div>
+                    <div class="oled-canvas-wrap" style="background: #000; border-color: #374151;">
+                        <canvas id="tft-canvas" width="240" height="240" style="display: block; width: 192px; height: 192px; image-rendering: pixelated;"></canvas>
+                    </div>
+                </div>
+
+                <!-- SSD1306 Mono OLED Display -->
+                <div class="oled-bezel" id="oled-bezel">
+                    <div class="oled-header">
+                        <span style="color: var(--accent-cyan); font-weight: 600;">SSD1306 OLED (I2C)</span>
                         <span id="oled-fps">0 FPS</span>
                     </div>
                     <div class="oled-canvas-wrap">
-                        <canvas id="oled-canvas" width="128" height="64"></canvas>
+                        <canvas id="oled-canvas" width="128" height="64" style="display: block; width: 256px; height: 128px; image-rendering: pixelated;"></canvas>
                     </div>
                 </div>
-                <div class="oled-meta">
-                    <div class="oled-badge">I2C: 0x3C / 0x3D</div>
-                    <div class="oled-badge">Resolution: 128 × 64 Mono</div>
-                    <div style="font-size: 11px; color: var(--text-muted);" id="oled-status">
-                        Awaiting display initialization from firmware...
+
+                <div class="oled-meta" style="min-width: 180px;">
+                    <div class="oled-badge">Color TFT: 240×240 RGB565</div>
+                    <div class="oled-badge">Mono OLED: 128×64 (0x3C)</div>
+                    <div style="font-size: 11px; color: var(--text-muted);" id="display-status">
+                        Awaiting display init...
                     </div>
                 </div>
             </div>

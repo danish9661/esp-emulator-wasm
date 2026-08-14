@@ -1,4 +1,4 @@
-// ESP-EMU Browser Application with Virtual Peripherals, OLED Display, and Real Arduino Support
+// ESP-EMU Browser Application with Virtual Peripherals, OLED, ST7789 Color TFT, and Real Arduino Support
 
 (function() {
     'use strict';
@@ -17,15 +17,23 @@
     let customElfName = null;
 
     let netConnected = false;
-    const gpioInputStates = new Uint8Array(22); // Default all LOW for inputs
+    const gpioInputStates = new Uint8Array(22);
 
-    // OLED rendering
+    // OLED rendering (128x64)
     let oledCanvas = null;
     let oledCtx = null;
     let oledImageData = null;
     let oledFramesRendered = 0;
-    let lastFpsUpdate = performance.now();
-    let currentFps = 0;
+    let lastOledFpsUpdate = performance.now();
+    let oledFps = 0;
+
+    // TFT rendering (240x240 Color)
+    let tftCanvas = null;
+    let tftCtx = null;
+    let tftImageData = null;
+    let tftFramesRendered = 0;
+    let lastTftFpsUpdate = performance.now();
+    let tftFps = 0;
 
     // Register names for RISC-V RV32
     const REG_NAMES = [
@@ -79,31 +87,48 @@
             if (fitAddon) fitAddon.fit();
         });
 
-        terminal.writeln('\x1b[1;36m╔══════════════════════════════════════════════════════════════╗');
-        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.39.0                            ║');
-        terminal.writeln('║   Wokwi-style Virtual Peripherals: SSD1306 OLED, I2C, GPIO   ║');
-        terminal.writeln('║   Click "Load Demo Firmware" or upload .bin + .elf to start  ║');
-        terminal.writeln('╚══════════════════════════════════════════════════════════════╝\x1b[0m\r\n');
+        terminal.writeln('\x1b[1;36m╔══════════════════════════════════════════════════════════════════════════╗');
+        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.39.0                                        ║');
+        terminal.writeln('║   Virtual Peripherals: ST7789 Color TFT, SSD1306 OLED, SPI & I2C Bridge  ║');
+        terminal.writeln('║   Dynamic GPIO Auto-Calibration • Load Demo Firmware to start            ║');
+        terminal.writeln('╚══════════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n');
     }
 
-    // --- Initialize Virtual SSD1306 OLED Display ---
-    function initOled() {
+    // --- Initialize Displays ---
+    function initDisplays() {
+        // OLED (128x64)
         oledCanvas = document.getElementById('oled-canvas');
-        oledCtx = oledCanvas.getContext('2d', { alpha: false });
-        oledImageData = oledCtx.createImageData(128, 64);
-        clearOledDisplay();
+        if (oledCanvas) {
+            oledCtx = oledCanvas.getContext('2d', { alpha: false });
+            oledImageData = oledCtx.createImageData(128, 64);
+            clearOledDisplay();
+        }
+
+        // Color TFT (240x240)
+        tftCanvas = document.getElementById('tft-canvas');
+        if (tftCanvas) {
+            tftCtx = tftCanvas.getContext('2d', { alpha: false });
+            tftImageData = tftCtx.createImageData(240, 240);
+            clearTftDisplay();
+        }
     }
 
     function clearOledDisplay() {
         if (!oledImageData || !oledCtx) return;
         const data = oledImageData.data;
         for (let i = 0; i < data.length; i += 4) {
-            data[i] = 3;     // R
-            data[i + 1] = 8; // G
-            data[i + 2] = 13;// B
-            data[i + 3] = 255;
+            data[i] = 3; data[i + 1] = 8; data[i + 2] = 13; data[i + 3] = 255;
         }
         oledCtx.putImageData(oledImageData, 0, 0);
+    }
+
+    function clearTftDisplay() {
+        if (!tftImageData || !tftCtx) return;
+        const data = tftImageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            data[i] = 10; data[i + 1] = 10; data[i + 2] = 15; data[i + 3] = 255;
+        }
+        tftCtx.putImageData(tftImageData, 0, 0);
     }
 
     function renderOledFrame(msg) {
@@ -114,26 +139,21 @@
         const pages = Math.ceil(height / 8);
         const data = oledImageData.data;
 
-        // SSD1306 page memory format: 8 pages, each page has 128 vertical byte slices
         for (let page = 0; page < pages; page++) {
             for (let col = 0; col < width; col++) {
                 const byte = buf[page * width + col] || 0;
                 for (let bit = 0; bit < 8; bit++) {
                     const y = page * 8 + bit;
                     if (y >= height) continue;
-                    const pixelIndex = (y * width + col) * 4;
+                    const idx = (y * width + col) * 4;
                     const isOn = (byte & (1 << bit)) !== 0;
 
                     if (isOn) {
-                        data[pixelIndex] = 0;     // Cyan R
-                        data[pixelIndex + 1] = 255; // Cyan G
-                        data[pixelIndex + 2] = 255; // Cyan B
+                        data[idx] = 0; data[idx + 1] = 255; data[idx + 2] = 255;
                     } else {
-                        data[pixelIndex] = 3;     // BG R
-                        data[pixelIndex + 1] = 8; // BG G
-                        data[pixelIndex + 2] = 13;// BG B
+                        data[idx] = 3; data[idx + 1] = 8; data[idx + 2] = 13;
                     }
-                    data[pixelIndex + 3] = 255;
+                    data[idx + 3] = 255;
                 }
             }
         }
@@ -142,17 +162,39 @@
         oledFramesRendered++;
 
         const now = performance.now();
-        if (now - lastFpsUpdate >= 1000) {
-            currentFps = Math.round((oledFramesRendered * 1000) / (now - lastFpsUpdate));
-            document.getElementById('oled-fps').textContent = `${currentFps} FPS`;
+        if (now - lastOledFpsUpdate >= 1000) {
+            oledFps = Math.round((oledFramesRendered * 1000) / (now - lastOledFpsUpdate));
+            const el = document.getElementById('oled-fps');
+            if (el) el.textContent = `${oledFps} FPS`;
             oledFramesRendered = 0;
-            lastFpsUpdate = now;
+            lastOledFpsUpdate = now;
+        }
+    }
+
+    function renderTftFrame(msg) {
+        if (!tftCtx || !tftImageData) return;
+        const width = msg.width || 240;
+        const height = msg.height || 240;
+        const buf = msg.buffer;
+
+        // Copy RGBA buffer directly to canvas ImageData
+        tftImageData.data.set(buf);
+        tftCtx.putImageData(tftImageData, 0, 0);
+        tftFramesRendered++;
+
+        const now = performance.now();
+        if (now - lastTftFpsUpdate >= 1000) {
+            tftFps = Math.round((tftFramesRendered * 1000) / (now - lastTftFpsUpdate));
+            const el = document.getElementById('tft-fps');
+            if (el) el.textContent = `${tftFps} FPS`;
+            tftFramesRendered = 0;
+            lastTftFpsUpdate = now;
         }
 
-        const oledStatus = document.getElementById('oled-status');
-        if (oledStatus) {
-            oledStatus.textContent = msg.displayOn ? 'Display ACTIVE (Streaming frames)' : 'Display Standby';
-            oledStatus.style.color = msg.displayOn ? '#10b981' : '#9ca3af';
+        const statusEl = document.getElementById('display-status');
+        if (statusEl) {
+            statusEl.textContent = 'ST7789 Color TFT ACTIVE';
+            statusEl.style.color = '#10b981';
         }
     }
 
@@ -216,16 +258,13 @@
         }
     }
 
-    // --- I2C Activity Log ---
+    // --- I2C & SPI Activity Log ---
     function logI2cActivity(act) {
         const box = document.getElementById('i2c-log');
         if (!box) return;
-
-        // If first entry, clear placeholder
         if (box.children.length === 1 && box.children[0].textContent.includes('No transactions')) {
             box.innerHTML = '';
         }
-
         const row = document.createElement('div');
         row.className = 'i2c-entry';
         const hexAddr = '0x' + act.addr.toString(16).toUpperCase().padStart(2, '0');
@@ -234,16 +273,32 @@
         const opName = act.op.toUpperCase();
 
         row.innerHTML = `
-            <span class="${opClass}">[${opName}]</span>
+            <span class="${opClass}">[I2C:${opName}]</span>
             <span class="addr">${hexAddr}</span>
             <span class="bytes">${hexBytes.slice(0, 30)}${hexBytes.length > 30 ? '...' : ''}</span>
         `;
         box.appendChild(row);
+        while (box.children.length > 80) box.removeChild(box.firstChild);
+        box.scrollTop = box.scrollHeight;
+    }
 
-        // Keep maximum 80 rows
-        while (box.children.length > 80) {
-            box.removeChild(box.firstChild);
+    function logSpiActivity(act) {
+        const box = document.getElementById('i2c-log');
+        if (!box) return;
+        if (box.children.length === 1 && box.children[0].textContent.includes('No transactions')) {
+            box.innerHTML = '';
         }
+        const row = document.createElement('div');
+        row.className = 'i2c-entry';
+        const hexData = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        const hexReply = (act.reply || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        row.innerHTML = `
+            <span style="color: #8b5cf6; font-weight: 600;">[SPI]</span>
+            <span style="color: var(--accent-amber);">TX:${hexData.slice(0, 20)}</span>
+            <span style="color: var(--accent-green);">RX:${hexReply.slice(0, 20)}</span>
+        `;
+        box.appendChild(row);
+        while (box.children.length > 80) box.removeChild(box.firstChild);
         box.scrollTop = box.scrollHeight;
     }
 
@@ -297,8 +352,12 @@
                     document.getElementById('status-text').textContent = 'WASM Ready';
                     document.getElementById('load-preset-btn').disabled = false;
                     terminal.writeln('\x1b[32m[System] WASM Emulator Core initialized.\x1b[0m');
-                    // Automatically load the default OLED demo preset on launch!
-                    loadPresetFirmware('oled_demo');
+                    // Automatically load ST7789 Color Demo on launch!
+                    loadPresetFirmware('st7789_demo');
+                    break;
+
+                case 'calibrated':
+                    terminal.writeln(`\x1b[35m[Auto-Calibrate] Dynamic GPIO offsets: OUT=0x${msg.out.toString(16)}, EN=0x${msg.enable.toString(16)}, IN=0x${msg.in.toString(16)}\x1b[0m`);
                     break;
 
                 case 'loaded':
@@ -331,6 +390,10 @@
 
                 case 'oled_frame':
                     renderOledFrame(msg);
+                    break;
+
+                case 'tft_frame':
+                    renderTftFrame(msg);
                     break;
 
                 case 'gpio_update':
@@ -367,6 +430,7 @@
                     terminal.clear();
                     isRunning = false;
                     clearOledDisplay();
+                    clearTftDisplay();
                     if (msg.reloaded) {
                         terminal.writeln('\x1b[33m[System] Emulator reset completed\x1b[0m');
                         firmwareLoaded = true;
@@ -404,26 +468,6 @@
         worker.postMessage({ type: 'init', wasmUrl: './pkg/esp_emu.js' });
     }
 
-    function logSpiActivity(act) {
-        const box = document.getElementById('i2c-log');
-        if (!box) return;
-        if (box.children.length === 1 && box.children[0].textContent.includes('No transactions')) {
-            box.innerHTML = '';
-        }
-        const row = document.createElement('div');
-        row.className = 'i2c-entry';
-        const hexData = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
-        const hexReply = (act.reply || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
-        row.innerHTML = `
-            <span style="color: #8b5cf6; font-weight: 600;">[SPI]</span>
-            <span style="color: var(--accent-amber);">TX:${hexData}</span>
-            <span style="color: var(--accent-green);">RX:${hexReply}</span>
-        `;
-        box.appendChild(row);
-        while (box.children.length > 80) box.removeChild(box.firstChild);
-        box.scrollTop = box.scrollHeight;
-    }
-
     // --- Load Preset Firmware Demo ---
     async function loadPresetFirmware(key) {
         if (!worker || !wasmReady) return;
@@ -432,14 +476,15 @@
         btn.textContent = '⏳ Loading Demo...';
 
         const filenames = {
-            oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo' },
+            st7789_demo: { bin: 'samples/st7789_demo.merged.bin', elf: 'samples/st7789_demo.elf', title: 'Adafruit ST7789 Color TFT Demo (240x240)' },
+            oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo (128x64)' },
             blink: { bin: 'samples/blink.merged.bin', elf: 'samples/blink.elf', title: 'Blink GPIO2 Demo' },
             i2cread: { bin: 'samples/i2cread.merged.bin', elf: 'samples/i2cread.elf', title: 'I2C Sensor Read (0x68)' },
             spidemo: { bin: 'samples/spidemo.merged.bin', elf: 'samples/spidemo.elf', title: 'SPI Master Transfer' },
             busprobe: { bin: 'samples/busprobe.merged.bin', elf: 'samples/busprobe.elf', title: 'Dual Bus Probe (I2C + SPI)' },
         };
 
-        const target = filenames[key] || filenames.oled_demo;
+        const target = filenames[key] || filenames.st7789_demo;
         terminal.writeln(`\x1b[35m[Preset] Fetching ${target.title}...\x1b[0m`);
 
         try {
@@ -468,7 +513,6 @@
                 skipRom: !bootRom,
             });
 
-            // Automatically start running the demo!
             setTimeout(() => {
                 if (firmwareLoaded && !isRunning) {
                     startExecution();
@@ -510,13 +554,11 @@
 
     // --- Setup UI Event Listeners ---
     function setupControls() {
-        // Preset selector button
         document.getElementById('load-preset-btn').addEventListener('click', () => {
             const key = document.getElementById('preset-select').value;
             loadPresetFirmware(key);
         });
 
-        // Firmware Bin upload
         document.getElementById('firmware-file').addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -527,7 +569,6 @@
             triggerCustomLoadIfReady();
         });
 
-        // App ELF upload
         document.getElementById('elf-file').addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -553,7 +594,6 @@
             });
         }
 
-        // Control buttons
         document.getElementById('run-btn').addEventListener('click', startExecution);
         document.getElementById('pause-btn').addEventListener('click', pauseExecution);
         document.getElementById('step-btn').addEventListener('click', () => {
@@ -566,7 +606,6 @@
             }
         });
 
-        // Clear terminal & I2C log
         document.getElementById('clear-term-btn').addEventListener('click', () => {
             if (terminal) terminal.clear();
         });
@@ -574,7 +613,6 @@
             document.getElementById('i2c-log').innerHTML = '<div style="color: var(--text-dim);">Log cleared.</div>';
         });
 
-        // Memory inspector
         document.getElementById('mem-read-btn').addEventListener('click', () => {
             const addrStr = document.getElementById('mem-addr').value.trim();
             const addr = parseInt(addrStr, 16);
@@ -591,7 +629,7 @@
     // --- Init ---
     document.addEventListener('DOMContentLoaded', () => {
         initTerminal();
-        initOled();
+        initDisplays();
         initGpioPanel();
         initRegTable();
         setupControls();
