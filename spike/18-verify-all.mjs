@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS } from '../shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard } from '../peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM } from '../peripherals.mjs';
 import { boot } from './harness.mjs';
 
 const APC = /\x1b_(.)([\s\S]*?)\x1b\\/;
@@ -19,7 +19,9 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const allHooks = []
         .concat(hookPlan?.i2c?.hooks || [])
         .concat(hookPlan?.spi?.hooks || [])
-        .concat(hookPlan?.neopixel?.hooks || []);
+        .concat(hookPlan?.neopixel?.hooks || [])
+        .concat(hookPlan?.adc?.hooks || [])
+        .concat(hookPlan?.pwm?.hooks || []);
 
     const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
     const effectiveShims = prepareSpiShims(elf, SHIMS);
@@ -46,6 +48,8 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const neoPixel = new NeoPixelStrip(8);
     const mpu = new MPU6050Device();
     const sd = new VirtualSDCard();
+    const adc = new VirtualADC();
+    const pwm = new VirtualPWM();
     i2cBus.register(0x3c, oled);
     i2cBus.register(0x3d, oled);
     i2cBus.register(0x68, mpu);
@@ -105,6 +109,20 @@ async function runTest(testName, binPath, elfPath, customVerify) {
                     const bytes = [];
                     for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                     neoPixel.update(pin, bytes);
+                } else if (kind === 'A') {
+                    const pin = body.charCodeAt(0) & 0x7F;
+                    const val = adc.readRaw(pin);
+                    emu.uart_input(new Uint8Array([(val >> 8) & 0xFF, val & 0xFF]));
+                } else if (kind === 'V') {
+                    const pin = body.charCodeAt(0) & 0x7F;
+                    const val = adc.readMilliVolts(pin);
+                    emu.uart_input(new Uint8Array([(val >> 8) & 0xFF, val & 0xFF]));
+                } else if (kind === 'P') {
+                    const pin = body.charCodeAt(0) & 0x7F;
+                    const dutyHi = body.charCodeAt(1) & 0x7F;
+                    const dutyLo = body.charCodeAt(2) & 0x7F;
+                    const duty = (dutyHi << 7) | dutyLo;
+                    pwm.update(pin, duty);
                 }
                 streamBuffer = streamBuffer.slice(m.index + frame.length);
             } else {
@@ -137,6 +155,8 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         neoPixel,
         mpu,
         sd,
+        adc,
+        pwm,
         getConsole: () => cleanConsole,
     });
 }
@@ -216,7 +236,7 @@ await runTest('Adafruit NeoPixel 8-LED Strip (WS2812 RMT)', 'samples/neopixel_de
 });
 
 // 8. Test SDCardDemo (Virtual SD Card FAT16 Filesystem)
-await runTest('SDCardDemo (SPI Virtual SD Card FAT16)', 'spike/build/SDCardDemo/SDCardDemo.ino.merged.bin', 'spike/build/SDCardDemo/SDCardDemo.ino.elf', async ({ stepBatches, getConsole }) => {
+await runTest('SDCardDemo (SPI Virtual SD Card FAT16)', 'samples/sdcard_demo.merged.bin', 'samples/sdcard_demo.elf', async ({ stepBatches, getConsole }) => {
     stepBatches(3500);
     const cons = getConsole();
     const matched = cons.includes('SD Card Initialized Successfully!') && cons.includes('Hello from Virtual SD Card!') && cons.includes('sd-done');
@@ -227,7 +247,28 @@ await runTest('SDCardDemo (SPI Virtual SD Card FAT16)', 'spike/build/SDCardDemo/
     }
 });
 
+// 9. Test ADCPWMDemo (ADC Analog Input & PWM Duty Cycle)
+await runTest('ADCPWMDemo (ADC analogRead & PWM analogWrite)', 'samples/adcpwm_demo.merged.bin', 'samples/adcpwm_demo.elf', async ({ stepBatches, adc, pwm, getConsole }) => {
+    adc.setVoltage(0, 1.65); // 1.65V -> ~2048 raw, 1650 mV
+    let pwmCount = 0;
+    pwm.onActivity((act) => {
+        if (act.type === 'pwm_update') pwmCount++;
+    });
+    stepBatches(1000);
+    const cons = getConsole();
+    const matched = cons.includes('Initial ADC Read: raw=2048, mv=1650 mV') &&
+                    cons.includes('Duty=255 | ADC raw=2048 | 1650 mV') &&
+                    cons.includes('adc-pwm-done') &&
+                    pwmCount >= 5;
+    console.log(`ADC Read (2048/1650mV) & PWM Updates (${pwmCount}): ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('ADCPWMDemo test failed');
+    }
+});
+
 console.log('\n================================================================================');
-console.log('ALL 8 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + GPIO)! ✅');
+console.log('ALL 9 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + ADC + PWM + GPIO)! ✅');
 console.log('================================================================================\n');
+
 

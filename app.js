@@ -490,6 +490,24 @@
                     break;
                 }
 
+                case 'adc_activity': {
+                    const badge = document.getElementById('adc-val-badge');
+                    if (badge) {
+                        const v = msg.voltage !== undefined ? msg.voltage.toFixed(2) : (msg.raw / 4095 * 3.3).toFixed(2);
+                        const raw = msg.raw !== undefined ? msg.raw : Math.round(msg.voltage / 3.3 * 4095);
+                        badge.textContent = `${v}V (${raw})`;
+                    }
+                    break;
+                }
+
+                case 'pwm_activity': {
+                    const badge = document.getElementById('pwm-val-badge');
+                    const bar = document.getElementById('pwm-fill-bar');
+                    if (badge) badge.textContent = `${msg.percent}% (duty:${msg.duty})`;
+                    if (bar) bar.style.width = `${msg.percent}%`;
+                    break;
+                }
+
                 case 'status':
                     document.getElementById('mips-display').textContent = `${msg.mips} MIPS`;
                     document.getElementById('cycle-display').textContent = `${Math.floor(msg.cycles)} cycles`;
@@ -560,6 +578,7 @@
 
         const filenames = {
             neopixel_demo: { bin: 'samples/neopixel_demo.merged.bin', elf: 'samples/neopixel_demo.elf', title: 'Adafruit NeoPixel 8-LED Strip' },
+            adcpwm_demo: { bin: 'samples/adcpwm_demo.merged.bin', elf: 'samples/adcpwm_demo.elf', title: 'ADC & PWM Demo (analogRead + analogWrite)' },
             sdcard_demo: { bin: 'samples/sdcard_demo.merged.bin', elf: 'samples/sdcard_demo.elf', title: 'Virtual SD Card FAT16 (SPI CS=7)' },
             st7789_demo: { bin: 'samples/st7789_demo.merged.bin', elf: 'samples/st7789_demo.elf', title: 'Adafruit ST7789 Color TFT Demo (240x240)' },
             oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo (128x64)' },
@@ -702,6 +721,19 @@
         if (sdDownBtn) {
             sdDownBtn.addEventListener('click', () => {
                 if (worker) worker.postMessage({ type: 'sd_download_img' });
+            });
+        }
+
+        const adcSlider = document.getElementById('adc-slider');
+        if (adcSlider) {
+            adcSlider.addEventListener('input', (e) => {
+                const val = parseFloat(e.target.value);
+                const raw = Math.round((val / 3.3) * 4095);
+                const badge = document.getElementById('adc-val-badge');
+                if (badge) badge.textContent = `${val.toFixed(2)}V (${raw})`;
+                if (worker) {
+                    worker.postMessage({ type: 'adc_set_pin', pin: 0, voltage: val });
+                }
             });
         }
 

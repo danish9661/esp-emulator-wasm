@@ -748,3 +748,100 @@ export class VirtualSDCard {
     }
 }
 
+/**
+ * Emulates the ESP32-C3 SAR ADC1 (6 Channels: GPIO0, 1, 2, 3, 4, 5) with 12-bit resolution.
+ */
+export class VirtualADC {
+    constructor() {
+        // Pins 0..5 default to 1.65V (midpoint)
+        this.voltages = new Map([
+            [0, 1.65],
+            [1, 0.0],
+            [2, 3.3],
+            [3, 0.825],
+            [4, 2.475],
+            [5, 1.65],
+        ]);
+        this.listeners = new Set();
+    }
+
+    onActivity(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(type, data) {
+        for (const l of this.listeners) {
+            try { l({ type, ...data, timestamp: Date.now() }); } catch (e) {}
+        }
+    }
+
+    setVoltage(pin, volts) {
+        const v = Math.max(0.0, Math.min(3.3, Number(volts) || 0.0));
+        this.voltages.set(pin, v);
+        this.#emit('set_voltage', { pin, voltage: v, raw: this.getRaw(pin), mv: this.getMilliVolts(pin) });
+    }
+
+    getVoltage(pin) {
+        return this.voltages.get(pin) ?? 0.0;
+    }
+
+    getRaw(pin) {
+        const v = this.getVoltage(pin);
+        const raw = Math.round((v / 3.3) * 4095);
+        return Math.max(0, Math.min(4095, raw));
+    }
+
+    getMilliVolts(pin) {
+        const v = this.getVoltage(pin);
+        const mv = Math.round(v * 1000);
+        return Math.max(0, Math.min(3300, mv));
+    }
+
+    readRaw(pin) {
+        const raw = this.getRaw(pin);
+        this.#emit('read_raw', { pin, raw, voltage: this.getVoltage(pin) });
+        return raw;
+    }
+
+    readMilliVolts(pin) {
+        const mv = this.getMilliVolts(pin);
+        this.#emit('read_mv', { pin, mv, voltage: this.getVoltage(pin) });
+        return mv;
+    }
+}
+
+/**
+ * Emulates the ESP32-C3 LEDC / PWM controller.
+ */
+export class VirtualPWM {
+    constructor() {
+        this.channels = new Map(); // pin -> { duty, maxDuty, percent }
+        this.listeners = new Set();
+    }
+
+    onActivity(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(type, data) {
+        for (const l of this.listeners) {
+            try { l({ type, ...data, timestamp: Date.now() }); } catch (e) {}
+        }
+    }
+
+    update(pin, duty) {
+        // Standard Arduino analogWrite is 8-bit (0..255) or LEDC (0..8191)
+        const maxDuty = duty > 255 ? (duty > 1023 ? 8191 : 1023) : 255;
+        const percent = Math.min(100, Math.max(0, (duty / maxDuty) * 100));
+        this.channels.set(pin, { duty, maxDuty, percent });
+        this.#emit('pwm_update', { pin, duty, maxDuty, percent: Number(percent.toFixed(1)) });
+    }
+
+    getChannel(pin) {
+        return this.channels.get(pin) || { duty: 0, maxDuty: 255, percent: 0 };
+    }
+}
+
+

@@ -198,6 +198,45 @@ def shim_neopixelwrite():
     p += [_ret()]
     return p
 
+def shim_analog_read(is_mv=False):
+    p = []
+    p += [lui(5, 0x60000)]                      # 0
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 2
+    p += [addi(7, 0, 95), sw(7, 5, 0)]          # 4
+    ch = ord('V') if is_mv else ord('A')
+    p += [addi(7, 0, ch), sw(7, 5, 0)]          # 6
+    p += [andi(7, 10, 0x7F), sw(7, 5, 0)]       # 8: pin
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 10
+    p += [addi(7, 0, 92), sw(7, 5, 0)]          # 12
+    
+    # Read 2 bytes (hi, lo)
+    p += [addi(10, 0, 0)]                       # 13: a0 = 0
+    p += [addi(6, 0, 2)]                        # 14: t1 = 2
+    loop_start = len(p)                         # 15
+    poll_start = len(p)                         # 15
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]     # 15, 16
+    p += [beq(7, 0, -4 * (len(p) - poll_start))]# 17
+    p += [lw(28, 5, 0), andi(28, 28, 0xFF)]     # 18, 19
+    p += [slli(10, 10, 8), or_r(10, 10, 28)]    # 20, 21: a0 = (a0 << 8) | byte
+    p += [addi(6, 6, -1)]                       # 22
+    p += [bne(6, 0, -4 * (len(p) - loop_start))]# 23
+    p += [_ret()]                               # 24
+    return p
+
+def shim_analog_write():
+    p = []
+    p += [lui(5, 0x60000)]                      # 0
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 2
+    p += [addi(7, 0, 95), sw(7, 5, 0)]          # 4
+    p += [addi(7, 0, ord('P')), sw(7, 5, 0)]    # 6: 'P'
+    p += [andi(7, 10, 0x7F), sw(7, 5, 0)]       # 8: pin
+    p += [srli(7, 11, 7), andi(7, 7, 0x7F), sw(7, 5, 0)] # 11: duty >> 7
+    p += [andi(7, 11, 0x7F), sw(7, 5, 0)]       # 13: duty & 0x7F
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 15
+    p += [addi(7, 0, 92), sw(7, 5, 0)]          # 17
+    p += [_ret()]                               # 18
+    return p
+
 if __name__ == '__main__':
     all_shims = {
         'i2cWrite': shim_i2cwrite(),
@@ -227,13 +266,29 @@ if __name__ == '__main__':
         '_rmtWrite': shim_noop(),
         'rmtWrite': shim_noop(),
         '_rmtDetachBus': shim_noop(),
+        'analogRead': shim_analog_read(False),
+        '__analogRead': shim_analog_read(False),
+        'analogReadMilliVolts': shim_analog_read(True),
+        '__analogReadMilliVolts': shim_analog_read(True),
+        '__analogInit': shim_noop(),
+        'analogWrite': shim_analog_write(),
+        'ledcWrite': shim_analog_write(),
+        'ledcAttach': shim_noop(),
+        'ledcAttachChannel': shim_noop(),
+        'ledcDetachBus': shim_noop(),
+        'analogSetWidth': shim_noop(),
+        '__analogSetWidth': shim_noop(),
+        'analogSetAttenuation': shim_noop(),
+        '__analogSetAttenuation': shim_noop(),
+        'analogSetPinAttenuation': shim_noop(),
+        '__analogSetPinAttenuation': shim_noop(),
     }
-    out_lines = ['// Auto-generated RISC-V shims for esp-emu (I2C, SPI, and NeoPixel, AGENT.md Phase 4 & Phase 5 SD Card)', 'export const SHIMS = {']
+    out_lines = ['// Auto-generated RISC-V shims for esp-emu (I2C, SPI, NeoPixel, ADC, and PWM)', 'export const SHIMS = {']
     for name, words in all_shims.items():
         blob = b''.join(struct.pack('<I', w) for w in words)
         b_arr = ', '.join(str(b) for b in blob)
         out_lines.append(f'    {name}: new Uint8Array([{b_arr}]),')
-        print(f'{name:20s}: {len(blob):3d} bytes')
+        print(f'{name:24s}: {len(blob):3d} bytes')
     out_lines.append('};\n')
     open('shims.mjs', 'w').write('\n'.join(out_lines))
     print('shims.mjs generated!')

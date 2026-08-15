@@ -1,7 +1,7 @@
 import { Elf32, planHooks, prepareSpiShims } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
 import { SHIMS } from './shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard } from './peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM } from './peripherals.mjs';
 
 let wasmExports = null;
 let wasm = null;
@@ -19,12 +19,28 @@ const tftDevice = new ST7789Device(240, 240);
 const neoPixel = new NeoPixelStrip(8);
 const mpuDevice = new MPU6050Device();
 const sdCardDevice = new VirtualSDCard();
+const adcDevice = new VirtualADC();
+const pwmDevice = new VirtualPWM();
 
 i2cBus.register(0x3c, oledDevice);
 i2cBus.register(0x3d, oledDevice);
 i2cBus.register(0x68, mpuDevice);
 spiBus.register('tft', tftDevice);
 spiBus.register('sd', sdCardDevice);
+
+adcDevice.onActivity((act) => {
+    postMessage({
+        type: 'adc_activity',
+        ...act,
+    });
+});
+
+pwmDevice.onActivity((act) => {
+    postMessage({
+        type: 'pwm_activity',
+        ...act,
+    });
+});
 
 sdCardDevice.onActivity((act) => {
     postMessage({
@@ -168,7 +184,9 @@ async function handleLoad(msg) {
                 const allHooks = []
                     .concat(hookPlan?.i2c?.hooks || [])
                     .concat(hookPlan?.spi?.hooks || [])
-                    .concat(hookPlan?.neopixel?.hooks || []);
+                    .concat(hookPlan?.neopixel?.hooks || [])
+                    .concat(hookPlan?.adc?.hooks || [])
+                    .concat(hookPlan?.pwm?.hooks || []);
 
                 const effectiveShims = prepareSpiShims(elf, SHIMS);
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
@@ -369,6 +387,27 @@ function handleApcFrame(kind, body) {
             bytes.push((hex[j] << 4) | hex[j + 1]);
         }
         neoPixel.update(pin, bytes);
+    } else if (kind === 'A') {
+        // ADC Raw Read: A<pin>
+        const pin = body.charCodeAt(0) & 0x7F;
+        const raw = adcDevice.readRaw(pin);
+        if (emulator) {
+            emulator.uart_input(new Uint8Array([(raw >> 8) & 0xFF, raw & 0xFF]));
+        }
+    } else if (kind === 'V') {
+        // ADC Voltage Read (mV): V<pin>
+        const pin = body.charCodeAt(0) & 0x7F;
+        const mv = adcDevice.readMilliVolts(pin);
+        if (emulator) {
+            emulator.uart_input(new Uint8Array([(mv >> 8) & 0xFF, mv & 0xFF]));
+        }
+    } else if (kind === 'P') {
+        // PWM / LEDC Write: P<pin><duty_hi><duty_lo>
+        const pin = body.charCodeAt(0) & 0x7F;
+        const dutyHi = body.charCodeAt(1) & 0x7F;
+        const dutyLo = body.charCodeAt(2) & 0x7F;
+        const duty = (dutyHi << 7) | dutyLo;
+        pwmDevice.update(pin, duty);
     }
 }
 
@@ -526,6 +565,14 @@ onmessage = async function(e) {
 
         case 'sd_download_img':
             postMessage({ type: 'sd_disk_data', buffer: sdCardDevice.getDisk() });
+            break;
+
+        case 'adc_set_pin':
+            adcDevice.setVoltage(msg.pin, msg.voltage);
+            break;
+
+        case 'adc_set_raw':
+            adcDevice.setVoltage(msg.pin, (msg.raw / 4095) * 3.3);
             break;
 
         case 'set_batch_size':

@@ -565,6 +565,7 @@
                     <label>Select Preset Firmware</label>
                     <select id="preset-select">
                         <option value="neopixel_demo" selected>WS2812 NeoPixel Strip (8x RGB Rainbow)</option>
+                        <option value="adcpwm_demo">ADC & PWM Demo (analogRead + analogWrite)</option>
                         <option value="sdcard_demo">Virtual SD Card FAT16 (SPI CS=7)</option>
                         <option value="st7789_demo">ST7789 Color TFT Graphics (240x240)</option>
                         <option value="oled_demo">SSD1306 OLED Graphics (128x64)</option>
@@ -681,6 +682,29 @@
                     <div style="display: flex; align-items: center; gap: 6px;">
                         <span id="sd-last-op" style="font-size: 10px; font-family: 'Fira Code', monospace; color: var(--text-dim);">CS=7 Ready</span>
                         <button id="sd-download-btn" style="padding: 2px 6px; font-size: 10px;" title="Export Disk Image (.img)">📥 Export .img</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Virtual Peripherals Quick Bar: ADC Potentiometer & PWM Output -->
+            <div style="display: flex; gap: 8px; margin: 0 14px 8px 14px; flex-wrap: wrap;">
+                <!-- ADC Potentiometer Widget -->
+                <div class="adc-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                        <span style="font-size: 11px; font-weight: 700; color: #a78bfa; text-transform: uppercase; letter-spacing: 0.5px;">🎛️ ADC1 (GPIO0)</span>
+                        <span class="oled-badge" id="adc-val-badge" style="font-size: 10px; padding: 2px 6px;">1.65V (2048)</span>
+                    </div>
+                    <input type="range" id="adc-slider" min="0" max="3.3" step="0.01" value="1.65" style="flex: 1; accent-color: #a78bfa; cursor: pointer;">
+                </div>
+
+                <!-- PWM / LEDC Duty Visualizer Widget -->
+                <div class="pwm-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 0.5px;">⚡ PWM / LEDC (GPIO2)</span>
+                        <span class="oled-badge" id="pwm-val-badge" style="font-size: 10px; padding: 2px 6px;">0.0%</span>
+                    </div>
+                    <div style="flex: 1; height: 10px; background: #1f2937; border-radius: 5px; overflow: hidden; border: 1px solid var(--border-color);">
+                        <div id="pwm-fill-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #06b6d4, #3b82f6); transition: width 0.1s ease;"></div>
                     </div>
                 </div>
             </div>
