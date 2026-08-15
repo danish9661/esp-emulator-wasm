@@ -1,9 +1,9 @@
-// Comprehensive Verification Suite for esp-emu Virtual Peripherals (I2C, SPI, GPIO, SSD1306, ST7789, NeoPixel)
+// Comprehensive Verification Suite for esp-emu Virtual Peripherals (I2C, SPI, GPIO, SSD1306, ST7789, NeoPixel, SDCard)
 import { readFileSync } from 'node:fs';
-import { Elf32, planHooks } from '../elf.mjs';
+import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS } from '../shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device } from '../peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard } from '../peripherals.mjs';
 import { boot } from './harness.mjs';
 
 const APC = /\x1b_(.)([\s\S]*?)\x1b\\/;
@@ -22,10 +22,11 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         .concat(hookPlan?.neopixel?.hooks || []);
 
     const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
+    const effectiveShims = prepareSpiShims(elf, SHIMS);
 
     const img = new EspImage(flash);
     const patched = [];
-    for (const [fn, shim] of Object.entries(SHIMS)) {
+    for (const [fn, shim] of Object.entries(effectiveShims)) {
         if (hooks[fn] && shim.length <= hooks[fn].size) {
             img.writeAtVaddr(hooks[fn].addr, shim);
             patched.push(fn);
@@ -44,10 +45,12 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const tft = new ST7789Device(240, 240);
     const neoPixel = new NeoPixelStrip(8);
     const mpu = new MPU6050Device();
+    const sd = new VirtualSDCard();
     i2cBus.register(0x3c, oled);
     i2cBus.register(0x3d, oled);
     i2cBus.register(0x68, mpu);
     spiBus.register('tft', tft);
+    spiBus.register('sd', sd);
 
     const { emu, memory } = await boot({ chip: 'esp32c3', firmware: flash, bootFromRom: true });
 
@@ -79,8 +82,10 @@ async function runTest(testName, binPath, elfPath, customVerify) {
                         for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                         spiBus.write(bytes);
                     } else if (body[0] === 'X') {
-                        const len = body.charCodeAt(1) & 0x7f;
-                        const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
+                        const lenHi = body.charCodeAt(1) & 0x7f;
+                        const lenLo = body.charCodeAt(2) & 0x7f;
+                        const len = (lenHi << 7) | lenLo;
+                        const hex = [...body.slice(3)].map(c => c.charCodeAt(0) - 97);
                         const bytes = [];
                         for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                         const replies = [];
@@ -131,6 +136,7 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         tft,
         neoPixel,
         mpu,
+        sd,
         getConsole: () => cleanConsole,
     });
 }
@@ -209,6 +215,19 @@ await runTest('Adafruit NeoPixel 8-LED Strip (WS2812 RMT)', 'samples/neopixel_de
     if (!matched) throw new Error('NeoPixelDemo test failed');
 });
 
+// 8. Test SDCardDemo (Virtual SD Card FAT16 Filesystem)
+await runTest('SDCardDemo (SPI Virtual SD Card FAT16)', 'spike/build/SDCardDemo/SDCardDemo.ino.merged.bin', 'spike/build/SDCardDemo/SDCardDemo.ino.elf', async ({ stepBatches, getConsole }) => {
+    stepBatches(3500);
+    const cons = getConsole();
+    const matched = cons.includes('SD Card Initialized Successfully!') && cons.includes('Hello from Virtual SD Card!') && cons.includes('sd-done');
+    console.log(`SD Card Initialized & /README.TXT Read: ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('SDCardDemo test failed');
+    }
+});
+
 console.log('\n================================================================================');
-console.log('ALL 7 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + GPIO)! ✅');
+console.log('ALL 8 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + GPIO)! ✅');
 console.log('================================================================================\n');
+

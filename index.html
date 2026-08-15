@@ -565,6 +565,7 @@
                     <label>Select Preset Firmware</label>
                     <select id="preset-select">
                         <option value="neopixel_demo" selected>WS2812 NeoPixel Strip (8x RGB Rainbow)</option>
+                        <option value="sdcard_demo">Virtual SD Card FAT16 (SPI CS=7)</option>
                         <option value="st7789_demo">ST7789 Color TFT Graphics (240x240)</option>
                         <option value="oled_demo">SSD1306 OLED Graphics (128x64)</option>
                         <option value="blink">Blink LED (GPIO2 Output)</option>
@@ -659,13 +660,29 @@
                 </div>
             </div>
 
-            <!-- WS2812 NeoPixel Strip Widget -->
-            <div class="neopixel-bar" style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; margin: 0 14px 8px 14px; display: flex; align-items: center; justify-content: space-between;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">WS2812 NeoPixels (8x RGB)</span>
-                    <span class="oled-badge" id="neopixel-pin-badge" style="font-size: 10px; padding: 2px 6px;">Pin: G8</span>
+            <!-- Virtual Peripherals Quick Bar: WS2812 NeoPixels & Virtual SD Card -->
+            <div style="display: flex; gap: 8px; margin: 0 14px 8px 14px; flex-wrap: wrap;">
+                <!-- WS2812 NeoPixel Strip Widget -->
+                <div class="neopixel-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">WS2812 NeoPixels</span>
+                        <span class="oled-badge" id="neopixel-pin-badge" style="font-size: 10px; padding: 2px 6px;">Pin: G8</span>
+                    </div>
+                    <div class="neopixel-strip" id="neopixel-strip" style="display: flex; gap: 10px; align-items: center;"></div>
                 </div>
-                <div class="neopixel-strip" id="neopixel-strip" style="display: flex; gap: 12px; align-items: center;"></div>
+
+                <!-- Virtual SD Card (SPI) Widget -->
+                <div class="sdcard-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-amber); text-transform: uppercase; letter-spacing: 0.5px;">💾 Virtual SD Card</span>
+                        <div id="sd-act-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #374151; transition: all 0.15s;"></div>
+                        <span class="oled-badge" id="sd-status-badge" style="font-size: 10px; padding: 2px 6px;">1.0 MB FAT16</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span id="sd-last-op" style="font-size: 10px; font-family: 'Fira Code', monospace; color: var(--text-dim);">CS=7 Ready</span>
+                        <button id="sd-download-btn" style="padding: 2px 6px; font-size: 10px;" title="Export Disk Image (.img)">📥 Export .img</button>
+                    </div>
+                </div>
             </div>
 
             <!-- Terminal Output -->

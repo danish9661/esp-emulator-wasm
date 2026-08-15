@@ -453,6 +453,43 @@
                     logSpiActivity(msg);
                     break;
 
+                case 'sd_activity': {
+                    const dot = document.getElementById('sd-act-dot');
+                    if (dot) {
+                        dot.style.background = '#10b981';
+                        dot.style.boxShadow = '0 0 8px rgba(16, 185, 129, 0.6)';
+                        setTimeout(() => {
+                            dot.style.background = '#374151';
+                            dot.style.boxShadow = 'none';
+                        }, 120);
+                    }
+                    const opEl = document.getElementById('sd-last-op');
+                    if (opEl) {
+                        if (msg.type === 'read_sector') {
+                            opEl.textContent = `Read Sec ${msg.lba}`;
+                        } else if (msg.type === 'read_multiple') {
+                            opEl.textContent = `Read Mult Sec ${msg.lba}`;
+                        } else if (msg.cmd) {
+                            opEl.textContent = `${msg.cmd}`;
+                        }
+                    }
+                    break;
+                }
+
+                case 'sd_disk_data': {
+                    if (msg.buffer) {
+                        const blob = new Blob([msg.buffer], { type: 'application/octet-stream' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'sdcard.img';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        terminal.writeln('\x1b[32m[SD] Virtual SD Card disk image exported (sdcard.img).\x1b[0m');
+                    }
+                    break;
+                }
+
                 case 'status':
                     document.getElementById('mips-display').textContent = `${msg.mips} MIPS`;
                     document.getElementById('cycle-display').textContent = `${Math.floor(msg.cycles)} cycles`;
@@ -523,6 +560,7 @@
 
         const filenames = {
             neopixel_demo: { bin: 'samples/neopixel_demo.merged.bin', elf: 'samples/neopixel_demo.elf', title: 'Adafruit NeoPixel 8-LED Strip' },
+            sdcard_demo: { bin: 'samples/sdcard_demo.merged.bin', elf: 'samples/sdcard_demo.elf', title: 'Virtual SD Card FAT16 (SPI CS=7)' },
             st7789_demo: { bin: 'samples/st7789_demo.merged.bin', elf: 'samples/st7789_demo.elf', title: 'Adafruit ST7789 Color TFT Demo (240x240)' },
             oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo (128x64)' },
             blink: { bin: 'samples/blink.merged.bin', elf: 'samples/blink.elf', title: 'Blink GPIO2 Demo' },
@@ -659,6 +697,13 @@
         document.getElementById('clear-i2c-btn').addEventListener('click', () => {
             document.getElementById('i2c-log').innerHTML = '<div style="color: var(--text-dim);">Log cleared.</div>';
         });
+
+        const sdDownBtn = document.getElementById('sd-download-btn');
+        if (sdDownBtn) {
+            sdDownBtn.addEventListener('click', () => {
+                if (worker) worker.postMessage({ type: 'sd_download_img' });
+            });
+        }
 
         document.getElementById('mem-read-btn').addEventListener('click', () => {
             const addrStr = document.getElementById('mem-addr').value.trim();

@@ -432,11 +432,12 @@ patch for either bus; `I2CProbe` reports I2C only; `BusProbe` reports both.
 | SPI master | ✅ done | image patch + APC bridge, `arduino-spi` tier (Phase 4) |
 | SSD1306 OLED (128x64) | ✅ done | virtual peripheral + live canvas in browser & worker |
 | ST7789 Color TFT (240x240) | ✅ done | virtual SPI peripheral + live RGB565 canvas |
+| SD Card (FAT16/FAT32 SPI) | ✅ done | virtual SPI block peripheral, CRC16 CCITT, disk image exporter (Phase 5) |
 | SPI flash | ✅ internal | `spimem.rs`, no work needed |
 
-**Current state:** Phases 0–4 + RMT + Dynamic Calibration complete. All 7 real Arduino firmwares (Blink, I2CRead, OLEDDemo, SPIDemo, BusProbe, ST7789Demo, NeoPixelDemo) pass automated end-to-end testing in both Web Worker and headless harness.
+**Current state:** Phases 0–5 + RMT + Dynamic Calibration complete. All 8 real Arduino firmwares (Blink, I2CRead, OLEDDemo, SPIDemo, BusProbe, ST7789Demo, NeoPixelDemo, SDCardDemo) pass automated end-to-end testing in both Web Worker and headless harness.
 
 **Next, in order:**
-1. Virtual SD Card over SPI (FAT32 filesystem / block reader).
-2. ESP-IDF direct hook tier (`idf-i2c-v5` / `idf-spi`).
-3. Interactive visual circuit wiring diagram.
+1. ESP-IDF direct hook tier (`idf-i2c-v5` / `idf-spi`).
+2. Interactive visual circuit wiring diagram.
+3. ADC analog input emulation & PWM.

@@ -142,9 +142,13 @@ export class Elf32 {
 export const HOOK_TARGETS = {
     'arduino-i2c': ['i2cWrite', 'i2cRead', 'i2cWriteReadNonStop', 'i2cInit', 'i2cSetClock'],
     'arduino-spi': [
-        'spiTransferByte', 'spiTransferByteNL', 'spiTransferBytes', 'spiTransferBytesNL',
-        'spiWriteNL', 'spiWritePixelsNL', 'spiWriteByteNL', 'spiWriteShortNL', 'spiWriteLongNL',
-        'spiTransferBits', 'spiTransaction', 'spiStartBus', 'spiStopBus',
+        'spiTransferByte', 'spiTransferByteNL', 'spiWriteByte', 'spiWriteByteNL',
+        'spiTransferBytes', 'spiTransferBytesNL',
+        'spiTransferShortNL', 'spiWriteShortNL', 'spiTransferLongNL', 'spiWriteLongNL',
+        'spiTransferWord', 'spiWriteWord', 'spiTransferLong', 'spiWriteLong',
+        'spiWriteNL', 'spiWritePixelsNL',
+        'spiTransaction', 'spiEndTransaction', 'spiSimpleTransaction',
+        'spiStartBus', 'spiStopBus', 'spiGetClockDiv',
         'spiSetClockDivider', 'spiSetBitOrder', 'spiSetDataMode',
     ],
     'arduino-neopixel': [
@@ -164,6 +168,65 @@ export const HOOK_TARGETS = {
     ],
 };
 
+export function makeJal(fromAddr, toAddr) {
+    const diff = toAddr - fromAddr;
+    const imm20 = (diff >> 20) & 1;
+    const imm10_1 = (diff >> 1) & 0x3ff;
+    const imm11 = (diff >> 11) & 1;
+    const imm19_12 = (diff >> 12) & 0xff;
+    const jalInstr = (imm20 << 31) | (imm10_1 << 21) | (imm11 << 20) | (imm19_12 << 12) | 0x6f;
+    return new Uint8Array([jalInstr & 0xff, (jalInstr >> 8) & 0xff, (jalInstr >> 16) & 0xff, (jalInstr >> 24) & 0xff]);
+}
+
+/**
+ * Prepares effective shims for SPI with dynamic jump patching for trampolines.
+ */
+export function prepareSpiShims(elf, shims) {
+    const syms = elf.resolve([
+        'spiTransferBytes', 'spiTransferBytesNL',
+        'spiTransferByte', 'spiTransferByteNL',
+        'spiWriteByte', 'spiWriteByteNL',
+        'spiTransferWord', 'spiTransferShortNL',
+        'spiWriteWord', 'spiWriteShortNL',
+        'spiTransferLong', 'spiTransferLongNL',
+        'spiWriteLong', 'spiWriteLongNL',
+    ]);
+    const map = {};
+    for (const s of syms.found) map[s.name] = s;
+    const effectiveShims = { ...shims };
+
+    const pair = (symA, symB, defaultShim) => {
+        const a = map[symA];
+        const b = map[symB];
+        const shim = defaultShim;
+        if (!shim) return;
+
+        if (a && b) {
+            if (b.size >= shim.length) {
+                effectiveShims[symB] = shim;
+                effectiveShims[symA] = makeJal(a.addr, b.addr);
+            } else if (a.size >= shim.length) {
+                effectiveShims[symA] = shim;
+                effectiveShims[symB] = makeJal(b.addr, a.addr);
+            }
+        } else if (a && a.size >= shim.length) {
+            effectiveShims[symA] = shim;
+        } else if (b && b.size >= shim.length) {
+            effectiveShims[symB] = shim;
+        }
+    };
+
+    pair('spiTransferBytes', 'spiTransferBytesNL', shims.spiTransferBytesNL);
+    pair('spiTransferByte', 'spiTransferByteNL', shims.spiTransferByteNL);
+    pair('spiWriteByte', 'spiWriteByteNL', shims.spiTransferByteNL || shims.spiWriteByteNL);
+    pair('spiTransferWord', 'spiTransferShortNL', shims.spiTransferShortNL);
+    pair('spiWriteWord', 'spiWriteShortNL', shims.spiTransferShortNL || shims.spiWriteShortNL);
+    pair('spiTransferLong', 'spiTransferLongNL', shims.spiTransferLongNL);
+    pair('spiWriteLong', 'spiWriteLongNL', shims.spiTransferLongNL || shims.spiWriteLongNL);
+
+    return effectiveShims;
+}
+
 /**
  * Decide which tier to patch for each bus. Prefers the Arduino HAL when present.
  * Returns { i2c: {tier, hooks}|null, spi: {tier, hooks}|null, neopixel: {tier, hooks}|null }.
@@ -182,3 +245,4 @@ export function planHooks(elf) {
         neopixel: pick(['arduino-neopixel']),
     };
 }
+

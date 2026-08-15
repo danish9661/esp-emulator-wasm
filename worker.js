@@ -1,10 +1,7 @@
-// Web Worker running the emulation loop, binary patcher, and virtual peripherals (I2C + SPI + GPIO + OLED + TFT + NeoPixel)
-// Communicates with main thread via postMessage
-
-import { Elf32, planHooks } from './elf.mjs';
+import { Elf32, planHooks, prepareSpiShims } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
 import { SHIMS } from './shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device } from './peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard } from './peripherals.mjs';
 
 let wasmExports = null;
 let wasm = null;
@@ -21,11 +18,20 @@ const oledDevice = new SSD1306Device(128, 64);
 const tftDevice = new ST7789Device(240, 240);
 const neoPixel = new NeoPixelStrip(8);
 const mpuDevice = new MPU6050Device();
+const sdCardDevice = new VirtualSDCard();
 
 i2cBus.register(0x3c, oledDevice);
 i2cBus.register(0x3d, oledDevice);
 i2cBus.register(0x68, mpuDevice);
 spiBus.register('tft', tftDevice);
+spiBus.register('sd', sdCardDevice);
+
+sdCardDevice.onActivity((act) => {
+    postMessage({
+        type: 'sd_activity',
+        ...act,
+    });
+});
 
 oledDevice.onFrame((frame) => {
     postMessage({
@@ -164,10 +170,11 @@ async function handleLoad(msg) {
                     .concat(hookPlan?.spi?.hooks || [])
                     .concat(hookPlan?.neopixel?.hooks || []);
 
+                const effectiveShims = prepareSpiShims(elf, SHIMS);
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
                 const img = new EspImage(firmwareBytes);
                 const patched = [];
-                for (const [fn, shim] of Object.entries(SHIMS)) {
+                for (const [fn, shim] of Object.entries(effectiveShims)) {
                     if (hooks[fn] && shim.length <= hooks[fn].size) {
                         img.writeAtVaddr(hooks[fn].addr, shim);
                         patched.push({ name: fn, addr: hooks[fn].addr, size: shim.length });
@@ -328,8 +335,10 @@ function handleApcFrame(kind, body) {
             }
             spiBus.write(bytes);
         } else if (body[0] === 'X') {
-            const len = body.charCodeAt(1) & 0x7f;
-            const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
+            const lenHi = body.charCodeAt(1) & 0x7f;
+            const lenLo = body.charCodeAt(2) & 0x7f;
+            const len = (lenHi << 7) | lenLo;
+            const hex = [...body.slice(3)].map(c => c.charCodeAt(0) - 97);
             const bytes = [];
             for (let j = 0; j + 1 < hex.length; j += 2) {
                 bytes.push((hex[j] << 4) | hex[j + 1]);
@@ -506,6 +515,17 @@ onmessage = async function(e) {
 
         case 'net_disconnect':
             disconnectNetwork();
+            break;
+
+        case 'sd_upload_img':
+            if (msg.buffer) {
+                sdCardDevice.loadDisk(new Uint8Array(msg.buffer));
+                postMessage({ type: 'sd_status', loaded: true, size: msg.buffer.byteLength });
+            }
+            break;
+
+        case 'sd_download_img':
+            postMessage({ type: 'sd_disk_data', buffer: sdCardDevice.getDisk() });
             break;
 
         case 'set_batch_size':

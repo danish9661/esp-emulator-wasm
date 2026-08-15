@@ -213,6 +213,9 @@ export class ST7789Device {
 
     onTransferByte(b) {
         this.#processByte(b);
+        if (this.dirty) {
+            this.notifyFrame();
+        }
         return 0x00;
     }
 
@@ -520,3 +523,228 @@ export class MPU6050Device {
         return out;
     }
 }
+
+/**
+ * Calculates CCITT CRC-16 checksum (polynomial 0x1021, initial 0x0000) for SD Card CSD and sector data.
+ */
+export function calcCrc16(data) {
+    let crc = 0;
+    for (let i = 0; i < data.length; i++) {
+        crc = (crc ^ (data[i] << 8)) & 0xFFFF;
+        for (let j = 0; j < 8; j++) {
+            if (crc & 0x8000) crc = ((crc << 1) ^ 0x1021) & 0xFFFF;
+            else crc = (crc << 1) & 0xFFFF;
+        }
+    }
+    return crc;
+}
+
+/**
+ * Generates a valid 1MB FAT16 filesystem image with MBR, VBR, FAT tables, and /README.TXT.
+ */
+export function createDefaultFat16Image() {
+    const SECTOR_SIZE = 512;
+    const TOTAL_SECTORS = 2048; // 1MB
+    const SECTORS_PER_CLUSTER = 1;
+    const RESERVED_SECTORS = 1;
+    const FAT_COPIES = 2;
+    const ROOT_DIR_ENTRIES = 512;
+    const FAT_SIZE_SECTORS = 16;
+
+    const disk = new Uint8Array(TOTAL_SECTORS * SECTOR_SIZE);
+    const view = new DataView(disk.buffer);
+
+    // VBR (Sector 0)
+    disk[0] = 0xeb; disk[1] = 0x3c; disk[2] = 0x90;
+    const oem = new TextEncoder().encode('MSDOS5.0');
+    disk.set(oem, 3);
+    view.setUint16(11, SECTOR_SIZE, true);
+    disk[13] = SECTORS_PER_CLUSTER;
+    view.setUint16(14, RESERVED_SECTORS, true);
+    disk[16] = FAT_COPIES;
+    view.setUint16(17, ROOT_DIR_ENTRIES, true);
+    view.setUint16(19, TOTAL_SECTORS, true);
+    disk[21] = 0xF8;
+    view.setUint16(22, FAT_SIZE_SECTORS, true);
+    view.setUint16(24, 63, true);
+    view.setUint16(26, 255, true);
+    disk[36] = 0x80;
+    disk[38] = 0x29;
+    view.setUint32(39, 0x12345678, true);
+    const label = new TextEncoder().encode('NO NAME    ');
+    disk.set(label, 43);
+    const fstype = new TextEncoder().encode('FAT16   ');
+    disk.set(fstype, 54);
+    disk[510] = 0x55; disk[511] = 0xaa;
+
+    // FAT1 & FAT2
+    const fat1Off = RESERVED_SECTORS * SECTOR_SIZE;
+    const fat2Off = (RESERVED_SECTORS + FAT_SIZE_SECTORS) * SECTOR_SIZE;
+    view.setUint16(fat1Off, 0xFFF8, true);
+    view.setUint16(fat1Off + 2, 0xFFFF, true);
+    view.setUint16(fat1Off + 4, 0xFFFF, true); // Cluster 2 EOF
+    view.setUint16(fat2Off, 0xFFF8, true);
+    view.setUint16(fat2Off + 2, 0xFFFF, true);
+    view.setUint16(fat2Off + 4, 0xFFFF, true);
+
+    // Root Directory
+    const rootDirOff = (RESERVED_SECTORS + FAT_COPIES * FAT_SIZE_SECTORS) * SECTOR_SIZE;
+    const readmeContent = new TextEncoder().encode('Hello from Virtual SD Card!\n\nThis is a virtual FAT16 disk mounted on SPI bus.\n');
+    
+    // Entry for README.TXT (8s 3s B B B H H H H H H H I)
+    const name = new TextEncoder().encode('README  TXT');
+    disk.set(name, rootDirOff);
+    disk[rootDirOff + 11] = 0x20; // Archive
+    view.setUint16(rootDirOff + 26, 2, true); // Cluster 2
+    view.setUint32(rootDirOff + 28, readmeContent.length, true); // Size
+
+    // Cluster 2 Data (Sector 65)
+    const cluster2Sector = RESERVED_SECTORS + FAT_COPIES * FAT_SIZE_SECTORS + (ROOT_DIR_ENTRIES * 32 / SECTOR_SIZE);
+    const cluster2Off = cluster2Sector * SECTOR_SIZE;
+    disk.set(readmeContent, cluster2Off);
+
+    return disk;
+}
+
+/**
+ * Virtual SD Card (FAT16/FAT32 SPI Mode Peripheral)
+ */
+export class VirtualSDCard {
+    constructor(diskBuffer = null) {
+        this.disk = diskBuffer instanceof Uint8Array ? diskBuffer : createDefaultFat16Image();
+        this.cmdBuf = [];
+        this.replyQueue = [];
+        this.appCmd = false;
+        this.inIdle = true;
+        this.isSdhc = true;
+        this.listeners = new Set();
+    }
+
+    onActivity(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(type, data) {
+        for (const l of this.listeners) {
+            try { l({ type, ...data, timestamp: Date.now() }); } catch (e) {}
+        }
+    }
+
+    loadDisk(buffer) {
+        this.disk = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+        this.replyQueue = [];
+        this.cmdBuf = [];
+        this.#emit('mounted', { size: this.disk.length, sectors: Math.floor(this.disk.length / 512) });
+    }
+
+    getDisk() {
+        return this.disk;
+    }
+
+    onWrite(bytes) {
+        if (!bytes) return;
+        for (const b of bytes) this.#processByte(b);
+    }
+
+    onTransferByte(b) {
+        this.#processByte(b);
+        if (this.replyQueue.length > 0) {
+            return this.replyQueue.shift();
+        }
+        return 0xFF;
+    }
+
+    #processByte(b) {
+        if (this.cmdBuf.length === 0 && (b & 0xC0) !== 0x40) return;
+        this.cmdBuf.push(b);
+        if (this.cmdBuf.length === 6) {
+            const cmd = this.cmdBuf[0] & 0x3F;
+            const arg = ((this.cmdBuf[1] << 24) | (this.cmdBuf[2] << 16) | (this.cmdBuf[3] << 8) | this.cmdBuf[4]) >>> 0;
+            const crc = this.cmdBuf[5];
+            this.cmdBuf = [];
+            this.#handleCommand(cmd, arg, crc);
+        }
+    }
+
+    #handleCommand(cmd, arg, crc) {
+        if (this.appCmd) {
+            this.appCmd = false;
+            if (cmd === 41) {
+                this.inIdle = false;
+                this.replyQueue.push(0x00);
+                this.#emit('cmd', { cmd: 'ACMD41', arg, status: 'READY' });
+                return;
+            }
+            if (cmd === 42) {
+                this.replyQueue.push(0x00);
+                this.#emit('cmd', { cmd: 'ACMD42', arg });
+                return;
+            }
+        }
+
+        if (cmd === 0) {
+            this.inIdle = true;
+            this.replyQueue.push(0x01);
+            this.#emit('cmd', { cmd: 'CMD0 (GO_IDLE)', status: 'IDLE' });
+        } else if (cmd === 59) {
+            this.replyQueue.push(this.inIdle ? 0x01 : 0x00);
+            this.#emit('cmd', { cmd: 'CMD59 (CRC_ON_OFF)', arg });
+        } else if (cmd === 8) {
+            this.replyQueue.push(0x01, 0x00, 0x00, 0x01, 0xAA);
+            this.#emit('cmd', { cmd: 'CMD8 (SEND_IF_COND)', arg });
+        } else if (cmd === 55) {
+            this.appCmd = true;
+            this.replyQueue.push(this.inIdle ? 0x01 : 0x00);
+            this.#emit('cmd', { cmd: 'CMD55 (APP_CMD)' });
+        } else if (cmd === 58) {
+            const r1 = this.inIdle ? 0x01 : 0x00;
+            const ocr = this.inIdle ? [0x00, 0xFF, 0x80, 0x00] : [0xC0, 0xFF, 0x80, 0x00];
+            this.replyQueue.push(r1, ...ocr);
+            this.#emit('cmd', { cmd: 'CMD58 (READ_OCR)' });
+        } else if (cmd === 9) {
+            this.replyQueue.push(0x00, 0xFE);
+            // 1MB CSD
+            const csd = [0x40, 0x0E, 0x00, 0x32, 0x5B, 0x59, 0x00, 0x00, 0x00, 0x01, 0x7F, 0x80, 0x0A, 0x40, 0x00, 0x00];
+            const c = calcCrc16(csd);
+            this.replyQueue.push(...csd, (c >> 8) & 0xFF, c & 0xFF);
+            this.#emit('cmd', { cmd: 'CMD9 (SEND_CSD)' });
+        } else if (cmd === 10) {
+            this.replyQueue.push(0x00, 0xFE);
+            const cid = [0x03, 0x53, 0x44, 0x53, 0x44, 0x30, 0x31, 0x4D, 0x80, 0x00, 0x00, 0x00, 0x01, 0x12, 0x01, 0x00];
+            const c = calcCrc16(cid);
+            this.replyQueue.push(...cid, (c >> 8) & 0xFF, c & 0xFF);
+            this.#emit('cmd', { cmd: 'CMD10 (SEND_CID)' });
+        } else if (cmd === 13) {
+            this.replyQueue.push(0x00, 0x00);
+        } else if (cmd === 16) {
+            this.replyQueue.push(0x00);
+            this.#emit('cmd', { cmd: 'CMD16 (SET_BLOCKLEN)', blockLen: arg });
+        } else if (cmd === 17) {
+            const lba = this.isSdhc ? arg : Math.floor(arg / 512);
+            this.replyQueue.push(0x00, 0xFE);
+            const offset = lba * 512;
+            const chunk = [];
+            for (let i = 0; i < 512; i++) {
+                chunk.push(offset + i < this.disk.length ? this.disk[offset + i] : 0x00);
+            }
+            const c = calcCrc16(chunk);
+            this.replyQueue.push(...chunk, (c >> 8) & 0xFF, c & 0xFF);
+            this.#emit('read_sector', { lba, offset });
+        } else if (cmd === 18) {
+            const lba = this.isSdhc ? arg : Math.floor(arg / 512);
+            this.replyQueue.push(0x00, 0xFE);
+            const offset = lba * 512;
+            const chunk = [];
+            for (let i = 0; i < 512; i++) {
+                chunk.push(offset + i < this.disk.length ? this.disk[offset + i] : 0x00);
+            }
+            const c = calcCrc16(chunk);
+            this.replyQueue.push(...chunk, (c >> 8) & 0xFF, c & 0xFF);
+            this.#emit('read_multiple', { lba, offset });
+        } else {
+            this.replyQueue.push(0x00);
+        }
+    }
+}
+
