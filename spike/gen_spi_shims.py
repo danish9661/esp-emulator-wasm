@@ -237,6 +237,130 @@ def shim_analog_write():
     p += [_ret()]                               # 18
     return p
 
+def bltu(rs1, rs2, offset):
+    imm12 = (offset >> 12) & 1
+    imm10_5 = (offset >> 5) & 0x3F
+    imm4_1 = (offset >> 1) & 0xF
+    imm11 = (offset >> 11) & 1
+    return (imm12 << 31) | (imm10_5 << 25) | (rs2 & 0x1F) << 20 | (rs1 & 0x1F) << 15 | 0x6 << 12 | (imm4_1 << 8) | (imm11 << 7) | 0x63
+
+def shim_i2s_write():
+    p = []
+    p += [lui(5, 0x60000)]                      # 0: t0 = 0x60000000
+    p += [beq(13, 0, 4 * 2)]                    # 1: if bytes_written != 0
+    p += [sw(12, 13, 0)]                        # 2: *bytes_written = size
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 4: '\x1b'
+    p += [addi(7, 0, 95), sw(7, 5, 0)]          # 6: '_'
+    p += [addi(7, 0, ord('I')), sw(7, 5, 0)]    # 8: 'I'
+    p += [srli(7, 12, 7), andi(7, 7, 0x7F), sw(7, 5, 0)] # 11: len_hi
+    p += [andi(7, 12, 0x7F), sw(7, 5, 0)]       # 13: len_lo
+    p += [beq(12, 0, 4 * 6)]                    # 14
+    loop_start = len(p)                         # 15
+    p += [lbu(7, 11, 0), sw(7, 5, 0)]           # 15, 16: *src
+    p += [addi(11, 11, 1)]                      # 17: src++
+    p += [addi(12, 12, -1)]                     # 18: size--
+    p += [bne(12, 0, -4 * (len(p) - loop_start))]# 19
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 21: '\x1b'
+    p += [addi(7, 0, 92), sw(7, 5, 0)]          # 23: '\\'
+    p += [addi(10, 0, 0)]                       # 24: return 0 (ESP_OK)
+    p += [_ret()]                               # 25
+    return p
+
+def shim_twai_transmit():
+    p = []
+    # a0 = a1 if a1 != 0 (for v2 API)
+    p += [beq(11, 0, 4 * 2)]
+    p += [addi(10, 11, 0)]
+    
+    p += [lui(5, 0x60000)]                      # t0 = 0x60000000
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # '\x1b'
+    p += [addi(7, 0, 95), sw(7, 5, 0)]          # '_'
+    p += [addi(7, 0, ord('C')), sw(7, 5, 0)]    # 'C'
+    
+    # load message fields: flags at 0, id at 4, dlc at 8, data at 9
+    p += [lw(29, 10, 0)]                        # flags (offset 0)
+    p += [lw(6, 10, 4)]                         # id (offset 4)
+    p += [lbu(28, 10, 8)]                       # dlc (offset 8)
+    
+    # emit flags and dlc (masked to 7-bit safe ASCII)
+    p += [andi(7, 29, 0x7F), sw(7, 5, 0)]       # flags
+    p += [andi(7, 28, 0x0F), sw(7, 5, 0)]       # dlc (0..8)
+    
+    # emit 4 bytes of identifier in 7-bit chunks
+    p += [srli(7, 6, 21), andi(7, 7, 0x7F), sw(7, 5, 0)] # id >> 21
+    p += [srli(7, 6, 14), andi(7, 7, 0x7F), sw(7, 5, 0)] # id >> 14
+    p += [srli(7, 6, 7), andi(7, 7, 0x7F), sw(7, 5, 0)]  # id >> 7
+    p += [andi(7, 6, 0x7F), sw(7, 5, 0)]                 # id & 0x7F
+    
+    # loop dlc times to emit data bytes (at offset 9(a0))
+    p += [addi(30, 10, 9)]                      # t5 = data ptr (offset 9)
+    p += [beq(28, 0, 4 * 6)]                    # if dlc == 0 skip data loop
+    loop_start = len(p)
+    p += [lbu(7, 30, 0), sw(7, 5, 0)]           # *data ptr
+    p += [addi(30, 30, 1)]                      # data ptr++
+    p += [addi(28, 28, -1)]                     # dlc--
+    p += [bne(28, 0, -4 * (len(p) - loop_start))]
+    
+    # trailer '\x1b\\'
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 92), sw(7, 5, 0)]
+    p += [addi(10, 0, 0)]                       # return 0 (ESP_OK)
+    p += [_ret()]
+    return p
+
+def shim_twai_receive():
+    p = []
+    # a0 = a1 if a1 != 0
+    p += [beq(11, 0, 4 * 2)]
+    p += [addi(10, 11, 0)]
+    
+    p += [lui(5, 0x60000)]                      # t0 = 0x60000000
+    # emit '\x1b_CR\x1b\\'
+    p += [lui(7, 0x52436), addi(7, 7, -0x0E5)]  # t2 = '\x1b_CR'
+    # loop 4 bytes
+    loop_hdr = len(p)
+    p += [andi(28, 7, 0xFF), sw(28, 5, 0), srli(7, 7, 8), bne(7, 0, -4 * 3)]
+    p += [addi(7, 0, 27), sw(7, 5, 0), addi(7, 0, 92), sw(7, 5, 0)] # '\x1b\\'
+    
+    # poll UART0 RX for status byte
+    poll_start = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, -4 * (len(p) - poll_start))]
+    
+    # read status byte (0 = timeout, 1 = frame available)
+    p += [lw(7, 5, 0), andi(7, 7, 0xFF)]
+    branch_timeout = len(p)
+    p += [0]                                    # placeholder
+    
+    # read flags at offset 0
+    p += [lw(28, 5, 0), sw(28, 10, 0)]
+    
+    # read 4-byte ID in 7-bit chunks into t1
+    p += [addi(6, 0, 0), addi(29, 0, 4)]        # t1 = 0, count = 4
+    id_loop = len(p)
+    p += [slli(6, 6, 7), lw(28, 5, 0), andi(28, 28, 0x7F), or_r(6, 6, 28)]
+    p += [addi(29, 29, -1)]
+    p += [bne(29, 0, -4 * (len(p) - id_loop))]
+    p += [sw(6, 10, 4)]                         # identifier at offset 4
+    
+    # read dlc
+    p += [lw(28, 5, 0), sb(28, 10, 8)]          # dlc at offset 8
+    
+    # read 8 data bytes at offset 9
+    p += [addi(30, 10, 9), addi(29, 0, 8)]      # data ptr, count = 8
+    data_loop = len(p)
+    p += [lw(28, 5, 0), sb(28, 30, 0), addi(30, 30, 1)]
+    p += [addi(29, 29, -1)]
+    p += [bne(29, 0, -4 * (len(p) - data_loop))]
+    
+    p += [addi(10, 0, 0), _ret()]               # return 0 (ESP_OK)
+    
+    # timeout
+    timeout_target = len(p)
+    p[branch_timeout] = beq(7, 0, 4 * (timeout_target - branch_timeout))
+    p += [addi(10, 0, 0x107), _ret()]           # return ESP_ERR_TIMEOUT
+    return p
+
 if __name__ == '__main__':
     all_shims = {
         'i2cWrite': shim_i2cwrite(),
@@ -282,8 +406,24 @@ if __name__ == '__main__':
         '__analogSetAttenuation': shim_noop(),
         'analogSetPinAttenuation': shim_noop(),
         '__analogSetPinAttenuation': shim_noop(),
+        'i2s_driver_install': shim_noop(),
+        'i2s_set_pin': shim_noop(),
+        'i2s_start': shim_noop(),
+        'i2s_stop': shim_noop(),
+        'i2s_driver_uninstall': shim_noop(),
+        'i2s_write': shim_i2s_write(),
+        'twai_driver_install': shim_noop(),
+        'twai_driver_install_v2': shim_noop(),
+        'twai_start': shim_noop(),
+        'twai_start_v2': shim_noop(),
+        'twai_stop': shim_noop(),
+        'twai_driver_uninstall': shim_noop(),
+        'twai_transmit': shim_twai_transmit(),
+        'twai_transmit_v2': shim_twai_transmit(),
+        'twai_receive': shim_twai_receive(),
+        'twai_receive_v2': shim_twai_receive(),
     }
-    out_lines = ['// Auto-generated RISC-V shims for esp-emu (I2C, SPI, NeoPixel, ADC, and PWM)', 'export const SHIMS = {']
+    out_lines = ['// Auto-generated RISC-V shims for esp-emu (I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI)', 'export const SHIMS = {']
     for name, words in all_shims.items():
         blob = b''.join(struct.pack('<I', w) for w in words)
         b_arr = ', '.join(str(b) for b in blob)

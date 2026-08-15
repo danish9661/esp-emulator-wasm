@@ -342,6 +342,74 @@
         box.scrollTop = box.scrollHeight;
     }
 
+    // --- I2S Web Audio Playback & VU Meter ---
+    let audioCtx = null;
+    let audioMuted = true;
+
+    function handleI2sAudio(msg) {
+        const badge = document.getElementById('i2s-vol-badge');
+        const vuBar = document.getElementById('i2s-vu-bar');
+        if (badge && msg.volume !== undefined) {
+            badge.textContent = `Vol: ${msg.volume}%`;
+        }
+        if (vuBar && msg.volume !== undefined) {
+            vuBar.style.width = `${msg.volume}%`;
+        }
+
+        // Web Audio Playback
+        if (!audioMuted && msg.samples && msg.samples.length > 0) {
+            try {
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: msg.sampleRate || 16000 });
+                }
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+
+                const numFrames = Math.floor(msg.samples.length / 2);
+                const audioBuffer = audioCtx.createBuffer(2, numFrames, msg.sampleRate || 16000);
+                const leftChan = audioBuffer.getChannelData(0);
+                const rightChan = audioBuffer.getChannelData(1);
+
+                for (let i = 0; i < numFrames; i++) {
+                    leftChan[i] = msg.samples[i * 2];
+                    rightChan[i] = msg.samples[i * 2 + 1];
+                }
+
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioCtx.destination);
+                source.start();
+            } catch (e) {}
+        }
+    }
+
+    // --- TWAI / CAN Bus Activity Log ---
+    function logCanActivity(act) {
+        const box = document.getElementById('can-log');
+        if (!box) return;
+        if (box.children.length === 1 && box.children[0].textContent.includes('No CAN frames')) {
+            box.innerHTML = '';
+        }
+        const row = document.createElement('div');
+        row.className = 'i2c-entry';
+        const isTx = act.type === 'tx';
+        const typeColor = isTx ? '#3b82f6' : '#10b981';
+        const typeText = isTx ? '[CAN:TX]' : '[CAN:RX]';
+        const hexId = '0x' + (act.id || 0).toString(16).toUpperCase().padStart(3, '0');
+        const hexData = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+
+        row.innerHTML = `
+            <span style="color: ${typeColor}; font-weight: 700;">${typeText}</span>
+            <span class="addr" style="color: #f59e0b;">ID:${hexId}</span>
+            <span style="color: var(--text-dim); font-size: 9px;">DLC:${act.dlc}</span>
+            <span class="bytes" style="color: var(--text-main); font-weight: 600;">${hexData}</span>
+        `;
+        box.appendChild(row);
+        while (box.children.length > 80) box.removeChild(box.firstChild);
+        box.scrollTop = box.scrollHeight;
+    }
+
     // --- Register Table ---
     function initRegTable() {
         const table = document.getElementById('reg-table');
@@ -508,6 +576,16 @@
                     break;
                 }
 
+                case 'i2s_audio': {
+                    handleI2sAudio(msg);
+                    break;
+                }
+
+                case 'twai_activity': {
+                    logCanActivity(msg);
+                    break;
+                }
+
                 case 'status':
                     document.getElementById('mips-display').textContent = `${msg.mips} MIPS`;
                     document.getElementById('cycle-display').textContent = `${Math.floor(msg.cycles)} cycles`;
@@ -579,6 +657,8 @@
         const filenames = {
             neopixel_demo: { bin: 'samples/neopixel_demo.merged.bin', elf: 'samples/neopixel_demo.elf', title: 'Adafruit NeoPixel 8-LED Strip' },
             adcpwm_demo: { bin: 'samples/adcpwm_demo.merged.bin', elf: 'samples/adcpwm_demo.elf', title: 'ADC & PWM Demo (analogRead + analogWrite)' },
+            i2s_demo: { bin: 'samples/i2s_demo.merged.bin', elf: 'samples/i2s_demo.elf', title: 'I2S Digital Audio Demo (16kHz Stereo PCM)' },
+            twai_demo: { bin: 'samples/twai_demo.merged.bin', elf: 'samples/twai_demo.elf', title: 'TWAI / CAN Bus Controller Demo (500 kbps)' },
             sdcard_demo: { bin: 'samples/sdcard_demo.merged.bin', elf: 'samples/sdcard_demo.elf', title: 'Virtual SD Card FAT16 (SPI CS=7)' },
             st7789_demo: { bin: 'samples/st7789_demo.merged.bin', elf: 'samples/st7789_demo.elf', title: 'Adafruit ST7789 Color TFT Demo (240x240)' },
             oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo (128x64)' },
@@ -733,6 +813,49 @@
                 if (badge) badge.textContent = `${val.toFixed(2)}V (${raw})`;
                 if (worker) {
                     worker.postMessage({ type: 'adc_set_pin', pin: 0, voltage: val });
+                }
+            });
+        }
+
+        const audioBtn = document.getElementById('i2s-audio-toggle');
+        if (audioBtn) {
+            audioBtn.addEventListener('click', () => {
+                audioMuted = !audioMuted;
+                if (!audioMuted && !audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                }
+                audioBtn.textContent = audioMuted ? '🔇 Muted' : '🔊 Playing';
+                audioBtn.style.color = audioMuted ? 'var(--text-muted)' : '#10b981';
+            });
+        }
+
+        const clearCanBtn = document.getElementById('clear-can-btn');
+        if (clearCanBtn) {
+            clearCanBtn.addEventListener('click', () => {
+                document.getElementById('can-log').innerHTML = '<div style="color: var(--text-dim);">Log cleared.</div>';
+            });
+        }
+
+        const canSendBtn = document.getElementById('can-send-btn');
+        if (canSendBtn) {
+            canSendBtn.addEventListener('click', () => {
+                const idStr = document.getElementById('can-inject-id').value.trim();
+                const dataStr = document.getElementById('can-inject-data').value.trim();
+                let id = parseInt(idStr.startsWith('0x') || idStr.startsWith('0X') ? idStr : '0x' + idStr, 16);
+                if (isNaN(id)) id = 0x123;
+                const hexTokens = dataStr.split(/[\s,]+/).filter(t => t.length > 0);
+                const bytes = hexTokens.map(t => parseInt(t, 16) & 0xff).slice(0, 8);
+                if (worker) {
+                    worker.postMessage({
+                        type: 'twai_inject',
+                        frame: {
+                            id: id,
+                            extd: id > 0x7ff,
+                            rtr: false,
+                            dlc: bytes.length,
+                            data: bytes,
+                        },
+                    });
                 }
             });
         }

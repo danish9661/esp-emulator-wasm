@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS } from '../shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM } from '../peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM, VirtualI2S, VirtualTWAI } from '../peripherals.mjs';
 import { boot } from './harness.mjs';
 
 const APC = /\x1b_(.)([\s\S]*?)\x1b\\/;
@@ -21,7 +21,9 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         .concat(hookPlan?.spi?.hooks || [])
         .concat(hookPlan?.neopixel?.hooks || [])
         .concat(hookPlan?.adc?.hooks || [])
-        .concat(hookPlan?.pwm?.hooks || []);
+        .concat(hookPlan?.pwm?.hooks || [])
+        .concat(hookPlan?.i2s?.hooks || [])
+        .concat(hookPlan?.twai?.hooks || []);
 
     const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
     const effectiveShims = prepareSpiShims(elf, SHIMS);
@@ -50,6 +52,8 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const sd = new VirtualSDCard();
     const adc = new VirtualADC();
     const pwm = new VirtualPWM();
+    const i2s = new VirtualI2S();
+    const twai = new VirtualTWAI();
     i2cBus.register(0x3c, oled);
     i2cBus.register(0x3d, oled);
     i2cBus.register(0x68, mpu);
@@ -123,6 +127,28 @@ async function runTest(testName, binPath, elfPath, customVerify) {
                     const dutyLo = body.charCodeAt(2) & 0x7F;
                     const duty = (dutyHi << 7) | dutyLo;
                     pwm.update(pin, duty);
+                } else if (kind === 'I') {
+                    const lenHi = body.charCodeAt(0) & 0x7f;
+                    const lenLo = body.charCodeAt(1) & 0x7f;
+                    const len = (lenHi << 7) | lenLo;
+                    const bytes = [];
+                    for (let i = 0; i < len && 2 + i < body.length; i++) bytes.push(body.charCodeAt(2 + i) & 0xff);
+                    i2s.writePcm(bytes);
+                } else if (kind === 'C') {
+                    if (body === 'R') {
+                        const resp = twai.popRxFrame() || new Uint8Array([0]);
+                        emu.uart_input(resp);
+                    } else {
+                        const flags = body.charCodeAt(0) & 0x7f;
+                        const dlc = body.charCodeAt(1) & 0x0f;
+                        const id = ((body.charCodeAt(2) & 0x7f) << 21) |
+                                   ((body.charCodeAt(3) & 0x7f) << 14) |
+                                   ((body.charCodeAt(4) & 0x7f) << 7) |
+                                   (body.charCodeAt(5) & 0x7f);
+                        const data = [];
+                        for (let i = 0; i < dlc && 6 + i < body.length; i++) data.push(body.charCodeAt(6 + i) & 0xff);
+                        twai.transmit({ id, extd: (flags & 1) !== 0, rtr: (flags & 2) !== 0, dlc, data });
+                    }
                 }
                 streamBuffer = streamBuffer.slice(m.index + frame.length);
             } else {
@@ -157,6 +183,8 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         sd,
         adc,
         pwm,
+        i2s,
+        twai,
         getConsole: () => cleanConsole,
     });
 }
@@ -267,8 +295,51 @@ await runTest('ADCPWMDemo (ADC analogRead & PWM analogWrite)', 'samples/adcpwm_d
     }
 });
 
+// 10. Test I2SDemo (I2S Digital Audio PCM output)
+await runTest('I2SDemo (I2S Digital Audio 16kHz PCM)', 'samples/i2s_demo.merged.bin', 'samples/i2s_demo.elf', async ({ stepBatches, i2s, getConsole }) => {
+    let capturedChunks = 0;
+    i2s.onAudio((data) => {
+        if (data.samples && data.samples.length > 0) capturedChunks++;
+    });
+    stepBatches(1000);
+    const cons = getConsole();
+    const matched = cons.includes('I2S driver installed successfully') &&
+                    cons.includes('Wrote 512 bytes of audio PCM (ret=0x0)') &&
+                    cons.includes('i2s-audio-done') &&
+                    capturedChunks >= 1;
+    console.log(`I2S Audio Output (chunks=${capturedChunks}): ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('I2SDemo test failed');
+    }
+});
+
+// 11. Test TWAIDemo (TWAI / CAN Bus Controller ISO 11898-1)
+await runTest('TWAIDemo (TWAI / CAN Bus Controller 500kbps)', 'samples/twai_demo.merged.bin', 'samples/twai_demo.elf', async ({ stepBatches, twai, getConsole }) => {
+    let txFrames = [];
+    twai.onActivity((act) => {
+        if (act.type === 'tx') txFrames.push(act);
+    });
+
+    // Inject CAN packet ID=0x777 with data [CA, FE, BA, BE]
+    twai.inject({ id: 0x777, extd: false, rtr: false, dlc: 4, data: [0xCA, 0xFE, 0xBA, 0xBE] });
+
+    stepBatches(1000);
+    const cons = getConsole();
+    const matched = cons.includes('Driver started successfully') &&
+                    cons.includes('Transmitted CAN frame ID=0x123 DLC=4 (res=0x0)') &&
+                    cons.includes('Received CAN frame ID=0x777 DLC=4 Data=CA FE BA BE') &&
+                    cons.includes('twai-bus-done') &&
+                    txFrames.length >= 2;
+    console.log(`TWAI CAN Bus TX (frames=${txFrames.length}) & RX (ID=0x777): ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('TWAIDemo test failed');
+    }
+});
+
 console.log('\n================================================================================');
-console.log('ALL 9 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + ADC + PWM + GPIO)! ✅');
+console.log('ALL 11 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + ADC + PWM + I2S + TWAI + GPIO)! ✅');
 console.log('================================================================================\n');
 
 

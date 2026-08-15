@@ -163,6 +163,17 @@ export const HOOK_TARGETS = {
     'arduino-pwm': [
         'analogWrite', 'ledcWrite', 'ledcAttach', 'ledcAttachChannel', 'ledcDetachBus',
     ],
+    'idf-i2s': [
+        'i2s_driver_install', 'i2s_set_pin', 'i2s_start', 'i2s_stop',
+        'i2s_driver_uninstall', 'i2s_write',
+    ],
+    'idf-twai': [
+        'twai_driver_install', 'twai_driver_install_v2',
+        'twai_start', 'twai_start_v2',
+        'twai_stop', 'twai_driver_uninstall',
+        'twai_transmit', 'twai_transmit_v2',
+        'twai_receive', 'twai_receive_v2',
+    ],
     'idf-i2c-v5': [
         'i2c_master_transmit', 'i2c_master_receive', 'i2c_master_transmit_receive',
         'i2c_master_probe', 'i2c_master_bus_add_device', 'i2c_new_master_bus',
@@ -238,7 +249,7 @@ export function prepareSpiShims(elf, shims) {
 
 /**
  * Decide which tier to patch for each bus. Prefers the Arduino HAL when present.
- * Returns { i2c: {tier, hooks}|null, spi: {tier, hooks}|null, neopixel: {tier, hooks}|null, adc: {tier, hooks}|null, pwm: {tier, hooks}|null }.
+ * Returns { i2c, spi, neopixel, adc, pwm, i2s, twai }.
  */
 export function planHooks(elf) {
     const pick = (tiers) => {
@@ -254,6 +265,8 @@ export function planHooks(elf) {
         neopixel: pick(['arduino-neopixel']),
         adc: pick(['arduino-adc']),
         pwm: pick(['arduino-pwm']),
+        i2s: pick(['idf-i2s']),
+        twai: pick(['idf-twai']),
     };
 }
 

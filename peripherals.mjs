@@ -844,4 +844,121 @@ export class VirtualPWM {
     }
 }
 
+/**
+ * Emulates the ESP32-C3 I2S Digital Audio Controller (PCM audio stream & Web Audio synthesis).
+ */
+export class VirtualI2S {
+    constructor(sampleRate = 16000) {
+        this.sampleRate = sampleRate;
+        this.listeners = new Set();
+    }
+
+    onAudio(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(data) {
+        for (const l of this.listeners) {
+            try { l(data); } catch (e) {}
+        }
+    }
+
+    writePcm(bytes) {
+        if (!bytes || bytes.length === 0) return;
+        // 16-bit stereo PCM
+        const numSamples = Math.floor(bytes.length / 2);
+        const floatSamples = new Float32Array(numSamples);
+        let sumSq = 0;
+
+        for (let i = 0; i < numSamples; i++) {
+            const b0 = bytes[i * 2];
+            const b1 = bytes[i * 2 + 1];
+            let val = (b1 << 8) | b0;
+            if (val >= 0x8000) val -= 0x10000;
+            const norm = val / 32768.0;
+            floatSamples[i] = norm;
+            sumSq += norm * norm;
+        }
+
+        const rms = Math.sqrt(sumSq / (numSamples || 1));
+        const volumePercent = Math.min(100, Math.round(rms * 100 * 2));
+
+        this.#emit({
+            sampleRate: this.sampleRate,
+            channels: 2,
+            samples: Array.from(floatSamples),
+            volume: volumePercent,
+            byteLength: bytes.length,
+            timestamp: Date.now(),
+        });
+    }
+}
+
+/**
+ * Emulates the ESP32-C3 TWAI / CAN Bus Controller (ISO 11898-1 Standard/Extended Frames).
+ */
+export class VirtualTWAI {
+    constructor() {
+        this.listeners = new Set();
+        this.rxQueue = [];
+    }
+
+    onActivity(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(type, data) {
+        for (const l of this.listeners) {
+            try { l({ type, ...data, timestamp: Date.now() }); } catch (e) {}
+        }
+    }
+
+    transmit(frame) {
+        this.#emit('tx', {
+            id: frame.id,
+            extd: frame.extd || false,
+            rtr: frame.rtr || false,
+            dlc: frame.dlc || 0,
+            data: frame.data || [],
+        });
+    }
+
+    inject(frame) {
+        const id = frame.id >>> 0;
+        const dlc = Math.min(8, frame.data ? frame.data.length : 0);
+        const flags = (frame.extd ? 1 : 0) | (frame.rtr ? 2 : 0);
+
+        this.rxQueue.push({ id, flags, dlc, data: frame.data || [] });
+
+        this.#emit('rx', {
+            id,
+            extd: !!frame.extd,
+            rtr: !!frame.rtr,
+            dlc,
+            data: frame.data || [],
+        });
+    }
+
+    popRxFrame() {
+        if (this.rxQueue.length === 0) return null;
+        const frame = this.rxQueue.shift();
+        // 1 + 1 + 4 + 1 + 8 = 15 bytes
+        const raw = new Uint8Array(15);
+        raw[0] = 1; // status: 1 = frame available
+        raw[1] = frame.flags & 0x7f;
+        raw[2] = (frame.id >> 21) & 0x7f;
+        raw[3] = (frame.id >> 14) & 0x7f;
+        raw[4] = (frame.id >> 7) & 0x7f;
+        raw[5] = frame.id & 0x7f;
+        raw[6] = frame.dlc & 0x0f;
+        for (let i = 0; i < 8; i++) {
+            raw[7 + i] = (frame.data && i < frame.data.length) ? frame.data[i] : 0x00;
+        }
+        return raw;
+    }
+}
+
+
 

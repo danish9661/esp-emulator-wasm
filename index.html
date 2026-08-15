@@ -566,6 +566,8 @@
                     <select id="preset-select">
                         <option value="neopixel_demo" selected>WS2812 NeoPixel Strip (8x RGB Rainbow)</option>
                         <option value="adcpwm_demo">ADC & PWM Demo (analogRead + analogWrite)</option>
+                        <option value="i2s_demo">I2S Digital Audio (16kHz 16-bit PCM)</option>
+                        <option value="twai_demo">TWAI / CAN Bus (500 kbps ISO 11898-1)</option>
                         <option value="sdcard_demo">Virtual SD Card FAT16 (SPI CS=7)</option>
                         <option value="st7789_demo">ST7789 Color TFT Graphics (240x240)</option>
                         <option value="oled_demo">SSD1306 OLED Graphics (128x64)</option>
@@ -707,6 +709,18 @@
                         <div id="pwm-fill-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #06b6d4, #3b82f6); transition: width 0.1s ease;"></div>
                     </div>
                 </div>
+
+                <!-- I2S Audio DAC & Web Audio Playback Widget -->
+                <div class="i2s-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                        <span style="font-size: 11px; font-weight: 700; color: #ec4899; text-transform: uppercase; letter-spacing: 0.5px;">🔊 I2S Audio DAC</span>
+                        <span class="oled-badge" id="i2s-vol-badge" style="font-size: 10px; padding: 2px 6px;">16kHz Stereo</span>
+                    </div>
+                    <div style="flex: 1; height: 10px; background: #1f2937; border-radius: 5px; overflow: hidden; border: 1px solid var(--border-color);">
+                        <div id="i2s-vu-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #ec4899, #f43f5e); transition: width 0.05s ease;"></div>
+                    </div>
+                    <button id="i2s-audio-toggle" style="padding: 2px 8px; font-size: 10px; flex-shrink: 0;">🔇 Muted</button>
+                </div>
             </div>
 
             <!-- Terminal Output -->
@@ -733,6 +747,22 @@
                 </h3>
                 <div class="i2c-log-box" id="i2c-log">
                     <div style="color: var(--text-dim);">No transactions yet.</div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h3>
+                    <span>TWAI / CAN Bus Traffic (500 kbps)</span>
+                    <button id="clear-can-btn" style="padding: 2px 6px; font-size: 10px;">Clear</button>
+                </h3>
+                <div class="i2c-log-box" id="can-log" style="max-height: 120px; font-family: 'Fira Code', monospace; font-size: 10px;">
+                    <div style="color: var(--text-dim);">No CAN frames yet.</div>
+                </div>
+                <!-- Interactive CAN Frame Injector -->
+                <div style="display: flex; gap: 4px; margin-top: 6px;">
+                    <input type="text" id="can-inject-id" placeholder="ID (0x123)" value="0x123" style="width: 70px; font-size: 10px; font-family: 'Fira Code', monospace;">
+                    <input type="text" id="can-inject-data" placeholder="Hex Data (DE AD BE EF)" value="DE AD BE EF" style="flex: 1; font-size: 10px; font-family: 'Fira Code', monospace;">
+                    <button id="can-send-btn" style="padding: 2px 8px; font-size: 10px;">Send</button>
                 </div>
             </div>
 

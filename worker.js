@@ -1,7 +1,7 @@
 import { Elf32, planHooks, prepareSpiShims } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
 import { SHIMS } from './shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM } from './peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM, VirtualI2S, VirtualTWAI } from './peripherals.mjs';
 
 let wasmExports = null;
 let wasm = null;
@@ -21,12 +21,28 @@ const mpuDevice = new MPU6050Device();
 const sdCardDevice = new VirtualSDCard();
 const adcDevice = new VirtualADC();
 const pwmDevice = new VirtualPWM();
+const i2sDevice = new VirtualI2S(16000);
+const twaiDevice = new VirtualTWAI();
 
 i2cBus.register(0x3c, oledDevice);
 i2cBus.register(0x3d, oledDevice);
 i2cBus.register(0x68, mpuDevice);
 spiBus.register('tft', tftDevice);
 spiBus.register('sd', sdCardDevice);
+
+i2sDevice.onAudio((data) => {
+    postMessage({
+        type: 'i2s_audio',
+        ...data,
+    });
+});
+
+twaiDevice.onActivity((act) => {
+    postMessage({
+        type: 'twai_activity',
+        ...act,
+    });
+});
 
 adcDevice.onActivity((act) => {
     postMessage({
@@ -186,7 +202,9 @@ async function handleLoad(msg) {
                     .concat(hookPlan?.spi?.hooks || [])
                     .concat(hookPlan?.neopixel?.hooks || [])
                     .concat(hookPlan?.adc?.hooks || [])
-                    .concat(hookPlan?.pwm?.hooks || []);
+                    .concat(hookPlan?.pwm?.hooks || [])
+                    .concat(hookPlan?.i2s?.hooks || [])
+                    .concat(hookPlan?.twai?.hooks || []);
 
                 const effectiveShims = prepareSpiShims(elf, SHIMS);
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
@@ -408,6 +426,41 @@ function handleApcFrame(kind, body) {
         const dutyLo = body.charCodeAt(2) & 0x7F;
         const duty = (dutyHi << 7) | dutyLo;
         pwmDevice.update(pin, duty);
+    } else if (kind === 'I') {
+        // I2S Audio: I<len_hi><len_lo><raw_bytes...>
+        const lenHi = body.charCodeAt(0) & 0x7f;
+        const lenLo = body.charCodeAt(1) & 0x7f;
+        const len = (lenHi << 7) | lenLo;
+        const rawBytes = [];
+        for (let i = 0; i < len && 2 + i < body.length; i++) {
+            rawBytes.push(body.charCodeAt(2 + i) & 0xff);
+        }
+        i2sDevice.writePcm(rawBytes);
+    } else if (kind === 'C') {
+        if (body === 'R') {
+            // TWAI CAN Frame Read Request
+            const resp = twaiDevice.popRxFrame() || new Uint8Array([0]);
+            if (emulator) emulator.uart_input(resp);
+        } else {
+            // TWAI CAN Frame Transmit: C<flags><dlc><id3><id2><id1><id0><data...>
+            const flags = body.charCodeAt(0) & 0x7f;
+            const dlc = body.charCodeAt(1) & 0x0f;
+            const id = ((body.charCodeAt(2) & 0x7f) << 21) |
+                       ((body.charCodeAt(3) & 0x7f) << 14) |
+                       ((body.charCodeAt(4) & 0x7f) << 7) |
+                       (body.charCodeAt(5) & 0x7f);
+            const data = [];
+            for (let i = 0; i < dlc && 6 + i < body.length; i++) {
+                data.push(body.charCodeAt(6 + i) & 0xff);
+            }
+            twaiDevice.transmit({
+                id,
+                extd: (flags & 1) !== 0,
+                rtr: (flags & 2) !== 0,
+                dlc,
+                data,
+            });
+        }
     }
 }
 
@@ -573,6 +626,13 @@ onmessage = async function(e) {
 
         case 'adc_set_raw':
             adcDevice.setVoltage(msg.pin, (msg.raw / 4095) * 3.3);
+            break;
+
+        case 'twai_inject':
+            if (msg.frame) {
+                const raw = twaiDevice.inject(msg.frame);
+                if (emulator) emulator.uart_input(raw);
+            }
             break;
 
         case 'set_batch_size':
