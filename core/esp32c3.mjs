@@ -1,0 +1,212 @@
+// Unified MCU Core Engine for ESP32 RISC-V (esp-rv32-js)
+// Provides rp2040js-style JavaScript API for CPU execution, memory access,
+// load-time binary patching, and on-chip peripheral buses.
+
+import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
+import { EspImage } from '../espimage.mjs';
+import { SHIMS } from '../shims.mjs';
+import { GPIOController } from './gpio.mjs';
+import { I2CBus } from './i2c.mjs';
+import { SPIBus } from './spi.mjs';
+import { ADCController } from './adc.mjs';
+import { PWMController } from './pwm.mjs';
+import { I2SController } from './i2s.mjs';
+import { TWAIController } from './twai.mjs';
+import { UARTController } from './uart.mjs';
+
+export class ESP32C3 {
+    /**
+     * @param {object} wasmInstance - Initialized WasmEmulator instance
+     * @param {WebAssembly.Memory} wasmMemory - WASM linear memory export
+     * @param {string} [chip='esp32c3'] - Target chip
+     */
+    constructor(wasmInstance, wasmMemory, chip = 'esp32c3') {
+        this.emu = wasmInstance;
+        this.memory = wasmMemory;
+        this.chip = chip;
+        this.running = false;
+
+        // On-chip peripheral controllers
+        this.gpio = new GPIOController();
+        this.gpio.bindMemory(this.memory);
+
+        this.i2c = new I2CBus();
+        this.spi = new SPIBus();
+        this.adc = new ADCController();
+        this.pwm = new PWMController();
+        this.i2s = new I2SController();
+        this.twai = new TWAIController();
+        this.uart0 = new UARTController(this.emu);
+
+        this._patchedHooks = [];
+    }
+
+    /**
+     * Factory: Create and initialize an ESP32 MCU instance.
+     * @param {object} [options]
+     * @param {string} [options.chip='esp32c3'] - 'esp32c3', 'esp32c6', 'esp32h2', 'esp32p4'
+     * @param {boolean} [options.bootFromRom=true] - Enable ROM boot sequence
+     * @param {string | URL} [options.wasmModuleUrl] - Custom path to esp_emu.js / wasm
+     * @returns {Promise<ESP32C3>}
+     */
+    static async create(options = {}) {
+        const chip = options.chip || 'esp32c3';
+        const bootFromRom = options.bootFromRom !== false;
+
+        let wasmExports, WasmEmulator;
+        const isBrowser = typeof window !== 'undefined' || (typeof self !== 'undefined' && typeof process === 'undefined');
+
+        if (isBrowser) {
+            const mod = await import('../pkg/esp_emu.js');
+            wasmExports = await mod.default(options.wasmModuleUrl);
+            WasmEmulator = mod.WasmEmulator;
+        } else {
+            const { readFileSync } = await import('node:fs');
+            const { fileURLToPath } = await import('node:url');
+            const { dirname, join } = await import('node:path');
+            const here = dirname(fileURLToPath(import.meta.url));
+            const pkgPath = join(here, '..', 'pkg');
+            const mod = await import(join(pkgPath, 'esp_emu.js'));
+            const wasmBytes = readFileSync(join(pkgPath, 'esp_emu_bg.wasm'));
+            wasmExports = mod.initSync({ module: wasmBytes });
+            WasmEmulator = mod.WasmEmulator;
+        }
+
+        const emu = new WasmEmulator(chip);
+        if (bootFromRom && emu.load_default_rom) {
+            try {
+                emu.load_default_rom();
+                emu.set_boot_from_rom(true);
+            } catch (_) {}
+        }
+
+        return new ESP32C3(emu, wasmExports.memory, chip);
+    }
+
+    /**
+     * Load firmware into flash and optionally apply automatic ELF symbol patching.
+     * @param {Uint8Array | ArrayBuffer} flashBinary - Merged flash image (.bin)
+     * @param {Uint8Array | ArrayBuffer | null} [elfBinary=null] - App ELF for symbol patching
+     * @returns {Promise<{ patched: string[] }>}
+     */
+    async loadFirmware(flashBinary, elfBinary = null) {
+        let flashBuf = flashBinary instanceof Uint8Array ? flashBinary : new Uint8Array(flashBinary);
+        this._patchedHooks = [];
+
+        if (elfBinary) {
+            try {
+                const elfBuf = elfBinary instanceof Uint8Array ? elfBinary : new Uint8Array(elfBinary);
+                const elf = new Elf32(elfBuf);
+                const hookPlan = planHooks(elf);
+
+                const allHooks = []
+                    .concat(hookPlan?.i2c?.hooks || [])
+                    .concat(hookPlan?.spi?.hooks || [])
+                    .concat(hookPlan?.neopixel?.hooks || [])
+                    .concat(hookPlan?.adc?.hooks || [])
+                    .concat(hookPlan?.pwm?.hooks || [])
+                    .concat(hookPlan?.i2s?.hooks || [])
+                    .concat(hookPlan?.twai?.hooks || []);
+
+                const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
+                const effectiveShims = prepareSpiShims(elf, SHIMS);
+
+                const img = new EspImage(flashBuf);
+                for (const [fn, shim] of Object.entries(effectiveShims)) {
+                    if (hooks[fn] && shim.length <= hooks[fn].size) {
+                        img.writeAtVaddr(hooks[fn].addr, shim);
+                        this._patchedHooks.push(fn);
+                    }
+                }
+
+                if (this._patchedHooks.length > 0) {
+                    await img.reseal();
+                }
+            } catch (err) {
+                console.warn('[ESP32C3] Warning: ELF patching skipped due to error:', err);
+            }
+        }
+
+        this.emu.load_firmware(flashBuf);
+        return { patched: this._patchedHooks };
+    }
+
+    /**
+     * Execute N instructions and process peripheral I/O.
+     * @param {number} [instructionCount=50000] - Instructions to step
+     * @returns {string} Clean serial console output
+     */
+    step(instructionCount = 50000) {
+        const rawOutput = this.emu.run_batch(instructionCount);
+        this.gpio.sync();
+
+        return this.uart0.processOutputChunk(rawOutput, {
+            i2c: this.i2c,
+            spi: this.spi,
+            adc: this.adc,
+            pwm: this.pwm,
+            i2s: this.i2s,
+            twai: this.twai,
+        });
+    }
+
+    /**
+     * Get the current CPU Program Counter.
+     * @returns {number}
+     */
+    get pc() {
+        return this.emu.pc();
+    }
+
+    /**
+     * Get total CPU cycles executed.
+     * @returns {number}
+     */
+    get cycles() {
+        return this.emu.cycles();
+    }
+
+    /**
+     * Get a specific RISC-V register value (x0..x31).
+     * @param {number} regIndex
+     * @returns {number}
+     */
+    getRegister(regIndex) {
+        return this.emu.get_reg(regIndex);
+    }
+
+    /**
+     * Read an array of bytes from emulator memory space.
+     * @param {number} address
+     * @param {number} length
+     * @returns {Uint8Array}
+     */
+    readMemory(address, length) {
+        const u8 = new Uint8Array(this.memory.buffer);
+        if (address < 0 || address + length > u8.length) {
+            throw new Error(`Memory read out of bounds: 0x${address.toString(16)} (len: ${length})`);
+        }
+        return u8.slice(address, address + length);
+    }
+
+    /**
+     * Write an array of bytes into emulator memory space.
+     * @param {number} address
+     * @param {Uint8Array | number[]} bytes
+     */
+    writeMemory(address, bytes) {
+        const u8 = new Uint8Array(this.memory.buffer);
+        const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        if (address < 0 || address + data.length > u8.length) {
+            throw new Error(`Memory write out of bounds: 0x${address.toString(16)} (len: ${data.length})`);
+        }
+        u8.set(data, address);
+    }
+
+    /**
+     * Trigger a software reset.
+     */
+    restart() {
+        this.emu.restart();
+    }
+}

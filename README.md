@@ -90,6 +90,60 @@ Open **`http://localhost:8080`** in your browser.
 
 ---
 
+## 💻 Modular SDK Usage (`rp2040js` Style)
+
+You can use the MCU Core Engine directly in Node.js, Web Workers, or custom browser simulators:
+
+```javascript
+import { readFileSync } from 'node:fs';
+import { ESP32C3 } from 'esp-rv32-emulator';
+
+// 1. Initialize the MCU instance
+const mcu = await ESP32C3.create({ chip: 'esp32c3' });
+
+// 2. Load firmware (auto-detects ELF symbols and applies shims)
+const flash = new Uint8Array(readFileSync('firmware.bin'));
+const elf = new Uint8Array(readFileSync('firmware.elf'));
+await mcu.loadFirmware(flash, elf);
+
+// 3. Listen to GPIO pin changes (e.g. LED on GPIO2)
+mcu.gpio.pin(2).addListener((level, isOutput) => {
+    console.log(`GPIO 2 is now ${level ? 'HIGH' : 'LOW'}`);
+});
+
+// 4. Inject button clicks / digital inputs
+mcu.gpio.pin(0).setInput(true); // Pull GPIO0 HIGH
+
+// 5. Connect I2C & SPI peripheral callbacks
+mcu.i2c.onWrite((addr, bytes) => {
+    console.log(`I2C write to 0x${addr.toString(16)}:`, bytes);
+});
+
+mcu.spi.onTransfer((txByte) => {
+    return 0x55; // SPI MISO reply byte
+});
+
+// 6. Set simulated analog sensor voltage (0.0 to 3.3V)
+mcu.adc.setVoltage(0, 1.65); // 50% pot reading -> 2048 raw
+
+// 7. Listen for PWM duty cycles & CAN bus frames
+mcu.pwm.onUpdate(({ pin, duty, percent }) => {
+    console.log(`PWM on pin ${pin}: ${percent}%`);
+});
+
+mcu.twai.onActivity((frame) => {
+    console.log('CAN Frame:', frame.type, 'ID:', frame.id, frame.data);
+});
+
+// 8. Step CPU instructions in your loop / worker
+while (mcu.running) {
+    const consoleOutput = mcu.step(50000);
+    if (consoleOutput) process.stdout.write(consoleOutput);
+}
+```
+
+---
+
 ## 🧪 Automated Verification Suite
 
 The repository includes a comprehensive, automated regression test suite that boots real compiled firmware images inside headless Node.js instances:
