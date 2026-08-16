@@ -76,9 +76,8 @@ keep them from crashing.
 
 ### 1.4 Source availability
 
-Build path baked into the binary is `/builds/security/esp-emulator/` — a GitLab CI
-path under a `security` group. Crate name `esp-emulator`, version 0.39.0, Apache-2.0.
-Likely a private/internal repo. **Do not plan around obtaining the source.**
+The underlying WebAssembly core binary is built from Espressif's open-source
+[`esp-emulator`](https://github.com/espressif/esp-emulator) crate (version 0.39.0, Apache-2.0).
 
 ---
 

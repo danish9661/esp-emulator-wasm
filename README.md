@@ -187,8 +187,7 @@ esp-rv32-emulator/
     └── sketches/           # Source Arduino sketches (.ino) for all demos
 ```
 
----
+## 📄 Acknowledgements & License
 
-## 📄 License
-
-This project is licensed under the **MIT License**. The underlying WASM emulation core is based on the `esp-emulator` project.
+- **WASM Core Engine**: Based on Espressif's official open-source [`esp-emulator`](https://github.com/espressif/esp-emulator) (Apache-2.0 / MIT).
+- **Peripheral Bridge & Web Frontend**: Licensed under the **MIT License**. Created with paired programming in Antigravity.
