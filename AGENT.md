@@ -123,6 +123,8 @@ async function testTargetChip(chipName, binPath, elfPath) {
 
 ## 6. Capability & Protocol Summary (All Targets)
 
+> **Multi-chip SPI bus pointer**: the `spiStartBus` shim returns an opaque DRAM pointer that the app stores SPI state into (fields at +4, +16, etc.). The C3 pointer `0x3FC90000` is **unmapped on C6/H2/P4**, so `relocateShimsForChip` rewrites the shim's `lui` from `SPI_BUS_BASE` (see `shims.mjs`): C3=`0x3fc90000`, C6/H2=`0x40810000`, P4=`0x4ff40000`. Probing an unmapped base makes SPIDemo fault on `sw s2,16(s3)` inside `spiFrequencyToClockDiv`.
+
 | Peripheral / Protocol | Status | Intercepted Driver Symbols | Protocol Mechanism |
 |---|:---:|---|---|
 | **UART0 Console** | ✅ | Serial TX/RX FIFO | Native WASM FIFO + XTerm.js |

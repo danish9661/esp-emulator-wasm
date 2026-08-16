@@ -4,7 +4,7 @@
 
 import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
-import { SHIMS } from '../shims.mjs';
+import { SHIMS, relocateShimsForChip } from '../shims.mjs';
 import { GPIOController } from './gpio.mjs';
 import { I2CBus } from './i2c.mjs';
 import { SPIBus } from './spi.mjs';
@@ -75,7 +75,20 @@ export class ESP32C3 {
         const emu = new WasmEmulator(chip);
         if (bootFromRom && emu.load_default_rom) {
             try {
-                emu.load_default_rom();
+                if (chip === 'esp32p4') {
+                    // The embedded default P4 ROM (eco5) uses a different
+                    // trampoline layout than Arduino/IDF bootloaders. Use the
+                    // bundled rev0 ROM ELF instead (same path as the working
+                    // C3/C6/H2 default-rom boot).
+                    const { readFileSync } = await import('node:fs');
+                    const { fileURLToPath } = await import('node:url');
+                    const { dirname, join } = await import('node:path');
+                    const here = dirname(fileURLToPath(import.meta.url));
+                    const romElf = readFileSync(join(here, '..', 'samples', 'p4', 'esp32p4_rev0_rom.elf'));
+                    emu.load_rom_elf(new Uint8Array(romElf));
+                } else {
+                    emu.load_default_rom();
+                }
                 emu.set_boot_from_rom(true);
             } catch (_) {}
         }
@@ -109,7 +122,7 @@ export class ESP32C3 {
                     .concat(hookPlan?.twai?.hooks || []);
 
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
-                const effectiveShims = prepareSpiShims(elf, SHIMS);
+                const effectiveShims = prepareSpiShims(elf, relocateShimsForChip(SHIMS, this.chip));
 
                 const img = new EspImage(flashBuf);
                 for (const [fn, shim] of Object.entries(effectiveShims)) {

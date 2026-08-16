@@ -159,6 +159,7 @@ export const HOOK_TARGETS = {
         '__analogInit', 'analogSetWidth', '__analogSetWidth',
         'analogSetAttenuation', '__analogSetAttenuation',
         'analogSetPinAttenuation', '__analogSetPinAttenuation',
+        'read_cal_channel', 'read_cal_channel_done',
     ],
     'arduino-pwm': [
         'analogWrite', 'ledcWrite', 'ledcAttach', 'ledcAttachChannel', 'ledcDetachBus',

@@ -1,4 +1,58 @@
 // Auto-generated RISC-V shims for esp-emu (I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI)
+// Shims talk to the SDK through UART0. Each chip has its own UART0 base:
+//   esp32c3 / esp32c6 / esp32h2: 0x60000000
+//   esp32p4:                     0x500CA000
+export const UART0_BASE = {
+    esp32c3: 0x60000000,
+    esp32c6: 0x60000000,
+    esp32h2: 0x60000000,
+    esp32p4: 0x500CA000,
+};
+
+/** DRAM pointer returned by the spiStartBus shim (opaque bus struct). */
+export const SPI_BUS_BASE = {
+    esp32c3: 0x3fc90000,
+    esp32c6: 0x40810000,
+    esp32h2: 0x40810000,
+    esp32p4: 0x4ff40000,
+};
+
+/**
+ * Relocates the UART0 base of every shim to the target chip's UART0.
+ * Each shim starts with `lui t0, 0x60000` (bytes 183,2,0,96) which becomes
+ * `lui t0, <base>>12>` for other chips. All bases are 20-bit aligned, so the
+ * trailing `addi t0, t0, 0` is unchanged.
+ */
+export function relocateShimsForChip(shims, chip) {
+    const base = UART0_BASE[chip] || UART0_BASE.esp32c3;
+    const imm = (base >>> 12) & 0xfffff;
+    const spiBus = SPI_BUS_BASE[chip] || SPI_BUS_BASE.esp32c3;
+    const spiBusImm = (spiBus >>> 12) & 0xfffff;
+    const out = {};
+    for (const [name, shim] of Object.entries(shims)) {
+        const patched = shim.slice();
+        for (let i = 0; i + 3 < patched.length; i += 2) {
+            const word = patched[i] | patched[i + 1] << 8 | patched[i + 2] << 16 | patched[i + 3] << 24;
+            if (((word >>> 12) & 0xfffff) === 0x60000) {
+                const reloc = (imm << 12) | (word & 0xfff);
+                patched[i] = reloc & 0xff;
+                patched[i + 1] = (reloc >>> 8) & 0xff;
+                patched[i + 2] = (reloc >>> 16) & 0xff;
+                patched[i + 3] = (reloc >>> 24) & 0xff;
+            } else if (spiBusImm !== 0x3fc90 && ((word >>> 12) & 0xfffff) === 0x3fc90) {
+                const reloc = (spiBusImm << 12) | (word & 0xfff);
+                patched[i] = reloc & 0xff;
+                patched[i + 1] = (reloc >>> 8) & 0xff;
+                patched[i + 2] = (reloc >>> 16) & 0xff;
+                patched[i + 3] = (reloc >>> 24) & 0xff;
+            }
+        }
+        if (patched.some((b, j) => b !== shim[j])) out[name] = patched;
+        else out[name] = shim;
+    }
+    return out;
+}
+
 export const SHIMS = {
     i2cWrite: new Uint8Array([183, 2, 0, 96, 147, 130, 2, 0, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 240, 5, 35, 160, 114, 0, 147, 3, 112, 5, 35, 160, 114, 0, 147, 243, 245, 7, 35, 160, 114, 0, 99, 138, 6, 2, 131, 67, 6, 0, 19, 222, 67, 0, 19, 126, 254, 0, 19, 14, 30, 6, 35, 160, 194, 1, 19, 222, 3, 0, 19, 126, 254, 0, 19, 14, 30, 6, 35, 160, 194, 1, 19, 6, 22, 0, 147, 134, 246, 255, 111, 240, 31, 253, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 192, 5, 35, 160, 114, 0, 19, 5, 0, 0, 103, 128, 0, 0]),
     i2cRead: new Uint8Array([183, 2, 0, 96, 147, 130, 2, 0, 55, 3, 0, 96, 19, 3, 195, 1, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 240, 5, 35, 160, 114, 0, 147, 3, 32, 5, 35, 160, 114, 0, 147, 243, 245, 7, 35, 160, 114, 0, 147, 243, 246, 7, 35, 160, 114, 0, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 192, 5, 35, 160, 114, 0, 147, 142, 6, 0, 99, 130, 6, 2, 131, 35, 3, 0, 147, 243, 243, 15, 227, 140, 3, 254, 3, 174, 2, 0, 35, 0, 198, 1, 19, 6, 22, 0, 147, 134, 246, 255, 111, 240, 31, 254, 99, 132, 7, 0, 35, 160, 215, 1, 19, 5, 0, 0, 103, 128, 0, 0]),
@@ -32,6 +86,8 @@ export const SHIMS = {
     analogReadMilliVolts: new Uint8Array([183, 2, 0, 96, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 240, 5, 35, 160, 114, 0, 147, 3, 96, 5, 35, 160, 114, 0, 147, 115, 245, 7, 35, 160, 114, 0, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 192, 5, 35, 160, 114, 0, 19, 5, 0, 0, 19, 3, 32, 0, 131, 163, 194, 1, 147, 243, 243, 15, 227, 140, 3, 254, 3, 174, 2, 0, 19, 126, 254, 15, 19, 21, 133, 0, 51, 101, 197, 1, 19, 3, 243, 255, 227, 16, 3, 254, 103, 128, 0, 0]),
     __analogReadMilliVolts: new Uint8Array([183, 2, 0, 96, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 240, 5, 35, 160, 114, 0, 147, 3, 96, 5, 35, 160, 114, 0, 147, 115, 245, 7, 35, 160, 114, 0, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 192, 5, 35, 160, 114, 0, 19, 5, 0, 0, 19, 3, 32, 0, 131, 163, 194, 1, 147, 243, 243, 15, 227, 140, 3, 254, 3, 174, 2, 0, 19, 126, 254, 15, 19, 21, 133, 0, 51, 101, 197, 1, 19, 3, 243, 255, 227, 16, 3, 254, 103, 128, 0, 0]),
     __analogInit: new Uint8Array([19, 5, 0, 0, 103, 128, 0, 0]),
+    read_cal_channel: new Uint8Array([19, 5, 0, 0, 103, 128, 0, 0]),
+    read_cal_channel_done: new Uint8Array([19, 5, 0, 0, 103, 128, 0, 0]),
     analogWrite: new Uint8Array([183, 2, 0, 96, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 240, 5, 35, 160, 114, 0, 147, 3, 0, 5, 35, 160, 114, 0, 147, 115, 245, 7, 35, 160, 114, 0, 147, 211, 117, 0, 147, 243, 243, 7, 35, 160, 114, 0, 147, 243, 245, 7, 35, 160, 114, 0, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 192, 5, 35, 160, 114, 0, 103, 128, 0, 0]),
     ledcWrite: new Uint8Array([183, 2, 0, 96, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 240, 5, 35, 160, 114, 0, 147, 3, 0, 5, 35, 160, 114, 0, 147, 115, 245, 7, 35, 160, 114, 0, 147, 211, 117, 0, 147, 243, 243, 7, 35, 160, 114, 0, 147, 243, 245, 7, 35, 160, 114, 0, 147, 3, 176, 1, 35, 160, 114, 0, 147, 3, 192, 5, 35, 160, 114, 0, 103, 128, 0, 0]),
     ledcAttach: new Uint8Array([19, 5, 0, 0, 103, 128, 0, 0]),
