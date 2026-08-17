@@ -12,6 +12,7 @@ import { ADCController } from './adc.mjs';
 import { PWMController } from './pwm.mjs';
 import { I2SController } from './i2s.mjs';
 import { TWAIController } from './twai.mjs';
+import { NeoPixelController } from './neopixel.mjs';
 import { UARTController } from './uart.mjs';
 
 export class ESP32C3 {
@@ -36,6 +37,7 @@ export class ESP32C3 {
         this.pwm = new PWMController();
         this.i2s = new I2SController();
         this.twai = new TWAIController();
+        this.neopixel = new NeoPixelController();
         this.uart0 = new UARTController(this.emu);
 
         this._patchedHooks = [];
@@ -146,16 +148,17 @@ export class ESP32C3 {
 
     /**
      * Execute N instructions and process peripheral I/O.
-     * @param {number} [instructionCount=50000] - Instructions to step
+     * @param {number} [instructionCount=100000] - Instructions to step
      * @returns {string} Clean serial console output
      */
-    step(instructionCount = 50000) {
+    step(instructionCount = 100000) {
         const rawOutput = this.emu.run_batch(instructionCount);
         this.gpio.sync();
 
         return this.uart0.processOutputChunk(rawOutput, {
             i2c: this.i2c,
             spi: this.spi,
+            neopixel: this.neopixel,
             adc: this.adc,
             pwm: this.pwm,
             i2s: this.i2s,

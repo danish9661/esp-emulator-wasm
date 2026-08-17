@@ -56,10 +56,10 @@ export class UARTController {
 
                 this.streamBuffer = this.streamBuffer.slice(m.index + frame.length);
             } else {
-                const partialIdx = this.streamBuffer.lastIndexOf('\x1b_');
-                if (partialIdx !== -1) {
-                    cleanText += this.streamBuffer.slice(0, partialIdx);
-                    this.streamBuffer = this.streamBuffer.slice(partialIdx);
+                const escIdx = this.streamBuffer.lastIndexOf('\x1b');
+                if (escIdx !== -1) {
+                    cleanText += this.streamBuffer.slice(0, escIdx);
+                    this.streamBuffer = this.streamBuffer.slice(escIdx);
                 } else {
                     cleanText += this.streamBuffer;
                     this.streamBuffer = '';
@@ -106,6 +106,7 @@ export class UARTController {
                     const bytes = [];
                     for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                     spi.write(bytes);
+                    if (len === 64) this.write(new Uint8Array([0]));
                 } else if (body[0] === 'X') {
                     const lenHi = body.charCodeAt(1) & 0x7F;
                     const lenLo = body.charCodeAt(2) & 0x7F;

@@ -89,6 +89,7 @@ async function runTest(testName, binPath, elfPath, customVerify) {
                         const bytes = [];
                         for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                         spiBus.write(bytes);
+                        if (len === 64) emu.uart_input(new Uint8Array([0]));
                     } else if (body[0] === 'X') {
                         const lenHi = body.charCodeAt(1) & 0x7f;
                         const lenLo = body.charCodeAt(2) & 0x7f;
@@ -338,8 +339,56 @@ await runTest('TWAIDemo (TWAI / CAN Bus Controller 500kbps)', 'samples/twai_demo
     }
 });
 
+// 12. Test NeoPixelDemo (fresh marker build)
+await runTest('NeoPixelDemo (marker build)', 'samples/NeoPixelDemo.merged.bin', 'samples/NeoPixelDemo.elf', async ({ stepBatches, getConsole }) => {
+    stepBatches(1500);
+    const cons = getConsole();
+    const matched = cons.includes('[NeoPixel] NeoPixel strip initialized!');
+    console.log(`NeoPixel marker: ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('NeoPixelDemo test failed');
+    }
+});
+
+// 13. Test OLEDDemo (fresh marker build)
+await runTest('OLEDDemo (marker build)', 'samples/OLEDDemo.merged.bin', 'samples/OLEDDemo.elf', async ({ stepBatches, getConsole }) => {
+    stepBatches(1500);
+    const cons = getConsole();
+    const matched = cons.includes('[OLED] Display initialized successfully!') && cons.includes('[OLED] Splash frame sent.');
+    console.log(`OLED markers: ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('OLEDDemo test failed');
+    }
+});
+
+// 14. Test ST7789Demo (fresh marker build)
+await runTest('ST7789Demo (marker build)', 'samples/ST7789Demo.merged.bin', 'samples/ST7789Demo.elf', async ({ stepBatches, getConsole }) => {
+    stepBatches(1500);
+    const cons = getConsole();
+    const matched = cons.includes('[TFT] ST7789 display initialized successfully!') && cons.includes('[TFT] Color splash screen rendered.');
+    console.log(`ST7789 markers: ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('ST7789Demo test failed');
+    }
+});
+
+// 15. Test SDCardDemo (fresh marker build)
+await runTest('SDCardDemo (marker build)', 'samples/SDCardDemo.merged.bin', 'samples/SDCardDemo.elf', async ({ stepBatches, getConsole }) => {
+    stepBatches(4000);
+    const cons = getConsole();
+    const matched = cons.includes('[SD] before begin') && cons.includes('[SD] sd-done');
+    console.log(`SD Card markers: ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-500));
+        throw new Error('SDCardDemo test failed');
+    }
+});
+
 console.log('\n================================================================================');
-console.log('ALL 11 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + ADC + PWM + I2S + TWAI + GPIO)! ✅');
+console.log('ALL 15 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + ADC + PWM + I2S + TWAI + GPIO)! ✅');
 console.log('================================================================================\n');
 
 

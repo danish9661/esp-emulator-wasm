@@ -1,6 +1,7 @@
 // Verification Suite for ESP32-C6 via MCU Core SDK (mirrors spike/20-test-mcu-core.mjs)
 import { readFileSync } from 'node:fs';
 import { ESP32C3 } from '../index.mjs';
+import { VirtualSDCard } from '../peripherals.mjs';
 
 const CHIP = 'esp32c6';
 const DIR = 'c6';
@@ -12,6 +13,10 @@ const DEMOS = [
     { name: 'ADCPWMDemo', markers: ['Initial ADC Read: raw=2048, mv=1650 mV', 'adc-pwm-done'], setup: (m) => m.adc.setVoltage(0, 1.65) },
     { name: 'I2SDemo', markers: ['i2s-audio-done'], setup: null },
     { name: 'TWAIDemo', markers: ['twai-bus-done'], setup: null },
+    { name: 'NeoPixelDemo', markers: ['[NeoPixel] NeoPixel strip initialized!'], setup: null },
+    { name: 'OLEDDemo', markers: ['[OLED] Display initialized successfully!', '[OLED] Splash frame sent.'], setup: null },
+    { name: 'ST7789Demo', markers: ['[TFT] ST7789 display initialized successfully!', '[TFT] Color splash screen rendered.'], setup: null },
+    { name: 'SDCardDemo', markers: ['[SD] before begin', '[SD] sd-done'], setup: (m) => m.spi.register('sd', new VirtualSDCard()) },
 ];
 
 console.log('====================================================');
@@ -30,12 +35,8 @@ for (const demo of DEMOS) {
     mcu.uart0.onData((text) => { consoleBuffer += text; });
 
     for (let i = 0; i < 3000; i++) {
-        mcu.step(50000);
-        if (consoleBuffer.includes('spi-done') || consoleBuffer.includes('adc-pwm-done') ||
-            consoleBuffer.includes('i2s-audio-done') || consoleBuffer.includes('twai-bus-done') ||
-            consoleBuffer.includes('blink-start') || consoleBuffer.includes('read-done')) {
-            if (demo.markers.every((m) => consoleBuffer.includes(m))) break;
-        }
+        mcu.step(100000);
+        if (demo.markers.every((m) => consoleBuffer.includes(m))) break;
     }
 
     const pass = demo.markers.every((m) => consoleBuffer.includes(m)) &&

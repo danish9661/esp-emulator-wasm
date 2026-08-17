@@ -60,8 +60,10 @@ export class SPIBus {
         let rxByte = 0xFF;
 
         for (const dev of this.devices.values()) {
-            if (typeof dev.spiTransferByte === 'function') {
-                const res = dev.spiTransferByte(txByte);
+            const fn = typeof dev.onTransferByte === 'function' ? dev.onTransferByte
+                : typeof dev.spiTransferByte === 'function' ? dev.spiTransferByte : null;
+            if (fn) {
+                const res = fn.call(dev, txByte);
                 if (res !== undefined) rxByte = res & 0xFF;
             }
         }
@@ -89,9 +91,9 @@ export class SPIBus {
      */
     write(bytes) {
         for (const dev of this.devices.values()) {
-            if (typeof dev.spiWrite === 'function') {
-                dev.spiWrite(bytes);
-            }
+            const fn = typeof dev.onWrite === 'function' ? dev.onWrite
+                : typeof dev.spiWrite === 'function' ? dev.spiWrite : null;
+            if (fn) fn.call(dev, bytes);
         }
 
         for (const listener of this._writeListeners) {

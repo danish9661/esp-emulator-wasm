@@ -87,7 +87,7 @@ console.log(`Patched ${patched.length} driver shims on ${mcu.chip}`);
 
 // Step execution
 while (mcu.running) {
-    const text = mcu.step(50000);
+    const text = mcu.step(100000);
     if (text) process.stdout.write(text);
 }
 ```
@@ -111,7 +111,7 @@ async function testTargetChip(chipName, binPath, elfPath) {
     mcu.uart0.onData(chunk => { consoleOutput += chunk; });
 
     for (let i = 0; i < 1000; i++) {
-        mcu.step(50000);
+        mcu.step(100000);
         if (consoleOutput.includes('app_main') || consoleOutput.includes('setup()')) break;
     }
 
@@ -122,6 +122,8 @@ async function testTargetChip(chipName, binPath, elfPath) {
 ---
 
 ## 6. Capability & Protocol Summary (All Targets)
+
+> **Step batch size**: always step with `mcu.step(100000)` or larger. The esp-emu WASM engine can drop the last UART output bytes of a batch when a shim reply-poll spins across a batch boundary on H2/P4 (SD mount hangs, ST7789 stalls); batch ≥ 100000 cycles reliably avoids this on all chips (C3/C6/H2/P4). The modular MCU core does not auto-register SPI/I2C devices — tests must call `mcu.spi.register('sd', new VirtualSDCard())` etc. (see `worker.js`, `spike/18-verify-all.mjs`).
 
 > **Multi-chip SPI bus pointer**: the `spiStartBus` shim returns an opaque DRAM pointer that the app stores SPI state into (fields at +4, +16, etc.). The C3 pointer `0x3FC90000` is **unmapped on C6/H2/P4**, so `relocateShimsForChip` rewrites the shim's `lui` from `SPI_BUS_BASE` (see `shims.mjs`): C3=`0x3fc90000`, C6/H2=`0x40810000`, P4=`0x4ff40000`. Probing an unmapped base makes SPIDemo fault on `sw s2,16(s3)` inside `spiFrequencyToClockDiv`.
 

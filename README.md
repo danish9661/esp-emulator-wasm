@@ -137,7 +137,7 @@ mcu.twai.onActivity((frame) => {
 
 // 8. Step CPU instructions in your loop / worker
 while (mcu.running) {
-    const consoleOutput = mcu.step(50000);
+    const consoleOutput = mcu.step(100000);
     if (consoleOutput) process.stdout.write(consoleOutput);
 }
 ```
@@ -149,8 +149,13 @@ while (mcu.running) {
 The repository includes a comprehensive, automated regression test suite that boots real compiled firmware images inside headless Node.js instances:
 
 ```bash
-# Run all 11 automated firmware test suites
+# Run all 15 automated firmware test suites
 node spike/18-verify-all.mjs
+
+# Run the multi-chip MCU Core SDK verification suites (C6 / H2 / P4)
+node spike/21-verify-c6.mjs
+node spike/22-verify-h2.mjs
+node spike/23-verify-p4.mjs
 ```
 
 ### Test Suite Output:
@@ -213,7 +218,7 @@ TEST: TWAIDemo (TWAI / CAN Bus Controller 500kbps)
 TWAI CAN Bus TX (frames=190) & RX (ID=0x777): PASS
 
 ================================================================================
-ALL 11 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + ADC + PWM + I2S + TWAI + GPIO)! ✅
+ALL 15 REAL ARDUINO FIRMWARE TESTS PASSED (I2C + SPI + TFT + OLED + NEOPIXEL + SDCARD + ADC + PWM + I2S + TWAI + GPIO)! ✅
 ================================================================================
 ```
 
