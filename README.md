@@ -23,6 +23,9 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 
 ## 🚀 Supported Hardware Protocols & Peripherals
 
+> Full per-chip coverage matrix (what is implemented, emulator-ready, or missing on
+> C3/C6/H2/P4): see **[PROTOCOLS.md](PROTOCOLS.md)**.
+
 | Peripheral / Protocol | Status | Emulated Hardware / Library Support | Mechanism |
 |---|:---:|---|---|
 | **UART0 Console** | ✅ | Serial TX / RX (bidirectional 115200 baud terminal) | Native WASM FIFO + XTerm.js |
