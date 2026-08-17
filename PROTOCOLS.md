@@ -96,10 +96,11 @@ silicon (no shim needed), not explicitly regression-tested
 | ST7789 TFT (SPI) | ✅ | ✅ | ✅ | ✅ | virtual device `tft` | ST7789Demo |
 | MPU6050 IMU (I2C) | ✅ | ✅ | ✅ | ✅ | virtual device `0x68` | 18-verify #2 |
 | Wi-Fi (STA/AP) | ✅* | ✅* | — | — | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
-| BLE | ❌ | ❌ | ❌ | — | — | none |
-| 802.15.4 (Zigbee/Thread) | — | ❌ | ❌ | — | — | none |
+| BLE (NimBLE) | ❌† | ❌† | ❌† | — | HCI interception (native CLI only, see §4) | none |
+| 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | radio frame bridge (native CLI only) | none |
+| Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | native CLI only (`--net tap/user`) | none |
 | Touch sensors | ❌ | ❌ | ❌ | — | — | none |
-| USB (Serial/JTAG; OTG on P4) | ❌ | ❌ | ❌ | ❌ | — | none |
+| USB (Serial/JTAG; OTG on P4) | ❌† | ❌† | ❌† | ❌† | native peripheral in core (CLI), no WASM glue | none |
 | SDMMC (4-bit SD, P4) | — | — | — | ❌ | — | none |
 | MIPI CSI camera (P4) | — | — | — | ❌ | — | none |
 | MIPI DSI / parallel LCD (P4) | — | — | — | ❌ | — | none |
@@ -129,14 +130,30 @@ silicon (no shim needed), not explicitly regression-tested
   talks to the emulated radio natively, no RV32 trampoline or APC bridge is involved.
   (* = provided by emulator glue, not exercised by this repo's verify suites.)
 
+### Supported in the native CLI, absent from the WASM build (†)
+
+The upstream esp-emulator core supports more than the WASM glue exposes. These work
+in the native `esp-emu` binary but have **no JS/wasm exports**, so this SDK (WASM-based)
+cannot reach them:
+
+- **BLE (C3/C6/H2)**: the NimBLE host stack runs unmodified; the emulator intercepts
+  HCI commands using firmware symbols (requires `--elf`). HCI is then handled by
+  (a) a **built-in virtual controller**, (b) forwarding over TCP to
+  **Google Bumble** (virtual controller + GATT client — `tools/bumble_test.py` scans,
+  connects, reads/writes characteristics, subscribes to notifications), or
+  (c) a **physical Linux adapter** (`--ble-hci hci0`).
+- **802.15.4 / Thread (C6/H2)**: OpenThread `ot_cli` / `ot_br` run on the emulated
+  radio; two instances bridge raw radio frames over localhost UDP (`--thread-sim`).
+- **Ethernet**: OpenCores OpenETH (QEMU-compatible firmware) on all chips plus the
+  P4's built-in Synopsys GMAC — bridged to real networking via `--net tap/user`.
+- **USB Serial/JTAG**: emulated as a core peripheral (used by esptool flows), not
+  exposed through the wasm API.
+
 ### Not supported (❌)
 
-- BLE, 802.15.4, touch, USB, SDMMC, camera, DSI/parallel LCD, DAC: the emulator core
-  does not expose these (no corresponding wasm exports), so they cannot be emulated
-  without upstream work in esp-emulator itself.
-- Note: BLE may partially exist in the emulator core for provisioning flows
-  (see `pkg/README.md` chip-tool `ble-wifi` pairing) but is not exposed through the
-  SDK API and has no verification.
+- Touch sensors, SDMMC (4-bit SD on P4), MIPI CSI camera, MIPI DSI / parallel LCD,
+  and P4 DAC: not present in the emulator core at all (no wasm exports, no CLI
+  flags), so they cannot be emulated without upstream work in esp-emulator itself.
 
 ### Native, untested (🟡)
 
@@ -167,5 +184,6 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 |---|:---:|---|
 | ✅ Implemented & verified | 13 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050 |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
-| ❌ Not supported | 8 | BLE, 802.15.4, Touch, USB, SDMMC, Camera, DSI/parallel LCD, DAC |
+| ❌ Native CLI only, no WASM glue | 4 | BLE, 802.15.4, Ethernet, USB Serial/JTAG |
+| ❌ Not supported at all | 5 | Touch, SDMMC, Camera, DSI/parallel LCD, DAC |
 | 🟡 Native, untested | 2 | Timers/WDT/RTC, flash filesystems |
