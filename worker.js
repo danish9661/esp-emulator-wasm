@@ -7,7 +7,7 @@ let wasmExports = null;
 let wasm = null;
 let emulator = null;
 let running = false;
-let batchSize = 50000;
+let batchSize = 100000;
 let pendingLoad = null;
 let ws = null;
 
@@ -370,6 +370,9 @@ function handleApcFrame(kind, body) {
                 bytes.push((hex[j] << 4) | hex[j + 1]);
             }
             spiBus.write(bytes);
+            if (len === 64 && emulator) {
+                emulator.uart_input(new Uint8Array([0]));
+            }
         } else if (body[0] === 'X') {
             const lenHi = body.charCodeAt(1) & 0x7f;
             const lenLo = body.charCodeAt(2) & 0x7f;
