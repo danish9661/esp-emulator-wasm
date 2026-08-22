@@ -3,11 +3,14 @@
 
 const APC_REGEX = /\x1b_(.)([\s\S]*?)\x1b\\/;
 
+import { BLEController } from './ble_controller.mjs';
+
 export class UARTController {
-    constructor(wasmEmu) {
+        constructor(wasmEmu) {
         this.emu = wasmEmu;
         this.streamBuffer = '';
         this._dataListeners = new Set();
+        this.ble = new BLEController();
     }
 
     /**
@@ -79,8 +82,22 @@ export class UARTController {
         return cleanText;
     }
 
-    _routeApcFrame(kind, body, { i2c, spi, neopixel, adc, pwm, i2s, twai }) {
+    _routeApcFrame(kind, body, { i2c, spi, neopixel, adc, pwm, i2s, twai, ble }) {
         switch (kind) {
+            case 'B': { // BLE HCI command -> virtual controller -> event
+                if (!ble) break;
+                const hex = [...body].map(c => c.charCodeAt(0) - 97);
+                const bytes = [];
+                for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
+                const event = ble.handle(new Uint8Array(bytes));
+                let out = '\x1b_E';
+                const len = event.length;
+                out += String.fromCharCode(97 + ((len >> 4) & 0xf), 97 + (len & 0xf));
+                for (const b of event) out += String.fromCharCode(97 + ((b >> 4) & 0xf), 97 + (b & 0xf));
+                out += '\x1b\\';
+                this.write(out);
+                break;
+            }
             case 'W': { // I2C Write
                 if (!i2c) break;
                 const addr = body.charCodeAt(0);

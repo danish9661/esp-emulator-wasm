@@ -139,3 +139,22 @@ async function testTargetChip(chipName, binPath, elfPath) {
 | **I2S Digital Audio** | ✅ | `i2s_write`, `i2s_driver_install` | APC PCM streaming frames (`\x1b_I`) |
 | **TWAI / CAN Bus** | ✅ | `twai_transmit_v2`, `twai_receive_v2` | APC CAN frames (`\x1b_C`, `\x1b_CR`) |
 | **Storage (SD Card)** | ✅ | SPI block sector engine | Virtual FAT16/FAT32 CCITT CRC16 sector streamer |
+| **BLE (Bluetooth LE)** | ✅ WASM (JS-side VHCI shim + virtual controller), ✅ native CLI | `esp_bt_controller_init`, `esp_bt_controller_enable`, `esp_vhci_host_send_packet`, `esp_vhci_host_register_callback`, `esp_vhci_host_check_send_available` | Native CLI: Rust-core HCI interception + built-in virtual controller (or Bumble TCP / physical `hci0` via `--ble-hci`); WASM: 5 symbols shimmed at load time, HCI handled in JS `BLEController` |
+
+### 6.1 BLE — WASM emulated via JS-side VHCI shims (IMPLEMENTED, verified on C3)
+
+The `ble_hci` subsystem is compiled into `pkg/esp_emu_bg.wasm` but **dormant** (nothing activates it). Instead of rebuilding the WASM core, BLE is provided at the load-time patcher level — exactly like SPI/I2C:
+
+- **`core/ble_shims.mjs`** (`prepareBleShims(elf, chip)`): replaces the 5 VHCI/controller symbols:
+  - `esp_bt_controller_init` → `li a0,0; ret` (8 B) — body (≥1022 B) reused to **store the large `esp_vhci_host_send_packet` shim** (a 380-B RISC-V program cannot fit in send_packet's 48 B, and `jal` can't reach DRAM from flash; a `lui+addi+jalr` trampoline parks it in the now-dead init body).
+  - `esp_bt_controller_enable` → stub return 0; `esp_vhci_host_check_send_available` → stub return 1.
+  - `esp_vhci_host_register_callback` → stores cb ptr to DRAM scratch.
+  - `esp_vhci_host_send_packet` → 12-B trampoline → out-of-line shim that hex-encodes the HCI command to UART0 TX as `ESC _ B <hex cmd> ESC \` and spins on UART0 RX for `ESC _ E <2hex len> <hex event> ESC \`, decodes the event, and calls the registered cb.
+- **`core/ble_controller.mjs`** (`BLEController.handle(msg)`): JS virtual controller. Parses the VHCI message (type byte + opcode + params) and returns a VHCI event (type `0x04` + HCI event). Handles Reset, Read Local Version/BD_ADDR, LE Read Buffer Size / Supported Features / Supported States / Max Data Length / Adv Channel Tx Power / White List Size / Number of Adv Sets, and returns SUCCESS / Command-Complete for all else so NimBLE never wedges.
+- **`core/uart.mjs`**: `_routeApcFrame` now handles `case 'B'` → decodes hex → `ble.handle()` → emits the `E` frame via `this.write()` (→ `emu.uart_input`).
+- **`core/esp32c3.mjs`**: `loadFirmware` calls `prepareBleShims`, merges into the SPI shim patch set, and additionally writes the out-of-line `extra` shim into flash (reseals).
+- **Per-chip DRAM scratch** (runtime data only — `.bss` zeroing is fine because the firmware writes it at runtime): C3 `0x3fc94000`, C6/H2 `0x40814000`, P4 `0x4ff44000`. UART0 base C3/C6/H2 `0x60000000`, P4 `0x500CA000`.
+
+**Verification**: `node spike/test_ble.mjs` loads `spike/sketches/BLEDemo/build/.../BLEDemo.ino.merged.bin` + `.elf` and steps; it prints the full sequence `[BLE] starting → init done → server created → service created → advertising started → ble-done`, proving the HCI round-trip works. (Before the shims, BLEDemo hung in ROM `0x4002ee78` PHY spin.)
+
+**Caveats**: This is a *host-stack-only* emulation — PHY/RF (actual radio TX/RX, connection state machines, GATT over-the-air) is NOT modeled; the virtual controller answers every HCI command with success so the NimBLE host stack initializes and "advertises" logically. Advertised packets are not emitted on any real/loopback medium. C6/H2/P4 untested but the same mechanism applies.

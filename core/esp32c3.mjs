@@ -5,6 +5,7 @@
 import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS, relocateShimsForChip } from '../shims.mjs';
+import { prepareBleShims } from './ble_shims.mjs';
 import { GPIOController } from './gpio.mjs';
 import { I2CBus } from './i2c.mjs';
 import { SPIBus } from './spi.mjs';
@@ -126,12 +127,25 @@ export class ESP32C3 {
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
                 const effectiveShims = prepareSpiShims(elf, relocateShimsForChip(SHIMS, this.chip));
 
+                // BLE interception shims (JS-side VHCI controller). The 4 trivial
+                // functions are inlined; esp_vhci_host_send_packet parks a large shim
+                // in the dead body of esp_bt_controller_init via a trampoline.
+                const ble = prepareBleShims(elf, this.chip);
+                for (const [fn, shim] of Object.entries(ble.shims)) effectiveShims[fn] = shim;
+                for (const h of ble.hooks || []) hooks[h.name] = h;
+
                 const img = new EspImage(flashBuf);
                 for (const [fn, shim] of Object.entries(effectiveShims)) {
                     if (hooks[fn] && shim.length <= hooks[fn].size) {
                         img.writeAtVaddr(hooks[fn].addr, shim);
                         this._patchedHooks.push(fn);
                     }
+                }
+                for (const ex of ble.extra || []) {
+                    try {
+                        img.writeAtVaddr(ex.addr, ex.bytes);
+                        this._patchedHooks.push('ble:' + ex.addr.toString(16));
+                    } catch (_) {}
                 }
 
                 if (this._patchedHooks.length > 0) {
@@ -163,6 +177,7 @@ export class ESP32C3 {
             pwm: this.pwm,
             i2s: this.i2s,
             twai: this.twai,
+            ble: this.uart0.ble,
         });
     }
 
