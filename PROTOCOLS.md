@@ -96,7 +96,7 @@ silicon (no shim needed), not explicitly regression-tested
 | ST7789 TFT (SPI) | ✅ | ✅ | ✅ | ✅ | virtual device `tft` | ST7789Demo |
 | MPU6050 IMU (I2C) | ✅ | ✅ | ✅ | ✅ | virtual device `0x68` | 18-verify #2 |
 | Wi-Fi (STA/AP) | ✅* | ✅* | — | — | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
-| BLE (NimBLE) | ❌† | ❌† | ❌† | — | HCI interception (native CLI only, see §4) | none |
+| BLE (NimBLE) | ❌† | ❌† | ❌† | — | native BLE runs in wasm as a black box; HCI not observable from JS (see §4) | observe_ble.mjs |
 | 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | radio frame bridge (native CLI only) | none |
 | Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | native CLI only (`--net tap/user`) | none |
 | Touch sensors | ❌ | ❌ | ❌ | — | — | none |
@@ -136,12 +136,29 @@ The upstream esp-emulator core supports more than the WASM glue exposes. These w
 in the native `esp-emu` binary but have **no JS/wasm exports**, so this SDK (WASM-based)
 cannot reach them:
 
-- **BLE (C3/C6/H2)**: the NimBLE host stack runs unmodified; the emulator intercepts
-  HCI commands using firmware symbols (requires `--elf`). HCI is then handled by
-  (a) a **built-in virtual controller**, (b) forwarding over TCP to
-  **Google Bumble** (virtual controller + GATT client — `tools/bumble_test.py` scans,
-  connects, reads/writes characteristics, subscribes to notifications), or
-  (c) a **physical Linux adapter** (`--ble-hci hci0`).
+- **BLE (C3/C6/H2)**: the NimBLE host stack runs unmodified. The upstream native
+  `esp-emu` binary intercepts HCI via firmware symbols (requires `--elf`) and forwards
+  it to (a) a built-in virtual controller, (b) **Google Bumble** over TCP
+  (`tools/bumble_test.py`), or (c) a **physical Linux adapter** (`--ble-hci hci0`).
+
+  **WASM limitation (this SDK):** the wasm build's loader intercepts the VHCI symbols
+  (`esp_vhci_host_send_packet`, `esp_bt_controller_init/enable`, …) at `load_firmware`
+  and routes HCI to its *own* built-in native BLE controller. As a result:
+  - The HCI byte stream is **not observable from JS** — the native controller is a
+    black box.
+  - `core/ble_shims.mjs` + `core/ble_controller.mjs` (the JS VHCI-interception design)
+    are **inoperative for BLE firmware**: the loader overwrites the shimmed symbols,
+    so the shim never executes. (They remain valid only for the native CLI path.)
+  - While BLE is active, the wasm stops capturing firmware MMIO UART writes, so
+    emit/APC-style hooks from firmware also cannot surface.
+  - Calling `esp_vhci_host_send_packet()` from firmware **hangs** the wasm.
+
+  **Workaround for observation:** watch the firmware's own `Serial` console. Enrich the
+  sketch to log MAC, service/characteristic UUIDs, advertising config, and
+  connection/GATT callbacks, then run `node spike/observe_ble.mjs <Sketch>` (renders
+  `[BLE]`/`[DETECT]`/`[TEST]` lines into a structured timeline). See the enriched
+  `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest`. This observes firmware *behavior*,
+  not the hidden HCI traffic.
 - **802.15.4 / Thread (C6/H2)**: OpenThread `ot_cli` / `ot_br` run on the emulated
   radio; two instances bridge raw radio frames over localhost UDP (`--thread-sim`).
 - **Ethernet**: OpenCores OpenETH (QEMU-compatible firmware) on all chips plus the
