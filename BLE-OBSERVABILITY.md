@@ -107,12 +107,31 @@ console.log(renderEvent(ev));            // '[BLE] characteristic uuid=0xbeef pr
 3. In **Bundled Arduino Demos**, pick a BLE firmware:
    - **BLE Server Demo (NimBLE)**, **BLE VHCI Detector**, **BLE VHCI Call Test**.
 4. Click **Load Demo Firmware** (this also auto-runs).
-5. Watch the **BLE Monitor** panel in the right column: a live, color-coded event
-   log (cyan = firmware BLE, purple = VHCI detector, amber = VHCI call test) plus a
-   continuously updated **Session Report**. Use **Clear** to reset the log.
+ 5. Watch the **BLE Monitor** panel in the right column: a live, color-coded event
+    log (cyan = firmware BLE, purple = VHCI detector, amber = VHCI call test) plus a
+    continuously updated **Session Report**. Use **Clear** to reset the log.
 
-The monitor taps the same UART0 output the terminal shows — it just routes
-`[BLE]`/`[DETECT]`/`[TEST]` lines through the shared `BleInspector`.
+ The monitor taps the same UART0 output the terminal shows — it just routes
+ `[BLE]`/`[DETECT]`/`[TEST]` lines through the shared `BleInspector`.
+
+ ### BLE Monitor controls
+
+ - **Tag filter** (BLE / DETECT / TEST checkboxes): show/hide each stream in the
+   live log without discarding the underlying events (filtering is display-only;
+   the report and export always use the full event set).
+ - **Export JSON**: downloads `ble-events.json` — the full structured event array
+   (`BleInspector.events`), ready for downstream tooling.
+ - **Export Report**: downloads `ble-report.txt` — the `formatReport` session summary.
+ - **Copy Report**: copies the report text to the clipboard.
+ - **Snapshot**: captures the current session report as a baseline.
+ - **Compare vs Snapshot**: shows a `formatDiff(diffReports(snapshot, current))`
+   delta in the pink diff panel — useful for run-to-run comparison (e.g. after
+   changing firmware or sketch parameters): MAC, lifecycle progress, services /
+   characteristics, advertising, connections, and GATT op counts.
+
+ All of the above are exposed from `ble_monitor_api.js` via `window.BleInspectorMod`
+ (`BleInspector`, `parseLine`, `buildReport`, `formatReport`, `renderEvent`,
+ `diffReports`, `formatDiff`).
 
 ## Enriched sketches (rebuild with arduino-cli)
 

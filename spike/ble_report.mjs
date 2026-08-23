@@ -106,6 +106,70 @@ export function formatReport(r) {
   return L.join('\n');
 }
 
+function macOf(r) { return (r && (r.identity.mac || r.detect.mac || r.test.mac)) || null; }
+function diffStr(a, b) {
+  if (a === b) return { same: true, value: a };
+  return { same: false, baseline: a, current: b };
+}
+function diffArr(a, b) {
+  const A = new Set(a), B = new Set(b);
+  return { added: b.filter(x => !A.has(x)), removed: a.filter(x => !B.has(x)), common: a.filter(x => B.has(x)) };
+}
+function diffCounts(base, cur) {
+  const out = {};
+  const keys = new Set([...Object.keys(base || {}), ...Object.keys(cur || {})]);
+  for (const k of keys) {
+    const b = (base && base[k]) || 0, c = (cur && cur[k]) || 0;
+    if (b !== c) out[k] = { baseline: b, current: c, delta: c - b };
+  }
+  return out;
+}
+
+/**
+ * Compare two BLE session reports (from buildReport). Returns a structured diff
+ * suitable for run-to-run comparison (snapshot vs. current session).
+ *   const d = diffReports(snapshot, buildReport(inspector.events));
+ */
+export function diffReports(base, cur) {
+  return {
+    mac: diffStr(macOf(base), macOf(cur)),
+    lifecycle: diffArr(base.lifecycle || [], cur.lifecycle || []),
+    services: diffArr((base.services || []).map(s => s.uuid), (cur.services || []).map(s => s.uuid)),
+    characteristics: diffArr((base.characteristics || []).map(c => c.uuid), (cur.characteristics || []).map(c => c.uuid)),
+    advertising: diffStr(
+      base.advertising ? base.advertising.name + (base.advertising.scanResponse ? '(SR)' : '') : null,
+      cur.advertising ? cur.advertising.name + (cur.advertising.scanResponse ? '(SR)' : '') : null),
+    connections: diffArr((base.connections || []).map(c => c.peer), (cur.connections || []).map(c => c.peer)),
+    gatt: {
+      reads: (cur.gatt.reads.length) - (base.gatt.reads.length),
+      writes: (cur.gatt.writes.length) - (base.gatt.writes.length),
+      notifies: (cur.gatt.notifies.length) - (base.gatt.notifies.length),
+      subscribes: (cur.gatt.subscribes.length) - (base.gatt.subscribes.length),
+      mtuChanges: (cur.gatt.mtuChanges.length) - (base.gatt.mtuChanges.length),
+    },
+    counts: diffCounts(base.counts, cur.counts),
+  };
+}
+
+export function formatDiff(d) {
+  const L = [];
+  L.push('--- BLE session diff (snapshot -> current) ---');
+  L.push('mac          : ' + (d.mac.same ? 'unchanged (' + (d.mac.value || '?') + ')' : JSON.stringify(d.mac)));
+  L.push('lifecycle    : +[' + d.lifecycle.added.join(',') + '] -[' + d.lifecycle.removed.join(',') + ']');
+  L.push('services     : +[' + d.services.added.join(',') + '] -[' + d.services.removed.join(',') + ']');
+  L.push('characterist : +[' + d.characteristics.added.join(',') + '] -[' + d.characteristics.removed.join(',') + ']');
+  L.push('advertising  : ' + (d.advertising.same ? 'unchanged' : JSON.stringify(d.advertising)));
+  L.push('connections  : +[' + d.connections.added.join(',') + '] -[' + d.connections.removed.join(',') + ']');
+  L.push('gatt delta   : read=' + d.gatt.reads + ' write=' + d.gatt.writes +
+    ' notify=' + d.gatt.notifies + ' subscribe=' + d.gatt.subscribes + ' mtuChange=' + d.gatt.mtuChanges);
+  const ck = Object.keys(d.counts);
+  if (ck.length) {
+    L.push('event counts :');
+    for (const k of ck) L.push('   - ' + k + ': ' + d.counts[k].baseline + ' -> ' + d.counts[k].current + ' (d' + d.counts[k].delta + ')');
+  }
+  return L.join('\n');
+}
+
 /** Render a single event as a compact, human-readable line (no timestamp). */
 export function renderEvent(ev) {
   const tag = ev.type.split('.')[0].toUpperCase();

@@ -17,6 +17,9 @@
     let bleLastReportT = 0;
     let bleLogEl = null;
     let bleReportEl = null;
+    let bleDiffEl = null;
+    let bleSnapshot = null;
+    const bleTagFilter = { BLE: true, DETECT: true, TEST: true };
 
     let customBinData = null;
     let customElfData = null;
@@ -359,11 +362,12 @@
 
     function appendBleEvent(ev) {
         if (!bleLogEl) return;
+        const tag = ev.type.split('.')[0].toUpperCase();
+        if (bleTagFilter[tag] === false) return; // display-only filter; events still recorded
         const row = document.createElement('div');
         row.style.fontFamily = "'Fira Code', monospace";
         row.style.fontSize = '10px';
         row.style.whiteSpace = 'pre-wrap';
-        const tag = ev.type.split('.')[0].toUpperCase();
         row.style.color = tag === 'BLE' ? '#22d3ee' : tag === 'DETECT' ? '#a78bfa' : tag === 'TEST' ? '#f59e0b' : '#94a3b8';
         row.textContent = window.BleInspectorMod.renderEvent(ev);
         bleLogEl.appendChild(row);
@@ -382,8 +386,35 @@
         bleInspector = null;
         bleBuffer = '';
         bleLastReportT = 0;
+        bleSnapshot = null;
         if (bleLogEl) bleLogEl.innerHTML = '<div style="color: var(--text-dim);">No BLE events yet. Load a BLE firmware (BLEDemo / BLEDetect / BLETest).</div>';
         if (bleReportEl) bleReportEl.textContent = '';
+        if (bleDiffEl) bleDiffEl.style.display = 'none';
+        setBleSnapStatus('');
+    }
+
+    function renderBleLog() {
+        if (!bleLogEl) return;
+        bleLogEl.innerHTML = '';
+        if (!bleInspector || bleInspector.events.length === 0) {
+            bleLogEl.innerHTML = '<div style="color: var(--text-dim);">No BLE events yet. Load a BLE firmware (BLEDemo / BLEDetect / BLETest).</div>';
+            return;
+        }
+        for (const ev of bleInspector.events) appendBleEvent(ev);
+    }
+
+    function setBleSnapStatus(s) {
+        const el = document.getElementById('ble-snapshot-status');
+        if (el) el.textContent = s || '';
+    }
+
+    function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     function logSpiActivity(act) {
@@ -871,6 +902,55 @@
                 if (bleLogEl) bleLogEl.innerHTML = '<div style="color: var(--text-dim);">No BLE events yet. Load a BLE firmware (BLEDemo / BLEDetect / BLETest).</div>';
             });
         }
+
+        // --- BLE Monitor: tag filter ---
+        const bindFilt = (id, key) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', (e) => { bleTagFilter[key] = e.target.checked; renderBleLog(); });
+        };
+        bindFilt('ble-filt-ble', 'BLE');
+        bindFilt('ble-filt-detect', 'DETECT');
+        bindFilt('ble-filt-test', 'TEST');
+
+        // --- BLE Monitor: export / copy ---
+        const bleExportJson = document.getElementById('ble-export-json');
+        if (bleExportJson) bleExportJson.addEventListener('click', () => {
+            if (!bleInspector) { setBleSnapStatus('no data'); return; }
+            const blob = new Blob([JSON.stringify(bleInspector.events, null, 2)], { type: 'application/json' });
+            downloadBlob(blob, 'ble-events.json');
+        });
+        const bleExportReport = document.getElementById('ble-export-report');
+        if (bleExportReport) bleExportReport.addEventListener('click', () => {
+            const rep = bleInspector ? window.BleInspectorMod.buildReport(bleInspector.events) : null;
+            downloadBlob(new Blob([rep ? window.BleInspectorMod.formatReport(rep) : ''], { type: 'text/plain' }), 'ble-report.txt');
+        });
+        const bleCopyReport = document.getElementById('ble-copy-report');
+        if (bleCopyReport) bleCopyReport.addEventListener('click', async () => {
+            const rep = bleInspector ? window.BleInspectorMod.buildReport(bleInspector.events) : null;
+            const text = rep ? window.BleInspectorMod.formatReport(rep) : '';
+            try { await navigator.clipboard.writeText(text); setBleSnapStatus('report copied'); }
+            catch (_) { setBleSnapStatus('copy failed'); }
+        });
+
+        // --- BLE Monitor: snapshot + compare ---
+        const bleSnapshotBtn = document.getElementById('ble-snapshot');
+        if (bleSnapshotBtn) bleSnapshotBtn.addEventListener('click', () => {
+            if (!bleInspector) { setBleSnapStatus('no data'); return; }
+            bleSnapshot = window.BleInspectorMod.buildReport(bleInspector.events);
+            setBleSnapStatus('saved ' + new Date().toLocaleTimeString());
+            if (bleDiffEl) bleDiffEl.style.display = 'none';
+        });
+        const bleCompareBtn = document.getElementById('ble-compare');
+        if (bleCompareBtn) bleCompareBtn.addEventListener('click', () => {
+            if (!bleInspector) { setBleSnapStatus('no data'); return; }
+            if (!bleSnapshot) { setBleSnapStatus('snapshot first'); return; }
+            if (!bleDiffEl) bleDiffEl = document.getElementById('ble-diff');
+            const cur = window.BleInspectorMod.buildReport(bleInspector.events);
+            const d = window.BleInspectorMod.diffReports(bleSnapshot, cur);
+            bleDiffEl.textContent = window.BleInspectorMod.formatDiff(d);
+            bleDiffEl.style.display = 'block';
+            bleDiffEl.scrollTop = bleDiffEl.scrollHeight;
+        });
 
         const sdDownBtn = document.getElementById('sd-download-btn');
         if (sdDownBtn) {

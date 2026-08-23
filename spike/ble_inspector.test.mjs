@@ -7,6 +7,7 @@
  */
 import assert from 'node:assert';
 import { parseLine, BleInspector } from './ble_inspector.mjs';
+import { buildReport, diffReports, formatDiff } from './ble_report.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -87,6 +88,32 @@ check('inspector.feed returns 2 events', got.length === 2);
 check('inspector.events has 2', ins.events.length === 2);
 check('inspector event has numeric t', typeof ins.events[0].t === 'number');
 check('inspector timestamps non-negative', ins.events[0].t >= 0 && ins.events[1].t >= 0);
+
+// buildReport + diffReports (run-to-run comparison).
+const base = buildReport([
+  { type: 'ble.mac', mac: 'AA:AA' },
+  { type: 'ble.state', state: 'starting' },
+  { type: 'ble.service', uuid: '0xdead' },
+  { type: 'ble.heartbeat', uptimeMs: 1, connections: 0 },
+]);
+const cur = buildReport([
+  { type: 'ble.mac', mac: 'BB:BB' },
+  { type: 'ble.state', state: 'starting' },
+  { type: 'ble.state', state: 'done' },
+  { type: 'ble.service', uuid: '0xdead' },
+  { type: 'ble.service', uuid: '0xbeef' },
+  { type: 'ble.heartbeat', uptimeMs: 2, connections: 1 },
+  { type: 'ble.gatt_notify', uuid: '0xbeef', value: 'x' },
+]);
+const d = diffReports(base, cur);
+check('diff mac changed', d.mac.same === false && d.mac.baseline === 'AA:AA' && d.mac.current === 'BB:BB');
+check('diff lifecycle +done', d.lifecycle.added.length === 1 && d.lifecycle.added[0] === 'done');
+check('diff services +0xbeef', d.services.added.length === 1 && d.services.added[0] === '0xbeef');
+check('diff gatt notify delta +1', d.gatt.notifies === 1);
+check('diff counts ble.state +1', d.counts['ble.state'] && d.counts['ble.state'].delta === 1);
+const df = formatDiff(d);
+check('formatDiff has mac line', df.indexOf('BB:BB') >= 0);
+check('formatDiff has diff header', df.indexOf('BLE session diff') >= 0);
 
 console.log('');
 console.log(pass + ' passed, ' + fail + ' failed');
