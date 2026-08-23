@@ -34,6 +34,208 @@
     // still counted in full in the report.
     const periHighFreq = { OLED: true, TFT: true, NEO: true, I2S: true };
     const periLogThrottle = {};
+    const periColor = { I2C: '#22d3ee', SPI: '#8b5cf6', TWAI: '#10b981', ADC: '#f59e0b', PWM: '#f472b6', I2S: '#38bdf8', NEO: '#34d399', OLED: '#a78bfa', TFT: '#fb7185', SD: '#facc15', GPIO: '#94a3b8' };
+    const periColorOf = (p) => periColor[p] || '#94a3b8';
+
+    // --- Unified Timeline: a single chronological stream of BLE + Peripheral events ---
+    let unifiedEvents = [];
+    let unifiedLogEl = null;
+    const unifiedSrcFilter = { BLE: true, PERI: true };
+
+    function appendUnifiedEvent(src, ev) {
+        if (!unifiedLogEl) unifiedLogEl = document.getElementById('unified-log');
+        if (!unifiedLogEl) return;
+        if (unifiedLogEl.children.length === 1 &&
+            unifiedLogEl.children[0].textContent.indexOf('No events yet') >= 0) {
+            unifiedLogEl.innerHTML = '';
+        }
+        unifiedEvents.push({ src, ev });
+        if (unifiedSrcFilter[src] === false) return;
+        unifiedLogEl.appendChild(buildUnifiedRow(src, ev));
+        while (unifiedLogEl.children.length > 300) unifiedLogEl.removeChild(unifiedLogEl.firstChild);
+        unifiedLogEl.scrollTop = unifiedLogEl.scrollHeight;
+    }
+
+    function buildUnifiedRow(src, ev) {
+        const row = document.createElement('div');
+        row.style.fontFamily = "'Fira Code', monospace";
+        row.style.fontSize = '10px';
+        row.style.padding = '1px 0';
+        row.style.borderBottom = '1px solid rgba(255,255,255,0.04)';
+        const t = document.createElement('span');
+        t.textContent = (ev.t / 1000).toFixed(2).padStart(7) + ' ';
+        t.style.color = 'var(--text-dim)';
+        const srcBadge = document.createElement('span');
+        const isBle = src === 'BLE';
+        srcBadge.textContent = isBle ? 'BLE ' : 'PRF ';
+        srcBadge.style.color = isBle ? '#22d3ee' : '#a78bfa';
+        srcBadge.style.fontWeight = '700';
+        const tag = document.createElement('span');
+        const sum = document.createElement('span');
+        if (isBle) {
+            const type = ev.type || '';
+            tag.textContent = type;
+            tag.style.color = type.startsWith('BLE') ? '#22d3ee' : type.startsWith('DETECT') ? '#a78bfa' : type.startsWith('TEST') ? '#f59e0b' : '#94a3b8';
+            tag.style.fontWeight = '700';
+            sum.textContent = '  ' + window.BleInspectorMod.renderEvent(ev);
+            sum.style.color = 'var(--text-main)';
+        } else {
+            tag.textContent = ev.proto + ':' + ev.kind;
+            tag.style.color = periColorOf(ev.proto);
+            tag.style.fontWeight = '700';
+            sum.textContent = '  ' + ev.summary;
+            sum.style.color = 'var(--text-main)';
+        }
+        row.appendChild(t); row.appendChild(srcBadge); row.appendChild(tag); row.appendChild(sum);
+        const vis = isBle ? null : buildPeriVisual(ev);
+        if (vis) { row.appendChild(document.createTextNode(' ')); row.appendChild(vis); }
+        return row;
+    }
+
+    function renderUnifiedLog() {
+        if (!unifiedLogEl) return;
+        unifiedLogEl.innerHTML = '';
+        if (unifiedEvents.length === 0) {
+            unifiedLogEl.innerHTML = '<div style="color: var(--text-dim);">No events yet. Load any firmware — BLE and all peripheral activity appear here on one timeline.</div>';
+            return;
+        }
+        for (const { src, ev } of unifiedEvents) {
+            if (unifiedSrcFilter[src] === false) continue;
+            unifiedLogEl.appendChild(buildUnifiedRow(src, ev));
+        }
+    }
+
+    function clearUnified() {
+        unifiedEvents = [];
+        if (unifiedLogEl) unifiedLogEl.innerHTML = '<div style="color: var(--text-dim);">No events yet. Load any firmware — BLE and all peripheral activity appear here on one timeline.</div>';
+    }
+
+    function exportUnifiedJSON() {
+        const data = unifiedEvents.map(({ src, ev }) => ({ src, ...ev }));
+        downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), 'unified-events.json');
+    }
+
+    // When a preset is loaded, focus the Peripheral Monitor on the protocols it uses.
+    function applyPresetTags(key) {
+        const map = {
+            neopixel_demo: ['NEO'],
+            adcpwm_demo: ['ADC', 'PWM'],
+            i2s_demo: ['I2S'],
+            twai_demo: ['TWAI'],
+            sdcard_demo: ['SD'],
+            st7789_demo: ['TFT', 'SPI'],
+            oled_demo: ['OLED', 'I2C'],
+            blink: ['GPIO'],
+            i2cread: ['I2C'],
+            spidemo: ['SPI'],
+            busprobe: ['I2C', 'SPI'],
+        };
+        const set = map[key];
+        if (!set) return; // BLE presets keep the default (all) tags
+        for (const proto of Object.keys(periTagFilter)) {
+            const on = set.includes(proto);
+            periTagFilter[proto] = on;
+            const cb = document.getElementById('peri-filt-' + proto.toLowerCase());
+            if (cb) cb.checked = on;
+        }
+        renderPeripheralLog();
+    }
+
+    function downsampleWave(samples, n = 48) {
+        if (!samples || !samples.length) return [];
+        const step = Math.max(1, Math.floor(samples.length / n));
+        const out = [];
+        for (let i = 0; i < samples.length; i += step) {
+            out.push(Math.max(-1, Math.min(1, samples[i])));
+            if (out.length >= n) break;
+        }
+        return out;
+    }
+
+    function makeFrameThumb(proto, buffer, width, height) {
+        try {
+            width = width || (proto === 'OLED' ? 128 : 240);
+            height = height || (proto === 'OLED' ? 64 : 240);
+            const full = document.createElement('canvas');
+            full.width = width; full.height = height;
+            const fctx = full.getContext('2d');
+            const img = fctx.createImageData(width, height);
+            if (proto === 'OLED') {
+                const pages = Math.ceil(height / 8);
+                for (let page = 0; page < pages; page++) {
+                    for (let col = 0; col < width; col++) {
+                        const byte = buffer[page * width + col] || 0;
+                        for (let bit = 0; bit < 8; bit++) {
+                            const y = page * 8 + bit;
+                            if (y >= height) continue;
+                            const idx = (y * width + col) * 4;
+                            if (byte & (1 << bit)) { img.data[idx] = 0; img.data[idx + 1] = 255; img.data[idx + 2] = 255; }
+                            else { img.data[idx] = 3; img.data[idx + 1] = 8; img.data[idx + 2] = 13; }
+                            img.data[idx + 3] = 255;
+                        }
+                    }
+                }
+            } else {
+                img.data.set(buffer);
+            }
+            fctx.putImageData(img, 0, 0);
+            const tw = Math.min(width, 64);
+            const th = Math.max(1, Math.round(tw * height / width));
+            const t = document.createElement('canvas');
+            t.width = tw; t.height = th;
+            const tctx = t.getContext('2d');
+            tctx.imageSmoothingEnabled = false;
+            tctx.drawImage(full, 0, 0, tw, th);
+            return t.toDataURL('image/png');
+        } catch (e) { return null; }
+    }
+
+    function buildPeriVisual(ev) {
+        const d = ev.detail;
+        if (!d || d.__sampled) return null;
+        if (ev.proto === 'NEO' && d.pixels && d.pixels.length) {
+            const wrap = document.createElement('span');
+            wrap.style.display = 'inline-flex';
+            wrap.style.gap = '2px';
+            wrap.style.verticalAlign = 'middle';
+            for (const p of d.pixels.slice(0, 6)) {
+                const s = document.createElement('span');
+                s.style.display = 'inline-block';
+                s.style.width = '8px'; s.style.height = '8px';
+                s.style.borderRadius = '2px';
+                s.style.backgroundColor = `rgb(${p.r},${p.g},${p.b})`;
+                s.style.boxShadow = '0 0 3px rgba(0,0,0,0.6)';
+                wrap.appendChild(s);
+            }
+            return wrap;
+        }
+        if (ev.proto === 'I2S' && d.wave && d.wave.length) {
+            const c = document.createElement('canvas');
+            c.width = 48; c.height = 14;
+            c.style.verticalAlign = 'middle';
+            const ctx = c.getContext('2d');
+            ctx.strokeStyle = '#38bdf8';
+            ctx.beginPath();
+            const w = d.wave, n = w.length;
+            for (let i = 0; i < n; i++) {
+                const x = (i / Math.max(1, n - 1)) * c.width;
+                const y = c.height / 2 - (w[i] || 0) * (c.height / 2 - 1);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            return c;
+        }
+        if ((ev.proto === 'OLED' || ev.proto === 'TFT') && d.thumb) {
+            const img = document.createElement('img');
+            img.src = d.thumb;
+            img.style.height = '16px';
+            img.style.verticalAlign = 'middle';
+            img.style.border = '1px solid rgba(255,255,255,0.15)';
+            img.style.borderRadius = '2px';
+            return img;
+        }
+        return null;
+    }
 
     let customBinData = null;
     let customElfData = null;
@@ -371,6 +573,7 @@
             ev.t = Date.now() - bleInspector.t0;
             bleInspector.events.push(ev);
             appendBleEvent(ev);
+            appendUnifiedEvent('BLE', ev);
         }
         const now = Date.now();
         if (now - bleLastReportT > 1000) { bleLastReportT = now; updateBleReport(); }
@@ -444,27 +647,51 @@
             periLogEl.children[0].textContent.indexOf('No peripheral events') >= 0) {
             periLogEl.innerHTML = '';
         }
-        const ev = peripheralInspector.add(proto, kind, summary, detail);
-        appendPeripheralEvent(ev);
         const now = Date.now();
+        let show = true;
+        let evtDetail = detail;
+        if (periHighFreq[proto]) {
+            const last = periLogThrottle[proto] || 0;
+            if (now - last < 400) {
+                show = false;
+                evtDetail = { __sampled: true };
+            } else {
+                periLogThrottle[proto] = now;
+                // Convert heavy frame buffers into a small thumbnail for shown events only.
+                if ((proto === 'OLED' || proto === 'TFT') && detail && detail.buffer) {
+                    evtDetail = { width: detail.width, height: detail.height, thumb: makeFrameThumb(proto, detail.buffer, detail.width, detail.height) };
+                }
+            }
+        }
+        const ev = peripheralInspector.add(proto, kind, summary, evtDetail);
+        if (show) appendPeripheralEvent(ev);
+        if (show) appendUnifiedEvent('PERI', ev);
         if (now - periLastReportT > 1000) { periLastReportT = now; updatePeripheralReport(); }
     }
 
     function appendPeripheralEvent(ev) {
         if (!periLogEl) return;
         if (periTagFilter[ev.proto] === false) return;
-        if (periHighFreq[ev.proto]) {
-            const now = Date.now();
-            const last = periLogThrottle[ev.proto] || 0;
-            if (now - last < 400) return; // sample high-frequency streams in the live log
-            periLogThrottle[ev.proto] = now;
-        }
+        if (ev.detail && ev.detail.__sampled) return;
         const row = document.createElement('div');
         row.style.fontFamily = "'Fira Code', monospace";
         row.style.fontSize = '10px';
-        row.style.whiteSpace = 'pre-wrap';
-        row.style.color = ev.proto === 'I2C' ? '#22d3ee' : ev.proto === 'SPI' ? '#8b5cf6' : ev.proto === 'TWAI' ? '#10b981' : '#94a3b8';
-        row.textContent = ev.summary;
+        row.style.padding = '1px 0';
+        row.style.borderBottom = '1px solid rgba(255,255,255,0.04)';
+        const color = periColorOf(ev.proto);
+        const t = document.createElement('span');
+        t.textContent = (ev.t / 1000).toFixed(2).padStart(7) + ' ';
+        t.style.color = 'var(--text-dim)';
+        const tag = document.createElement('span');
+        tag.textContent = ev.proto + ':' + ev.kind;
+        tag.style.color = color;
+        tag.style.fontWeight = '700';
+        const sum = document.createElement('span');
+        sum.textContent = '  ' + ev.summary;
+        sum.style.color = 'var(--text-main)';
+        row.appendChild(t); row.appendChild(tag); row.appendChild(sum);
+        const vis = buildPeriVisual(ev);
+        if (vis) { row.appendChild(document.createTextNode(' ')); row.appendChild(vis); }
         periLogEl.appendChild(row);
         while (periLogEl.children.length > 200) periLogEl.removeChild(periLogEl.firstChild);
         periLogEl.scrollTop = periLogEl.scrollHeight;
@@ -687,17 +914,18 @@
 
                 case 'oled_frame':
                     renderOledFrame(msg);
-                    emitPeripheral('OLED', 'frame', `OLED frame (${msg.width || 128}x${msg.height || 64})`, { width: msg.width, height: msg.height });
+                    emitPeripheral('OLED', 'frame', `OLED frame (${msg.width || 128}x${msg.height || 64})`, { width: msg.width, height: msg.height, buffer: msg.buffer });
                     break;
 
                 case 'tft_frame':
                     renderTftFrame(msg);
-                    emitPeripheral('TFT', 'frame', `TFT frame (${msg.width || 240}x${msg.height || 240})`, { width: msg.width, height: msg.height });
+                    emitPeripheral('TFT', 'frame', `TFT frame (${msg.width || 240}x${msg.height || 240})`, { width: msg.width, height: msg.height, buffer: msg.buffer });
                     break;
 
                 case 'neopixel_frame':
                     renderNeoPixels(msg);
-                    emitPeripheral('NEO', 'update', `NeoPixel update pin=${msg.pin} n=${msg.count || (msg.pixels ? msg.pixels.length : '?')}`, { pin: msg.pin, count: msg.count });
+                    emitPeripheral('NEO', 'update', `NeoPixel update pin=${msg.pin} n=${msg.count || (msg.pixels ? msg.pixels.length : '?')}`,
+                        { pin: msg.pin, count: msg.count, pixels: msg.pixels ? msg.pixels.slice(0, 8).map(p => ({ r: p.r, g: p.g, b: p.b })) : [] });
                     break;
 
                 case 'gpio_update':
@@ -777,7 +1005,7 @@
 
                 case 'i2s_audio': {
                     handleI2sAudio(msg);
-                    emitPeripheral('I2S', 'audio', `I2S audio samples=${msg.samples ? msg.samples.length : '?'} vol=${msg.volume ?? '?'}% rate=${msg.sampleRate ?? '?'}`, { samples: msg.samples ? msg.samples.length : 0, volume: msg.volume, sampleRate: msg.sampleRate });
+                    emitPeripheral('I2S', 'audio', `I2S audio samples=${msg.samples ? msg.samples.length : '?'} vol=${msg.volume ?? '?'}% rate=${msg.sampleRate ?? '?'}`, { samples: msg.samples ? msg.samples.length : 0, volume: msg.volume, sampleRate: msg.sampleRate, wave: downsampleWave(msg.samples) });
                     break;
                 }
 
@@ -901,6 +1129,8 @@
                 elf: elfBuf,
                 skipRom: !bootRom,
             });
+
+            applyPresetTags(key);
 
             setTimeout(() => {
                 if (firmwareLoaded && !isRunning) {
@@ -1113,6 +1343,16 @@
         if (periClearBtn) periClearBtn.addEventListener('click', () => {
             if (periLogEl) periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses any peripheral (I2C / SPI / TWAI / ADC / PWM / I2S / …).</div>';
         });
+
+        // --- Unified Timeline: source filter + clear + export ---
+        const uFiltBle = document.getElementById('unified-filt-ble');
+        if (uFiltBle) uFiltBle.addEventListener('change', (e) => { unifiedSrcFilter.BLE = e.target.checked; renderUnifiedLog(); });
+        const uFiltPeri = document.getElementById('unified-filt-peri');
+        if (uFiltPeri) uFiltPeri.addEventListener('change', (e) => { unifiedSrcFilter.PERI = e.target.checked; renderUnifiedLog(); });
+        const uClear = document.getElementById('unified-clear-btn');
+        if (uClear) uClear.addEventListener('click', clearUnified);
+        const uExport = document.getElementById('unified-export-json');
+        if (uExport) uExport.addEventListener('click', exportUnifiedJSON);
 
         const sdDownBtn = document.getElementById('sd-download-btn');
         if (sdDownBtn) {

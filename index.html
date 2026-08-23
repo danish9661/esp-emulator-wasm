@@ -836,6 +836,24 @@
             </div>
 
             <div class="panel-section">
+                <h3>
+                    <span>Unified Timeline (BLE + Peripherals)</span>
+                    <button id="unified-clear-btn" style="padding: 2px 6px; font-size: 10px;">Clear</button>
+                </h3>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;">
+                    <span style="font-size: 10px; color: var(--text-dim);">Sources:</span>
+                    <label style="font-size: 10px; color: #22d3ee;"><input type="checkbox" id="unified-filt-ble" checked> BLE</label>
+                    <label style="font-size: 10px; color: #a78bfa;"><input type="checkbox" id="unified-filt-peri" checked> Peripherals</label>
+                </div>
+                <div class="i2c-log-box" id="unified-log" style="max-height: 220px; font-family: 'Fira Code', monospace; font-size: 10px;">
+                    <div style="color: var(--text-dim);">No events yet. Load any firmware — BLE and all peripheral activity appear here on one timeline.</div>
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;">
+                    <button id="unified-export-json" style="padding: 2px 6px; font-size: 10px;">Export JSON</button>
+                </div>
+            </div>
+
+            <div class="panel-section">
                 <h3>Patch Status</h3>
                 <div id="patch-status" style="font-size: 11px; font-family: 'Fira Code', monospace; color: var(--text-muted);">
                     No firmware patched.

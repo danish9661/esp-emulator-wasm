@@ -192,7 +192,21 @@ them all under one taggable, reportable stream:
  (default 1500, stops early on a `*done` marker). It prints the firmware console
  tail plus a `formatPeripheralReport` summary — the same report the web UI shows.
 
-## Enriched sketches (rebuild with arduino-cli)
+ ### Unified Timeline (BLE + all peripherals)
+
+ The web UI also has a **Unified Timeline** panel that interleaves BLE Monitor
+ and Peripheral Monitor events on a single chronological axis (tagged `BLE` /
+ `PRF`). A source filter (BLE / Peripherals) toggles which stream is shown; the
+ log carries the same inline visualizations as the Peripheral Monitor (NeoPixel
+ swatches, I2S waveform, OLED / ST7789 thumbnails). **Export JSON** dumps the
+ merged event array.
+
+ When a **preset** is loaded, the Peripheral Monitor auto-focuses its tag filters
+ to the protocols that preset exercises (e.g. `oled_demo` → OLED + I2C,
+ `adcpwm_demo` → ADC + PWM, `i2s_demo` → I2S), so the relevant traffic is
+ immediately visible without manual checkbox toggling.
+
+ ## Enriched sketches (rebuild with arduino-cli)
 
 The sketches are intentionally verbose so the observer has something to show. Rebuild
 after editing:
