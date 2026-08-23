@@ -206,6 +206,26 @@ them all under one taggable, reportable stream:
  `adcpwm_demo` → ADC + PWM, `i2s_demo` → I2S), so the relevant traffic is
  immediately visible without manual checkbox toggling.
 
+ ### A/B Firmware Comparison
+
+ The **A/B Firmware Comparison** panel runs two presets back-to-back and prints a
+ single combined diff. Pick Firmware A (baseline) and Firmware B (compare), set a
+ *Settle* time (how long each firmware runs before its snapshot is taken, default
+ 4 s), then click **Run A→B**. The tool resets the BLE and Peripheral monitors,
+ loads A, waits, snapshots both reports, resets again, loads B, waits, and prints:
+
+ ```
+ === A/B Comparison (BLE + Peripherals) ===
+ Firmware A : oled_demo
+ Firmware B : st7789_demo
+ --- BLE ---      (BleInspector diffReports / formatDiff)
+ --- Peripherals ---  (PeripheralInspector diffPeripheralReports / formatPeripheralDiff)
+ ```
+
+ **Export** downloads the combined report as `ab-comparison.txt`. This is handy
+ for catching regressions between two builds of the same sketch (e.g. before/after
+ a change that alters bus or BLE traffic).
+
  ## Enriched sketches (rebuild with arduino-cli)
 
 The sketches are intentionally verbose so the observer has something to show. Rebuild

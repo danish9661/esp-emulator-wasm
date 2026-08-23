@@ -1354,6 +1354,71 @@
         const uExport = document.getElementById('unified-export-json');
         if (uExport) uExport.addEventListener('click', exportUnifiedJSON);
 
+        // --- A/B Firmware Comparison (guided one-click, combined BLE + Peripheral diff) ---
+        const abSelA = document.getElementById('ab-select-a');
+        const abSelB = document.getElementById('ab-select-b');
+        const abSettle = document.getElementById('ab-settle');
+        const abRun = document.getElementById('ab-run-btn');
+        const abExport = document.getElementById('ab-export-btn');
+        const abStatus = document.getElementById('ab-status');
+        const abReport = document.getElementById('ab-report');
+        if (abSelA && abSelB) {
+            const src = document.getElementById('preset-select');
+            if (src) {
+                for (const opt of src.options) {
+                    abSelA.appendChild(new Option(opt.text, opt.value));
+                    abSelB.appendChild(new Option(opt.text, opt.value));
+                }
+            }
+            abSelA.value = 'oled_demo';
+            abSelB.value = 'st7789_demo';
+        }
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const setAbStatus = (s) => { if (abStatus) abStatus.textContent = s; };
+        if (abRun) abRun.addEventListener('click', async () => {
+            const keyA = abSelA.value, keyB = abSelB.value;
+            const settle = Math.max(500, parseInt(abSettle.value) || 4000);
+            abRun.disabled = true;
+            try {
+                setAbStatus(`Loading A (${keyA}) and settling ${settle}ms...`);
+                resetBleMonitor(); resetPeripheralMonitor();
+                await loadPresetFirmware(keyA);
+                await sleep(settle);
+                const bleBase = bleInspector ? window.BleInspectorMod.buildReport(bleInspector.events) : null;
+                const periBase = peripheralInspector ? window.PeripheralInspectorMod.buildPeripheralReport(peripheralInspector.events) : null;
+                setAbStatus(`A captured. Loading B (${keyB}) and settling ${settle}ms...`);
+                resetBleMonitor(); resetPeripheralMonitor();
+                await loadPresetFirmware(keyB);
+                await sleep(settle);
+                const bleCur = bleInspector ? window.BleInspectorMod.buildReport(bleInspector.events) : null;
+                const periCur = peripheralInspector ? window.PeripheralInspectorMod.buildPeripheralReport(peripheralInspector.events) : null;
+                const L = [];
+                L.push('=== A/B Comparison (BLE + Peripherals) ===');
+                L.push('Firmware A : ' + keyA);
+                L.push('Firmware B : ' + keyB);
+                L.push('');
+                L.push('--- BLE ---');
+                if (bleBase && bleCur) L.push(window.BleInspectorMod.formatDiff(window.BleInspectorMod.diffReports(bleBase, bleCur)));
+                else if (bleCur) L.push(window.BleInspectorMod.formatReport(bleCur));
+                else L.push('no BLE events');
+                L.push('');
+                L.push('--- Peripherals ---');
+                if (periBase && periCur) L.push(window.PeripheralInspectorMod.formatPeripheralDiff(window.PeripheralInspectorMod.diffPeripheralReports(periBase, periCur)));
+                else if (periCur) L.push(window.PeripheralInspectorMod.formatPeripheralReport(periCur));
+                else L.push('no peripheral events');
+                if (abReport) abReport.textContent = L.join('\n');
+                setAbStatus('Done. Combined A/B diff shown below (Export to save).');
+            } catch (e) {
+                setAbStatus('Error: ' + (e && e.message ? e.message : e));
+            } finally {
+                abRun.disabled = false;
+            }
+        });
+        if (abExport) abExport.addEventListener('click', () => {
+            if (!abReport || !abReport.textContent) return;
+            downloadBlob(new Blob([abReport.textContent], { type: 'text/plain' }), 'ab-comparison.txt');
+        });
+
         const sdDownBtn = document.getElementById('sd-download-btn');
         if (sdDownBtn) {
             sdDownBtn.addEventListener('click', () => {
