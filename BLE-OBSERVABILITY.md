@@ -158,6 +158,29 @@ A single **Peripheral Monitor** panel aggregates them:
  `window.PeripheralInspectorMod` (`PeripheralInspector`, `buildPeripheralReport`,
  `formatPeripheralReport`, `diffPeripheralReports`, `formatPeripheralDiff`).
 
+ ### CLI observer (`spike/observe_peripheral.mjs`)
+
+ The same pipeline can be run headlessly to **prove the monitor on real emulator
+ output** (the APC routing + `peripherals.mjs` host models below are exactly what
+ the browser worker does before it posts `i2c` / `spi` / `can` messages):
+
+ ```bash
+ node spike/observe_peripheral.mjs i2c      # I2C sensor read
+ node spike/observe_peripheral.mjs spi      # SPI full-duplex transfer
+ node spike/observe_peripheral.mjs bus      # BusProbe (I2C + SPI)
+ node spike/observe_peripheral.mjs twai     # TWAI / CAN transmits
+ node spike/observe_peripheral.mjs oled    # also exercises I2C
+ node spike/observe_peripheral.mjs st7789  # also exercises SPI
+ node spike/observe_peripheral.mjs neopixel
+ node spike/observe_peripheral.mjs sdcard
+ node spike/observe_peripheral.mjs adcpwm
+ node spike/observe_peripheral.mjs i2s
+ ```
+
+ Flags: `--json` dumps the raw event array; `--steps=N` sets the batch count
+ (default 1500, stops early on a `*done` marker). It prints the firmware console
+ tail plus a `formatPeripheralReport` summary — the same report the web UI shows.
+
 ## Enriched sketches (rebuild with arduino-cli)
 
 The sketches are intentionally verbose so the observer has something to show. Rebuild
