@@ -800,7 +800,7 @@
 
             <div class="panel-section">
                 <h3>
-                    <span>Peripheral Monitor (I2C / SPI / TWAI)</span>
+                    <span>Peripheral Monitor (all protocols)</span>
                     <button id="peri-clear-btn" style="padding: 2px 6px; font-size: 10px;">Clear</button>
                 </h3>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;">
@@ -808,9 +808,17 @@
                     <label style="font-size: 10px; color: #22d3ee;"><input type="checkbox" id="peri-filt-i2c" checked> I2C</label>
                     <label style="font-size: 10px; color: #8b5cf6;"><input type="checkbox" id="peri-filt-spi" checked> SPI</label>
                     <label style="font-size: 10px; color: #10b981;"><input type="checkbox" id="peri-filt-twai" checked> TWAI</label>
+                    <label style="font-size: 10px; color: #f59e0b;"><input type="checkbox" id="peri-filt-adc" checked> ADC</label>
+                    <label style="font-size: 10px; color: #f472b6;"><input type="checkbox" id="peri-filt-pwm" checked> PWM</label>
+                    <label style="font-size: 10px; color: #38bdf8;"><input type="checkbox" id="peri-filt-i2s" checked> I2S</label>
+                    <label style="font-size: 10px; color: #34d399;"><input type="checkbox" id="peri-filt-neo" checked> NeoPixel</label>
+                    <label style="font-size: 10px; color: #a78bfa;"><input type="checkbox" id="peri-filt-oled" checked> OLED</label>
+                    <label style="font-size: 10px; color: #fb7185;"><input type="checkbox" id="peri-filt-tft" checked> ST7789</label>
+                    <label style="font-size: 10px; color: #facc15;"><input type="checkbox" id="peri-filt-sd" checked> SD</label>
+                    <label style="font-size: 10px; color: #94a3b8;"><input type="checkbox" id="peri-filt-gpio" checked> GPIO</label>
                 </div>
                 <div class="i2c-log-box" id="peri-log" style="max-height: 160px; font-family: 'Fira Code', monospace; font-size: 10px;">
-                    <div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses I2C / SPI / TWAI.</div>
+                    <div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses any peripheral (I2C / SPI / TWAI / ADC / PWM / I2S / …).</div>
                 </div>
                 <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;">
                     <button id="peri-export-json" style="padding: 2px 6px; font-size: 10px;">Export JSON</button>

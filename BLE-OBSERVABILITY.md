@@ -25,8 +25,8 @@ So BLE observability here means **watching what the firmware itself prints** —
 | `spike/ble_report.mjs` | `buildReport()` / `formatReport()` / `renderEvent()` — aggregate events into a session report. |
 | `spike/ble_inspector.test.mjs` | 41-assertion regression test for the parser. |
 | `ble_monitor_api.js` + `app.js` + `index.html` | Web UI "BLE Monitor" panel (live event log + session report). |
-| `spike/peripheral_inspector.mjs` | Generic `PeripheralInspector` — structured event log for I2C / SPI / TWAI (observed from the emulator's own JS callbacks, not console text). |
-| `peripheral_monitor_api.js` + `app.js` + `index.html` | Web UI "Peripheral Monitor" panel — same tooling as BLE Monitor, aggregated across I2C / SPI / TWAI. |
+| `spike/peripheral_inspector.mjs` | Generic `PeripheralInspector` — structured event log for ALL protocols (observed from the emulator's own JS callbacks, not console text). |
+| `peripheral_monitor_api.js` + `app.js` + `index.html` | Web UI "Peripheral Monitor" panel — same tooling as BLE Monitor, aggregated across ALL protocols. |
 | `spike/peripheral_inspector.test.mjs` | 20-assertion regression test for the generic inspector. |
 | `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest` | Enriched NimBLE sketches that log BLE behavior. |
 
@@ -136,15 +136,21 @@ console.log(renderEvent(ev));            // '[BLE] characteristic uuid=0xbeef pr
  (`BleInspector`, `parseLine`, `buildReport`, `formatReport`, `renderEvent`,
  `diffReports`, `formatDiff`).
 
-## Peripheral Monitor (I2C / SPI / TWAI)
+## Peripheral Monitor (all protocols)
 
-The same observability pattern is generalized to the other textual-protocol logs.
-Unlike BLE (parsed from firmware console text), I2C / SPI / TWAI are observed from
-the emulator's own JS activity callbacks, so their events are already structured.
-A single **Peripheral Monitor** panel aggregates them:
+The same observability pattern is generalized to **every** protocol the emulator
+exposes through its own JS callbacks. BLE is observed by parsing firmware console
+text; I2C / SPI / TWAI / ADC / PWM / I2S / NeoPixel / OLED / ST7789 / SD / GPIO are
+observed from the emulator's structured activity callbacks (the same data the worker
+uses to drive the on-screen widgets). A single **Peripheral Monitor** panel aggregates
+them all under one taggable, reportable stream:
 
-- **Tag filter** (I2C / SPI / TWAI checkboxes): show/hide each bus in the live log
-  (display-only; the report and export always use the full event set).
+- **Tag filter** (I2C / SPI / TWAI / ADC / PWM / I2S / NeoPixel / OLED / ST7789 / SD
+  / GPIO checkboxes): show/hide each protocol in the live log (display-only; the
+  report and export always use the full event set).
+- High-frequency streams (OLED / ST7789 frames, NeoPixel updates, I2S audio) are
+  **sampled** in the live log (~every 400 ms) so it stays readable, while still
+  counted in full in the report.
 - **Export JSON** (`peripheral-events.json`), **Export Report**
   (`peripheral-report.txt`), **Copy Report**.
 - **Snapshot** + **Compare vs Snapshot**: `formatPeripheralDiff(
@@ -152,7 +158,9 @@ A single **Peripheral Monitor** panel aggregates them:
   useful for comparing two runs of the same firmware (e.g. before/after a code
   change that alters bus traffic).
 - Each event is `{ t, proto, kind, summary, detail }`; `detail` carries structured
-  data (`addr`/`data` for I2C, `data`/`reply` for SPI, `id`/`dlc`/`data` for TWAI).
+  data (`addr`/`data` for I2C, `data`/`reply` for SPI, `id`/`dlc`/`data` for TWAI,
+  `pin`/`raw`/`voltage` for ADC, `pin`/`duty` for PWM, `samples`/`volume` for I2S,
+  `width`/`height` for OLED/ST7789, `pin`/`count` for NeoPixel, `lba`/`cmd` for SD).
 
  All of the above are exposed from `peripheral_monitor_api.js` via
  `window.PeripheralInspectorMod` (`PeripheralInspector`, `buildPeripheralReport`,
@@ -162,15 +170,18 @@ A single **Peripheral Monitor** panel aggregates them:
 
  The same pipeline can be run headlessly to **prove the monitor on real emulator
  output** (the APC routing + `peripherals.mjs` host models below are exactly what
- the browser worker does before it posts `i2c` / `spi` / `can` messages):
+ the browser worker does before it posts the activity messages). It captures the
+ same protocols: I2C / SPI / TWAI via the `W`/`R`/`S`/`C` APC frames, and ADC / PWM /
+ I2S / NeoPixel via the `A`/`V`/`P`/`I`/`N` frames; OLED / ST7789 / SD are captured
+ through the device `onFrame` / `onActivity` hooks.
 
  ```bash
  node spike/observe_peripheral.mjs i2c      # I2C sensor read
  node spike/observe_peripheral.mjs spi      # SPI full-duplex transfer
  node spike/observe_peripheral.mjs bus      # BusProbe (I2C + SPI)
  node spike/observe_peripheral.mjs twai     # TWAI / CAN transmits
- node spike/observe_peripheral.mjs oled    # also exercises I2C
- node spike/observe_peripheral.mjs st7789  # also exercises SPI
+ node spike/observe_peripheral.mjs oled    # OLED frames + I2C
+ node spike/observe_peripheral.mjs st7789  # ST7789 frames + SPI
  node spike/observe_peripheral.mjs neopixel
  node spike/observe_peripheral.mjs sdcard
  node spike/observe_peripheral.mjs adcpwm

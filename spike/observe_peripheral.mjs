@@ -106,6 +106,9 @@ twai.onActivity((act) => {
   emit('TWAI', isTx ? 'tx' : 'rx', `[${isTx ? 'TX' : 'RX'}] ID:${hexId} DLC:${act.dlc} ${hexOf(act.data || [])}`,
     { id: act.id, dlc: act.dlc, data: act.data });
 });
+oled.onFrame((f) => emit('OLED', 'frame', `OLED frame (${f.width}x${f.height})`, { width: f.width, height: f.height }));
+tft.onFrame((f) => emit('TFT', 'frame', `TFT frame (${f.width}x${f.height})`, { width: f.width, height: f.height }));
+sd.onActivity((act) => emit('SD', act.type || (act.cmd ? 'cmd' : 'activity'), `SD ${act.type || act.cmd || 'activity'}`, act));
 
 const { emu } = await boot({ chip: 'esp32c3', firmware: flash, bootFromRom: true });
 
@@ -154,18 +157,30 @@ function processStream(chunk) {
         emu.uart_input(new Uint8Array([reply]));
       }
     } else if (kind === 'N') {
-      neoPixel.update(body.charCodeAt(0), decodeHex(body.slice(2)));
+      const pin = body.charCodeAt(0);
+      const bytes = decodeHex(body.slice(2));
+      emit('NEO', 'update', `NeoPixel update pin=${pin} n=${bytes.length / 3}`, { pin, count: bytes.length / 3 });
+      neoPixel.update(pin, bytes);
     } else if (kind === 'A') {
-      emu.uart_input(new Uint8Array([(adc.readRaw(body.charCodeAt(0) & 0x7F) >> 8) & 0xFF, adc.readRaw(body.charCodeAt(0) & 0x7F) & 0xFF]));
+      const pin = body.charCodeAt(0) & 0x7F;
+      const raw = adc.readRaw(pin);
+      emit('ADC', 'read', `ADC pin=${pin} raw=${raw} ${(raw / 4095 * 3.3).toFixed(2)}V`, { pin, raw });
+      emu.uart_input(new Uint8Array([(raw >> 8) & 0xFF, raw & 0xFF]));
     } else if (kind === 'V') {
-      const v = adc.readMilliVolts(body.charCodeAt(0) & 0x7F);
+      const pin = body.charCodeAt(0) & 0x7F;
+      const v = adc.readMilliVolts(pin);
+      emit('ADC', 'read', `ADC pin=${pin} ${v}mV`, { pin, milliVolts: v });
       emu.uart_input(new Uint8Array([(v >> 8) & 0xFF, v & 0xFF]));
     } else if (kind === 'P') {
-      pwm.update(body.charCodeAt(0) & 0x7F, ((body.charCodeAt(1) & 0x7f) << 7) | (body.charCodeAt(2) & 0x7f));
+      const pin = body.charCodeAt(0) & 0x7F;
+      const duty = ((body.charCodeAt(1) & 0x7f) << 7) | (body.charCodeAt(2) & 0x7f);
+      emit('PWM', 'write', `PWM pin=${pin} duty=${duty}`, { pin, duty });
+      pwm.update(pin, duty);
     } else if (kind === 'I') {
       const len = ((body.charCodeAt(0) & 0x7f) << 7) | (body.charCodeAt(1) & 0x7f);
       const bytes = [];
       for (let i = 0; i < len && 2 + i < body.length; i++) bytes.push(body.charCodeAt(2 + i) & 0xff);
+      emit('I2S', 'audio', `I2S audio samples=${bytes.length}`, { samples: bytes.length });
       i2s.writePcm(bytes);
     } else if (kind === 'C') {
       if (body === 'R') { const resp = twai.popRxFrame() || new Uint8Array([0]); emu.uart_input(resp); }

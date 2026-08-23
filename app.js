@@ -21,15 +21,19 @@
     let bleSnapshot = null;
     const bleTagFilter = { BLE: true, DETECT: true, TEST: true };
 
-    // Peripheral Monitor state (I2C / SPI / TWAI observed from the emulator's
-    // own JS activity callbacks — already structured, unlike BLE's console text).
+    // Peripheral Monitor state (all protocols observed from the emulator's own
+    // JS activity callbacks — already structured, unlike BLE's console text).
     let peripheralInspector = null;
     let periLogEl = null;
     let periReportEl = null;
     let periDiffEl = null;
     let periSnapshot = null;
     let periLastReportT = 0;
-    const periTagFilter = { I2C: true, SPI: true, TWAI: true };
+    const periTagFilter = { I2C: true, SPI: true, TWAI: true, ADC: true, PWM: true, I2S: true, NEO: true, OLED: true, TFT: true, SD: true, GPIO: true };
+    // High-frequency streams (frames / audio) are sampled in the live log but
+    // still counted in full in the report.
+    const periHighFreq = { OLED: true, TFT: true, NEO: true, I2S: true };
+    const periLogThrottle = {};
 
     let customBinData = null;
     let customElfData = null;
@@ -429,7 +433,7 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
-    // --- Peripheral Monitor: unified structured log for I2C / SPI / TWAI ---
+    // --- Peripheral Monitor: unified structured log for ALL protocols (I2C/SPI/TWAI/ADC/PWM/I2S/NeoPixel/OLED/ST7789/SD/GPIO) ---
     function emitPeripheral(proto, kind, summary, detail) {
         if (!window.PeripheralInspectorMod) return;
         if (!peripheralInspector) peripheralInspector = new window.PeripheralInspectorMod.PeripheralInspector();
@@ -449,6 +453,12 @@
     function appendPeripheralEvent(ev) {
         if (!periLogEl) return;
         if (periTagFilter[ev.proto] === false) return;
+        if (periHighFreq[ev.proto]) {
+            const now = Date.now();
+            const last = periLogThrottle[ev.proto] || 0;
+            if (now - last < 400) return; // sample high-frequency streams in the live log
+            periLogThrottle[ev.proto] = now;
+        }
         const row = document.createElement('div');
         row.style.fontFamily = "'Fira Code', monospace";
         row.style.fontSize = '10px';
@@ -471,7 +481,7 @@
         if (!periLogEl) return;
         periLogEl.innerHTML = '';
         if (!peripheralInspector || peripheralInspector.events.length === 0) {
-            periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses I2C / SPI / TWAI.</div>';
+            periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses any peripheral (I2C / SPI / TWAI / ADC / PWM / I2S / …).</div>';
             return;
         }
         for (const ev of peripheralInspector.events) appendPeripheralEvent(ev);
@@ -481,7 +491,8 @@
         peripheralInspector = null;
         periLastReportT = 0;
         periSnapshot = null;
-        if (periLogEl) periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses I2C / SPI / TWAI.</div>';
+        for (const k in periLogThrottle) delete periLogThrottle[k];
+        if (periLogEl) periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses any peripheral (I2C / SPI / TWAI / ADC / PWM / I2S / …).</div>';
         if (periReportEl) periReportEl.textContent = '';
         if (periDiffEl) periDiffEl.style.display = 'none';
         setPeriSnapStatus('');
@@ -676,18 +687,22 @@
 
                 case 'oled_frame':
                     renderOledFrame(msg);
+                    emitPeripheral('OLED', 'frame', `OLED frame (${msg.width || 128}x${msg.height || 64})`, { width: msg.width, height: msg.height });
                     break;
 
                 case 'tft_frame':
                     renderTftFrame(msg);
+                    emitPeripheral('TFT', 'frame', `TFT frame (${msg.width || 240}x${msg.height || 240})`, { width: msg.width, height: msg.height });
                     break;
 
                 case 'neopixel_frame':
                     renderNeoPixels(msg);
+                    emitPeripheral('NEO', 'update', `NeoPixel update pin=${msg.pin} n=${msg.count || (msg.pixels ? msg.pixels.length : '?')}`, { pin: msg.pin, count: msg.count });
                     break;
 
                 case 'gpio_update':
                     updateGpioState(msg.out, msg.enable);
+                    emitPeripheral('GPIO', 'update', `GPIO out=0x${msg.out?.toString(16) || msg.out}`, { out: msg.out, enable: msg.enable });
                     break;
 
                 case 'i2c_activity':
@@ -718,6 +733,11 @@
                             opEl.textContent = `${msg.cmd}`;
                         }
                     }
+                    emitPeripheral('SD', msg.type || (msg.cmd ? 'cmd' : 'activity'),
+                        msg.type === 'read_sector' ? `SD read sector lba=${msg.lba}`
+                        : msg.type === 'read_multiple' ? `SD read multiple lba=${msg.lba}`
+                        : `SD ${msg.cmd || 'activity'}`,
+                        { type: msg.type, lba: msg.lba, cmd: msg.cmd });
                     break;
                 }
 
@@ -742,6 +762,7 @@
                         const raw = msg.raw !== undefined ? msg.raw : Math.round(msg.voltage / 3.3 * 4095);
                         badge.textContent = `${v}V (${raw})`;
                     }
+                    emitPeripheral('ADC', 'read', `ADC pin=${msg.pin ?? '?'} raw=${msg.raw ?? '?'} ${msg.voltage !== undefined ? msg.voltage.toFixed(2) + 'V' : ''}`, { pin: msg.pin, raw: msg.raw, voltage: msg.voltage });
                     break;
                 }
 
@@ -750,11 +771,13 @@
                     const bar = document.getElementById('pwm-fill-bar');
                     if (badge) badge.textContent = `${msg.percent}% (duty:${msg.duty})`;
                     if (bar) bar.style.width = `${msg.percent}%`;
+                    emitPeripheral('PWM', 'write', `PWM pin=${msg.pin ?? '?'} duty=${msg.duty} ${msg.percent}%`, { pin: msg.pin, duty: msg.duty, percent: msg.percent });
                     break;
                 }
 
                 case 'i2s_audio': {
                     handleI2sAudio(msg);
+                    emitPeripheral('I2S', 'audio', `I2S audio samples=${msg.samples ? msg.samples.length : '?'} vol=${msg.volume ?? '?'}% rate=${msg.sampleRate ?? '?'}`, { samples: msg.samples ? msg.samples.length : 0, volume: msg.volume, sampleRate: msg.sampleRate });
                     break;
                 }
 
@@ -1042,6 +1065,14 @@
         bindPeriFilt('peri-filt-i2c', 'I2C');
         bindPeriFilt('peri-filt-spi', 'SPI');
         bindPeriFilt('peri-filt-twai', 'TWAI');
+        bindPeriFilt('peri-filt-adc', 'ADC');
+        bindPeriFilt('peri-filt-pwm', 'PWM');
+        bindPeriFilt('peri-filt-i2s', 'I2S');
+        bindPeriFilt('peri-filt-neo', 'NEO');
+        bindPeriFilt('peri-filt-oled', 'OLED');
+        bindPeriFilt('peri-filt-tft', 'TFT');
+        bindPeriFilt('peri-filt-sd', 'SD');
+        bindPeriFilt('peri-filt-gpio', 'GPIO');
 
         const periExportJson = document.getElementById('peri-export-json');
         if (periExportJson) periExportJson.addEventListener('click', () => {
@@ -1080,7 +1111,7 @@
         });
         const periClearBtn = document.getElementById('peri-clear-btn');
         if (periClearBtn) periClearBtn.addEventListener('click', () => {
-            if (periLogEl) periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses I2C / SPI / TWAI.</div>';
+            if (periLogEl) periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses any peripheral (I2C / SPI / TWAI / ADC / PWM / I2S / …).</div>';
         });
 
         const sdDownBtn = document.getElementById('sd-download-btn');
