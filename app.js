@@ -11,6 +11,13 @@
     let firmwareLoaded = false;
     let wasmReady = false;
 
+    // BLE Monitor state (firmware-console observation; native BLE is a black box).
+    let bleInspector = null;
+    let bleBuffer = '';
+    let bleLastReportT = 0;
+    let bleLogEl = null;
+    let bleReportEl = null;
+
     let customBinData = null;
     let customElfData = null;
     let customBinName = null;
@@ -322,6 +329,63 @@
         box.scrollTop = box.scrollHeight;
     }
 
+    // --- BLE Monitor: observe BLE behavior via the firmware's own console prints.
+    // The wasm's native BLE is a black box (HCI not observable); we only surface
+    // what the firmware Serial.prints, parsed by the shared BleInspector. ---
+    function feedBleMonitor(text) {
+        if (!window.BleInspectorMod) return;
+        if (!bleInspector) { bleInspector = new window.BleInspectorMod.BleInspector(); bleBuffer = ''; }
+        if (!bleLogEl) bleLogEl = document.getElementById('ble-log');
+        if (!bleReportEl) bleReportEl = document.getElementById('ble-report');
+        if (!bleLogEl) return;
+        if (bleLogEl.children.length === 1 &&
+            bleLogEl.children[0].textContent.indexOf('No BLE events') >= 0) {
+            bleLogEl.innerHTML = '';
+        }
+        bleBuffer += text;
+        let idx;
+        while ((idx = bleBuffer.indexOf('\n')) >= 0) {
+            const line = bleBuffer.slice(0, idx).replace(/\r$/, '');
+            bleBuffer = bleBuffer.slice(idx + 1);
+            const ev = window.BleInspectorMod.parseLine(line);
+            if (!ev) continue;
+            ev.t = Date.now() - bleInspector.t0;
+            bleInspector.events.push(ev);
+            appendBleEvent(ev);
+        }
+        const now = Date.now();
+        if (now - bleLastReportT > 1000) { bleLastReportT = now; updateBleReport(); }
+    }
+
+    function appendBleEvent(ev) {
+        if (!bleLogEl) return;
+        const row = document.createElement('div');
+        row.style.fontFamily = "'Fira Code', monospace";
+        row.style.fontSize = '10px';
+        row.style.whiteSpace = 'pre-wrap';
+        const tag = ev.type.split('.')[0].toUpperCase();
+        row.style.color = tag === 'BLE' ? '#22d3ee' : tag === 'DETECT' ? '#a78bfa' : tag === 'TEST' ? '#f59e0b' : '#94a3b8';
+        row.textContent = window.BleInspectorMod.renderEvent(ev);
+        bleLogEl.appendChild(row);
+        while (bleLogEl.children.length > 200) bleLogEl.removeChild(bleLogEl.firstChild);
+        bleLogEl.scrollTop = bleLogEl.scrollHeight;
+    }
+
+    function updateBleReport() {
+        if (!bleReportEl || !bleInspector) return;
+        const rep = window.BleInspectorMod.buildReport(bleInspector.events);
+        bleReportEl.textContent = window.BleInspectorMod.formatReport(rep);
+        bleReportEl.scrollTop = bleReportEl.scrollHeight;
+    }
+
+    function resetBleMonitor() {
+        bleInspector = null;
+        bleBuffer = '';
+        bleLastReportT = 0;
+        if (bleLogEl) bleLogEl.innerHTML = '<div style="color: var(--text-dim);">No BLE events yet. Load a BLE firmware (BLEDemo / BLEDetect / BLETest).</div>';
+        if (bleReportEl) bleReportEl.textContent = '';
+    }
+
     function logSpiActivity(act) {
         const box = document.getElementById('i2c-log');
         if (!box) return;
@@ -495,6 +559,7 @@
 
                 case 'uart_output':
                     terminal.write(msg.data);
+                    feedBleMonitor(msg.data);
                     break;
 
                 case 'oled_frame':
@@ -610,6 +675,7 @@
                     clearOledDisplay();
                     clearTftDisplay();
                     initNeoPixels();
+                    resetBleMonitor();
                     if (msg.reloaded) {
                         terminal.writeln('\x1b[33m[System] Emulator reset completed\x1b[0m');
                         firmwareLoaded = true;
@@ -666,6 +732,9 @@
             i2cread: { bin: 'samples/i2cread.merged.bin', elf: 'samples/i2cread.elf', title: 'I2C Sensor Read (0x68)' },
             spidemo: { bin: 'samples/spidemo.merged.bin', elf: 'samples/spidemo.elf', title: 'SPI Master Transfer' },
             busprobe: { bin: 'samples/busprobe.merged.bin', elf: 'samples/busprobe.elf', title: 'Dual Bus Probe (I2C + SPI)' },
+            bledemo: { bin: 'spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/BLEDemo.ino.merged.bin', elf: 'spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/BLEDemo.ino.elf', title: 'BLE Server Demo (NimBLE)' },
+            bledetect: { bin: 'spike/sketches/BLEDetect/build/esp32.esp32.esp32c3/BLEDetect.ino.merged.bin', elf: 'spike/sketches/BLEDetect/build/esp32.esp32.esp32c3/BLEDetect.ino.elf', title: 'BLE VHCI Detector' },
+            bletest: { bin: 'spike/sketches/BLETest/build/esp32.esp32.esp32c3/BLETest.ino.merged.bin', elf: 'spike/sketches/BLETest/build/esp32.esp32.esp32c3/BLETest.ino.elf', title: 'BLE VHCI Call Test' },
         };
 
         const target = filenames[key] || filenames.neopixel_demo;
@@ -796,6 +865,12 @@
         document.getElementById('clear-i2c-btn').addEventListener('click', () => {
             document.getElementById('i2c-log').innerHTML = '<div style="color: var(--text-dim);">Log cleared.</div>';
         });
+        const bleClearBtn = document.getElementById('ble-clear-btn');
+        if (bleClearBtn) {
+            bleClearBtn.addEventListener('click', () => {
+                if (bleLogEl) bleLogEl.innerHTML = '<div style="color: var(--text-dim);">No BLE events yet. Load a BLE firmware (BLEDemo / BLEDetect / BLETest).</div>';
+            });
+        }
 
         const sdDownBtn = document.getElementById('sd-download-btn');
         if (sdDownBtn) {

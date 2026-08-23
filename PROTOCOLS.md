@@ -141,16 +141,13 @@ cannot reach them:
   it to (a) a built-in virtual controller, (b) **Google Bumble** over TCP
   (`tools/bumble_test.py`), or (c) a **physical Linux adapter** (`--ble-hci hci0`).
 
-  **WASM limitation (this SDK):** the wasm build's loader intercepts the VHCI symbols
-  (`esp_vhci_host_send_packet`, `esp_bt_controller_init/enable`, …) at `load_firmware`
-  and routes HCI to its *own* built-in native BLE controller. As a result:
-  - The HCI byte stream is **not observable from JS** — the native controller is a
-    black box.
-  - `core/ble_shims.mjs` + `core/ble_controller.mjs` (the JS VHCI-interception design)
-    are **inoperative for BLE firmware**: the loader overwrites the shimmed symbols,
-    so the shim never executes. (They remain valid only for the native CLI path.)
-  - While BLE is active, the wasm stops capturing firmware MMIO UART writes, so
-    emit/APC-style hooks from firmware also cannot surface.
+  **WASM limitation (this SDK):** BLE firmware runs via the JS-side VHCI shim
+  (`core/ble_shims.mjs` + `core/ble_controller.mjs`), which is **required** — without
+  it BLEDemo hangs in the ROM PHY spin. As a result:
+  - The HCI command/event **byte stream is not observable from JS** — only the
+    firmware's own `Serial` output is visible.
+  - While BLE is active, the shim's HCI frames do not reach the JS observer, so emit/APC
+    hooks cannot surface the HCI traffic.
   - Calling `esp_vhci_host_send_packet()` from firmware **hangs** the wasm.
 
   **Workaround for observation:** watch the firmware's own `Serial` console. Enrich the
@@ -158,7 +155,8 @@ cannot reach them:
   connection/GATT callbacks, then run `node spike/observe_ble.mjs <Sketch>` (renders
   `[BLE]`/`[DETECT]`/`[TEST]` lines into a structured timeline). See the enriched
   `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest`. This observes firmware *behavior*,
-  not the hidden HCI traffic.
+  not the hidden HCI traffic. Full how-to (CLI, `BleInspector` API, web UI panel, event
+  reference, sketch rebuild) is in `BLE-OBSERVABILITY.md`.
 - **802.15.4 / Thread (C6/H2)**: OpenThread `ot_cli` / `ot_br` run on the emulated
   radio; two instances bridge raw radio frames over localhost UDP (`--thread-sim`).
 - **Ethernet**: OpenCores OpenETH (QEMU-compatible firmware) on all chips plus the

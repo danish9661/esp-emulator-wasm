@@ -139,22 +139,27 @@ async function testTargetChip(chipName, binPath, elfPath) {
 | **I2S Digital Audio** | ✅ | `i2s_write`, `i2s_driver_install` | APC PCM streaming frames (`\x1b_I`) |
 | **TWAI / CAN Bus** | ✅ | `twai_transmit_v2`, `twai_receive_v2` | APC CAN frames (`\x1b_C`, `\x1b_CR`) |
 | **Storage (SD Card)** | ✅ | SPI block sector engine | Virtual FAT16/FAT32 CCITT CRC16 sector streamer |
-| **BLE (Bluetooth LE)** | ✅ WASM (JS-side VHCI shim + virtual controller), ✅ native CLI | `esp_bt_controller_init`, `esp_bt_controller_enable`, `esp_vhci_host_send_packet`, `esp_vhci_host_register_callback`, `esp_vhci_host_check_send_available` | Native CLI: Rust-core HCI interception + built-in virtual controller (or Bumble TCP / physical `hci0` via `--ble-hci`); WASM: 5 symbols shimmed at load time, HCI handled in JS `BLEController` |
+| **BLE (Bluetooth LE)** | ⚠️ runs via VHCI shims; HCI not observable from JS | ✅ native CLI | `esp_bt_controller_init`, `esp_bt_controller_enable`, `esp_vhci_host_send_packet`, `esp_vhci_host_register_callback`, `esp_vhci_host_check_send_available` | WASM: VHCI shims (`core/ble_shims.mjs` + `core/ble_controller.mjs`) make BLE firmware runnable, but the HCI command/event bytes are NOT observable from JS — observe behavior via the firmware's own Serial log (see BLE-OBSERVABILITY.md). Native CLI: Rust-core HCI interception + virtual controller / Bumble / physical `hci0`. |
 
-### 6.1 BLE — WASM emulated via JS-side VHCI shims (IMPLEMENTED, verified on C3)
+### 6.1 BLE — WASM runs via VHCI shims; HCI not observable from JS
 
-The `ble_hci` subsystem is compiled into `pkg/esp_emu_bg.wasm` but **dormant** (nothing activates it). Instead of rebuilding the WASM core, BLE is provided at the load-time patcher level — exactly like SPI/I2C:
+The JS-side VHCI shim design (`core/ble_shims.mjs` + `core/ble_controller.mjs`) is
+**active and required**: without it, BLE firmware (e.g. BLEDemo) hangs in the ROM
+PHY spin. The shim replaces the VHCI/controller symbols so the NimBLE host stack
+initializes and advertises.
 
-- **`core/ble_shims.mjs`** (`prepareBleShims(elf, chip)`): replaces the 5 VHCI/controller symbols:
-  - `esp_bt_controller_init` → `li a0,0; ret` (8 B) — body (≥1022 B) reused to **store the large `esp_vhci_host_send_packet` shim** (a 380-B RISC-V program cannot fit in send_packet's 48 B, and `jal` can't reach DRAM from flash; a `lui+addi+jalr` trampoline parks it in the now-dead init body).
-  - `esp_bt_controller_enable` → stub return 0; `esp_vhci_host_check_send_available` → stub return 1.
-  - `esp_vhci_host_register_callback` → stores cb ptr to DRAM scratch.
-  - `esp_vhci_host_send_packet` → 12-B trampoline → out-of-line shim that hex-encodes the HCI command to UART0 TX as `ESC _ B <hex cmd> ESC \` and spins on UART0 RX for `ESC _ E <2hex len> <hex event> ESC \`, decodes the event, and calls the registered cb.
-- **`core/ble_controller.mjs`** (`BLEController.handle(msg)`): JS virtual controller. Parses the VHCI message (type byte + opcode + params) and returns a VHCI event (type `0x04` + HCI event). Handles Reset, Read Local Version/BD_ADDR, LE Read Buffer Size / Supported Features / Supported States / Max Data Length / Adv Channel Tx Power / White List Size / Number of Adv Sets, and returns SUCCESS / Command-Complete for all else so NimBLE never wedges.
-- **`core/uart.mjs`**: `_routeApcFrame` now handles `case 'B'` → decodes hex → `ble.handle()` → emits the `E` frame via `this.write()` (→ `emu.uart_input`).
-- **`core/esp32c3.mjs`**: `loadFirmware` calls `prepareBleShims`, merges into the SPI shim patch set, and additionally writes the out-of-line `extra` shim into flash (reseals).
-- **Per-chip DRAM scratch** (runtime data only — `.bss` zeroing is fine because the firmware writes it at runtime): C3 `0x3fc94000`, C6/H2 `0x40814000`, P4 `0x4ff44000`. UART0 base C3/C6/H2 `0x60000000`, P4 `0x500CA000`.
+- **`core/ble_shims.mjs`** (`prepareBleShims(elf, chip)`): replaces the 5 VHCI/controller symbols (init/enable stubs, `esp_vhci_host_send_packet` trampoline, register_callback, check_send_available).
+- **`core/ble_controller.mjs`** (`BLEController.handle(msg)`): JS virtual controller answering HCI commands so NimBLE never wedges.
+- **`core/uart.mjs`**: `_routeApcFrame` handles `case 'B'` (HCI command → virtual controller → event).
+- **`core/esp32c3.mjs`**: `loadFirmware` calls `prepareBleShims`, merges into the SPI shim patch set, and writes the out-of-line shim into flash (reseals).
 
-**Verification**: `node spike/test_ble.mjs` loads `spike/sketches/BLEDemo/build/.../BLEDemo.ino.merged.bin` + `.elf` and steps; it prints the full sequence `[BLE] starting → init done → server created → service created → advertising started → ble-done`, proving the HCI round-trip works. (Before the shims, BLEDemo hung in ROM `0x4002ee78` PHY spin.)
+**Limitation — HCI is NOT observable from JS**: the HCI command/event bytes do not
+reach the JS observer, so BLE behavior is watched through the firmware's own `Serial`
+output (see BLE-OBSERVABILITY.md), not raw HCI. `esp_vhci_host_send_packet()` called
+directly from firmware **hangs** the wasm.
 
-**Caveats**: This is a *host-stack-only* emulation — PHY/RF (actual radio TX/RX, connection state machines, GATT over-the-air) is NOT modeled; the virtual controller answers every HCI command with success so the NimBLE host stack initializes and "advertises" logically. Advertised packets are not emitted on any real/loopback medium. C6/H2/P4 untested but the same mechanism applies.
+BLE firmware **runs** (the virtual controller answers HCI) and only its own `Serial`
+debug output is visible. Observe it with the firmware-console tools in
+`BLE-OBSERVABILITY.md` (`spike/observe_ble.mjs`, `BleInspector`, web UI BLE Monitor).
+The native CLI path remains fully functional (Rust-core HCI
+interception + virtual controller / Bumble / physical `hci0`).

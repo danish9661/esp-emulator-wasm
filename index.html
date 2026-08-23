@@ -575,6 +575,9 @@
                         <option value="i2cread">I2C Sensor Read (0x68 IMU)</option>
                         <option value="spidemo">SPI Master Transfer (Full Duplex)</option>
                         <option value="busprobe">Dual Bus Probe (I2C + SPI)</option>
+                        <option value="bledemo">BLE Server Demo (NimBLE)</option>
+                        <option value="bledetect">BLE VHCI Detector</option>
+                        <option value="bletest">BLE VHCI Call Test</option>
                     </select>
                 </div>
                 <button id="load-preset-btn" class="primary" style="width: 100%; justify-content: center;" disabled>
@@ -767,6 +770,18 @@
             </div>
 
             <div class="panel-section">
+                <h3>
+                    <span>BLE Monitor (firmware console)</span>
+                    <button id="ble-clear-btn" style="padding: 2px 6px; font-size: 10px;">Clear</button>
+                </h3>
+                <div class="i2c-log-box" id="ble-log" style="max-height: 160px; font-family: 'Fira Code', monospace; font-size: 10px;">
+                    <div style="color: var(--text-dim);">No BLE events yet. Load a BLE firmware (BLEDemo / BLEDetect / BLETest).</div>
+                </div>
+                <div style="margin-top: 6px; font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">Session Report</div>
+                <pre id="ble-report" style="font-family: 'Fira Code', monospace; font-size: 10px; color: var(--accent-cyan); max-height: 200px; overflow-y: auto; background: var(--bg-base); padding: 6px; border-radius: 4px; border: 1px solid var(--border-color); white-space: pre-wrap;"></pre>
+            </div>
+
+            <div class="panel-section">
                 <h3>Patch Status</h3>
                 <div id="patch-status" style="font-size: 11px; font-family: 'Fira Code', monospace; color: var(--text-muted);">
                     No firmware patched.
@@ -796,6 +811,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    <script type="module" src="ble_monitor_api.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

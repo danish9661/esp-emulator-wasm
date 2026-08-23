@@ -13,9 +13,11 @@
 import { readFileSync } from 'node:fs';
 import { ESP32C3 } from '../index.mjs';
 import { parseLine, BleInspector } from './ble_inspector.mjs';
+import { buildReport, formatReport } from './ble_report.mjs';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
+const report = args.includes('--report');
 const SKETCH = args.find(a => !a.startsWith('--')) || 'BLEDemo';
 const DIR = `spike/sketches/${SKETCH}/build/esp32.esp32.esp32c3`;
 
@@ -85,6 +87,11 @@ mcu.uart0.onData((text) => {
   }
 });
 
-console.log(`=== Running ${SKETCH} (BLE behavior observer${json ? ', JSON' : ''}) ===`);
+console.log(`=== Running ${SKETCH} (BLE behavior observer${json ? ', JSON' : ''}${report ? ', report' : ''}) ===`);
 for (let i = 0; i < 400; i++) mcu.step(20000);
+if (report) {
+  const rep = buildReport(inspector.events);
+  if (json) console.log(JSON.stringify(rep));
+  else { console.log(); console.log(formatReport(rep)); }
+}
 console.log(`=== Done: ${SKETCH} (${inspector.events.length} events) ===`);
