@@ -21,6 +21,16 @@
     let bleSnapshot = null;
     const bleTagFilter = { BLE: true, DETECT: true, TEST: true };
 
+    // Peripheral Monitor state (I2C / SPI / TWAI observed from the emulator's
+    // own JS activity callbacks — already structured, unlike BLE's console text).
+    let peripheralInspector = null;
+    let periLogEl = null;
+    let periReportEl = null;
+    let periDiffEl = null;
+    let periSnapshot = null;
+    let periLastReportT = 0;
+    const periTagFilter = { I2C: true, SPI: true, TWAI: true };
+
     let customBinData = null;
     let customElfData = null;
     let customBinName = null;
@@ -330,6 +340,8 @@
         box.appendChild(row);
         while (box.children.length > 80) box.removeChild(box.firstChild);
         box.scrollTop = box.scrollHeight;
+
+        emitPeripheral('I2C', act.op, `[${opName}] ${hexAddr} ${hexBytes}`, { addr: act.addr, op: act.op, data: act.data });
     }
 
     // --- BLE Monitor: observe BLE behavior via the firmware's own console prints.
@@ -417,6 +429,69 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    // --- Peripheral Monitor: unified structured log for I2C / SPI / TWAI ---
+    function emitPeripheral(proto, kind, summary, detail) {
+        if (!window.PeripheralInspectorMod) return;
+        if (!peripheralInspector) peripheralInspector = new window.PeripheralInspectorMod.PeripheralInspector();
+        if (!periLogEl) periLogEl = document.getElementById('peri-log');
+        if (!periReportEl) periReportEl = document.getElementById('peri-report');
+        if (!periLogEl) return;
+        if (periLogEl.children.length === 1 &&
+            periLogEl.children[0].textContent.indexOf('No peripheral events') >= 0) {
+            periLogEl.innerHTML = '';
+        }
+        const ev = peripheralInspector.add(proto, kind, summary, detail);
+        appendPeripheralEvent(ev);
+        const now = Date.now();
+        if (now - periLastReportT > 1000) { periLastReportT = now; updatePeripheralReport(); }
+    }
+
+    function appendPeripheralEvent(ev) {
+        if (!periLogEl) return;
+        if (periTagFilter[ev.proto] === false) return;
+        const row = document.createElement('div');
+        row.style.fontFamily = "'Fira Code', monospace";
+        row.style.fontSize = '10px';
+        row.style.whiteSpace = 'pre-wrap';
+        row.style.color = ev.proto === 'I2C' ? '#22d3ee' : ev.proto === 'SPI' ? '#8b5cf6' : ev.proto === 'TWAI' ? '#10b981' : '#94a3b8';
+        row.textContent = ev.summary;
+        periLogEl.appendChild(row);
+        while (periLogEl.children.length > 200) periLogEl.removeChild(periLogEl.firstChild);
+        periLogEl.scrollTop = periLogEl.scrollHeight;
+    }
+
+    function updatePeripheralReport() {
+        if (!periReportEl || !peripheralInspector) return;
+        const rep = window.PeripheralInspectorMod.buildPeripheralReport(peripheralInspector.events);
+        periReportEl.textContent = window.PeripheralInspectorMod.formatPeripheralReport(rep);
+        periReportEl.scrollTop = periReportEl.scrollHeight;
+    }
+
+    function renderPeripheralLog() {
+        if (!periLogEl) return;
+        periLogEl.innerHTML = '';
+        if (!peripheralInspector || peripheralInspector.events.length === 0) {
+            periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses I2C / SPI / TWAI.</div>';
+            return;
+        }
+        for (const ev of peripheralInspector.events) appendPeripheralEvent(ev);
+    }
+
+    function resetPeripheralMonitor() {
+        peripheralInspector = null;
+        periLastReportT = 0;
+        periSnapshot = null;
+        if (periLogEl) periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses I2C / SPI / TWAI.</div>';
+        if (periReportEl) periReportEl.textContent = '';
+        if (periDiffEl) periDiffEl.style.display = 'none';
+        setPeriSnapStatus('');
+    }
+
+    function setPeriSnapStatus(s) {
+        const el = document.getElementById('peri-snapshot-status');
+        if (el) el.textContent = s || '';
+    }
+
     function logSpiActivity(act) {
         const box = document.getElementById('i2c-log');
         if (!box) return;
@@ -435,6 +510,8 @@
         box.appendChild(row);
         while (box.children.length > 80) box.removeChild(box.firstChild);
         box.scrollTop = box.scrollHeight;
+
+        emitPeripheral('SPI', 'transfer', `[SPI] TX:${hexData} RX:${hexReply}`, { data: act.data, reply: act.reply });
     }
 
     // --- I2S Web Audio Playback & VU Meter ---
@@ -503,6 +580,10 @@
         box.appendChild(row);
         while (box.children.length > 80) box.removeChild(box.firstChild);
         box.scrollTop = box.scrollHeight;
+
+        emitPeripheral('TWAI', act.type === 'tx' ? 'tx' : 'rx',
+            `[${isTx ? 'TX' : 'RX'}] ID:${hexId} DLC:${act.dlc} ${hexData}`,
+            { id: act.id, dlc: act.dlc, data: act.data });
     }
 
     // --- Register Table ---
@@ -707,6 +788,7 @@
                     clearTftDisplay();
                     initNeoPixels();
                     resetBleMonitor();
+                    resetPeripheralMonitor();
                     if (msg.reloaded) {
                         terminal.writeln('\x1b[33m[System] Emulator reset completed\x1b[0m');
                         firmwareLoaded = true;
@@ -950,6 +1032,55 @@
             bleDiffEl.textContent = window.BleInspectorMod.formatDiff(d);
             bleDiffEl.style.display = 'block';
             bleDiffEl.scrollTop = bleDiffEl.scrollHeight;
+        });
+
+        // --- Peripheral Monitor: tag filter ---
+        const bindPeriFilt = (id, key) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', (e) => { periTagFilter[key] = e.target.checked; renderPeripheralLog(); });
+        };
+        bindPeriFilt('peri-filt-i2c', 'I2C');
+        bindPeriFilt('peri-filt-spi', 'SPI');
+        bindPeriFilt('peri-filt-twai', 'TWAI');
+
+        const periExportJson = document.getElementById('peri-export-json');
+        if (periExportJson) periExportJson.addEventListener('click', () => {
+            if (!peripheralInspector) { setPeriSnapStatus('no data'); return; }
+            downloadBlob(new Blob([JSON.stringify(peripheralInspector.events, null, 2)], { type: 'application/json' }), 'peripheral-events.json');
+        });
+        const periExportReport = document.getElementById('peri-export-report');
+        if (periExportReport) periExportReport.addEventListener('click', () => {
+            const rep = peripheralInspector ? window.PeripheralInspectorMod.buildPeripheralReport(peripheralInspector.events) : null;
+            downloadBlob(new Blob([rep ? window.PeripheralInspectorMod.formatPeripheralReport(rep) : ''], { type: 'text/plain' }), 'peripheral-report.txt');
+        });
+        const periCopyReport = document.getElementById('peri-copy-report');
+        if (periCopyReport) periCopyReport.addEventListener('click', async () => {
+            const rep = peripheralInspector ? window.PeripheralInspectorMod.buildPeripheralReport(peripheralInspector.events) : null;
+            const text = rep ? window.PeripheralInspectorMod.formatPeripheralReport(rep) : '';
+            try { await navigator.clipboard.writeText(text); setPeriSnapStatus('report copied'); }
+            catch (_) { setPeriSnapStatus('copy failed'); }
+        });
+        const periSnapshotBtn = document.getElementById('peri-snapshot');
+        if (periSnapshotBtn) periSnapshotBtn.addEventListener('click', () => {
+            if (!peripheralInspector) { setPeriSnapStatus('no data'); return; }
+            periSnapshot = window.PeripheralInspectorMod.buildPeripheralReport(peripheralInspector.events);
+            setPeriSnapStatus('saved ' + new Date().toLocaleTimeString());
+            if (periDiffEl) periDiffEl.style.display = 'none';
+        });
+        const periCompareBtn = document.getElementById('peri-compare');
+        if (periCompareBtn) periCompareBtn.addEventListener('click', () => {
+            if (!peripheralInspector) { setPeriSnapStatus('no data'); return; }
+            if (!periSnapshot) { setPeriSnapStatus('snapshot first'); return; }
+            if (!periDiffEl) periDiffEl = document.getElementById('peri-diff');
+            const cur = window.PeripheralInspectorMod.buildPeripheralReport(peripheralInspector.events);
+            const d = window.PeripheralInspectorMod.diffPeripheralReports(periSnapshot, cur);
+            periDiffEl.textContent = window.PeripheralInspectorMod.formatPeripheralDiff(d);
+            periDiffEl.style.display = 'block';
+            periDiffEl.scrollTop = periDiffEl.scrollHeight;
+        });
+        const periClearBtn = document.getElementById('peri-clear-btn');
+        if (periClearBtn) periClearBtn.addEventListener('click', () => {
+            if (periLogEl) periLogEl.innerHTML = '<div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses I2C / SPI / TWAI.</div>';
         });
 
         const sdDownBtn = document.getElementById('sd-download-btn');

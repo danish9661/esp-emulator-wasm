@@ -25,6 +25,9 @@ So BLE observability here means **watching what the firmware itself prints** —
 | `spike/ble_report.mjs` | `buildReport()` / `formatReport()` / `renderEvent()` — aggregate events into a session report. |
 | `spike/ble_inspector.test.mjs` | 41-assertion regression test for the parser. |
 | `ble_monitor_api.js` + `app.js` + `index.html` | Web UI "BLE Monitor" panel (live event log + session report). |
+| `spike/peripheral_inspector.mjs` | Generic `PeripheralInspector` — structured event log for I2C / SPI / TWAI (observed from the emulator's own JS callbacks, not console text). |
+| `peripheral_monitor_api.js` + `app.js` + `index.html` | Web UI "Peripheral Monitor" panel — same tooling as BLE Monitor, aggregated across I2C / SPI / TWAI. |
+| `spike/peripheral_inspector.test.mjs` | 20-assertion regression test for the generic inspector. |
 | `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest` | Enriched NimBLE sketches that log BLE behavior. |
 
 ## CLI observer
@@ -132,6 +135,28 @@ console.log(renderEvent(ev));            // '[BLE] characteristic uuid=0xbeef pr
  All of the above are exposed from `ble_monitor_api.js` via `window.BleInspectorMod`
  (`BleInspector`, `parseLine`, `buildReport`, `formatReport`, `renderEvent`,
  `diffReports`, `formatDiff`).
+
+## Peripheral Monitor (I2C / SPI / TWAI)
+
+The same observability pattern is generalized to the other textual-protocol logs.
+Unlike BLE (parsed from firmware console text), I2C / SPI / TWAI are observed from
+the emulator's own JS activity callbacks, so their events are already structured.
+A single **Peripheral Monitor** panel aggregates them:
+
+- **Tag filter** (I2C / SPI / TWAI checkboxes): show/hide each bus in the live log
+  (display-only; the report and export always use the full event set).
+- **Export JSON** (`peripheral-events.json`), **Export Report**
+  (`peripheral-report.txt`), **Copy Report**.
+- **Snapshot** + **Compare vs Snapshot**: `formatPeripheralDiff(
+  diffPeripheralReports(snapshot, current))` shows a per-kind event-count delta —
+  useful for comparing two runs of the same firmware (e.g. before/after a code
+  change that alters bus traffic).
+- Each event is `{ t, proto, kind, summary, detail }`; `detail` carries structured
+  data (`addr`/`data` for I2C, `data`/`reply` for SPI, `id`/`dlc`/`data` for TWAI).
+
+ All of the above are exposed from `peripheral_monitor_api.js` via
+ `window.PeripheralInspectorMod` (`PeripheralInspector`, `buildPeripheralReport`,
+ `formatPeripheralReport`, `diffPeripheralReports`, `formatPeripheralDiff`).
 
 ## Enriched sketches (rebuild with arduino-cli)
 
