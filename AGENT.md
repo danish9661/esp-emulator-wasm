@@ -1,19 +1,21 @@
 # AGENT.md — Multi-Target RISC-V & Peripheral Architecture for `esp-emu`
 
-Comprehensive architectural documentation for the WebAssembly ESP32 RISC-V emulator, supporting **ESP32-C3**, **ESP32-C6**, **ESP32-H2**, and **ESP32-P4** with a decoupled, Wokwi-style peripheral bridge and `rp2040js`-style MCU SDK.
+Comprehensive architectural documentation for the WebAssembly ESP32 RISC-V emulator, supporting **ESP32-C3**, **ESP32-C6**, **ESP32-H2**, **ESP32-C5**, **ESP32-P4** (and **ESP32-S31** at smoke level) with a decoupled, Wokwi-style peripheral bridge and `rp2040js`-style MCU SDK.
 
 ---
 
 ## 1. Supported Espressif RISC-V Target Chips
 
-The underlying WebAssembly core (compiled from Espressif's open-source [`esp-emulator`](https://github.com/espressif/esp-emulator) v0.39.0) contains built-in ROMs and hardware models for **4 RISC-V target architectures**:
+The underlying WebAssembly core (compiled from Espressif's open-source [`esp-emulator`](https://github.com/espressif/esp-emulator) v0.41.0) contains built-in ROMs and hardware models for **6 RISC-V target architectures**:
 
 | Chip Identifier | Architecture | Clock / Cores | Memory / Cache | Wireless & Peripherals | Built-in ROM Signature |
 |---|---|---|---|---|---|
 | **`esp32c3`** | Single RV32IMC | 160 MHz (1 core) | 400 KB SRAM, 384 KB ROM | Wi-Fi 4, BLE 5, 22 GPIOs, I2C, SPI, ADC, PWM, I2S, TWAI | `ESP-ROM:esp32c3-api1-20210207` |
 | **`esp32c6`** | Single RV32IMAC | 160 MHz (1 core) | 512 KB SRAM, 320 KB ROM | Wi-Fi 6, BLE 5, 802.15.4 (Zigbee/Thread), 30 GPIOs | `ESP-ROM:esp32c6-20220919` |
 | **`esp32h2`** | Single RV32IMAC | 96 MHz (1 core) | 320 KB SRAM, 128 KB ROM | BLE 5, 802.15.4 (Zigbee/Thread), 19 GPIOs | `ESP-ROM:esp32h2-20221101` |
+| **`esp32c5`** | Single RV32IMAC | 240 MHz (1 core) | 384 KB SRAM | Wi-Fi 6, BLE 5, 802.15.4, 29 GPIOs, **no TWAI** | `ESP-ROM:esp32c5-eco2-20250121` |
 | **`esp32p4`** | Dual RV32IMAFC | 400 MHz (2 cores) | 768 KB SRAM, FPU (Single/Double), H.264, MIPI CSI/DSI | High-Performance SoC (No wireless) | `ESP-ROM:esp32p4` |
+| **`esp32s31`** | Dual RV32 (320 MHz) | 2 cores | 512 KB SRAM, 60 GPIOs | Wi-Fi 6, BT 5.4+Classic, 802.15.4, EMAC, USB-OTG | `ESP-ROM:esp32s31-20251218` (smoke only — no toolchain here) |
 
 ---
 
@@ -24,9 +26,9 @@ All runtime assembly shims ([`shims.mjs`](file:///home/danish1075/Documents/espc
 - Register operations: `addi`, `lui`, `slli`, `srli`, `andi`, `or`
 - Memory load/store: `lw`, `sw`, `sb`
 - Control flow: `bne`, `beq`, `jalr` (ret)
-- UART0 FIFO polling: `0x60000000` (UART0 register base, identical on all 4 chips)
+- UART0 FIFO polling: `0x60000000` (UART0 register base on C3/C6/H2/C5; P4 uses `0x500CA000`, handled by `relocateShimsForChip`)
 
-Because RV32I is the common denominator across `RV32IMC`, `RV32IMAC`, and `RV32IMAFC`, **the exact same shim bytecode executes natively on all 4 target chips** without requiring chip-specific recompilation.
+Because RV32I is the common denominator across `RV32IMC`, `RV32IMAC`, and `RV32IMAFC`, **the exact same shim bytecode executes natively on all 6 target chips** without requiring chip-specific recompilation.
 
 ---
 
@@ -48,13 +50,18 @@ arduino-cli compile --fqbn esp32:esp32:esp32h2 sketch_dir --output-dir build_h2
 
 # 4. ESP32-P4
 arduino-cli compile --fqbn esp32:esp32:esp32p4 sketch_dir --output-dir build_p4
+
+# 5. ESP32-C5 (no TWAI driver; no VHCI host interface — skip those sketches)
+arduino-cli compile --fqbn esp32:esp32:esp32c5 sketch_dir --output-dir build_esp32c5
+
+# 6. ESP32-S31 — no Arduino core and no ESP-IDF target here; firmware blocked
 ```
 
 ### 3.2 Using Pure ESP-IDF (`idf.py`)
 
 ```bash
 # Set target chip and build
-idf.py set-target esp32c3   # or esp32c6 | esp32h2 | esp32p4
+idf.py set-target esp32c3   # or esp32c6 | esp32h2 | esp32p4 | esp32c5 | esp32s31
 idf.py build
 ```
 
@@ -124,6 +131,13 @@ async function testTargetChip(chipName, binPath, elfPath) {
 ## 6. Capability & Protocol Summary (All Targets)
 
 > **Step batch size**: always step with `mcu.step(100000)` or larger. The esp-emu WASM engine can drop the last UART output bytes of a batch when a shim reply-poll spins across a batch boundary on H2/P4 (SD mount hangs, ST7789 stalls); batch ≥ 100000 cycles reliably avoids this on all chips (C3/C6/H2/P4). The modular MCU core does not auto-register SPI/I2C devices — tests must call `mcu.spi.register('sd', new VirtualSDCard())` etc. (see `worker.js`, `spike/18-verify-all.mjs`).
+
+> **esp-emu 0.41 rules** (the core was upgraded 0.39.0 → 0.41.0 for C5/S31):
+> - **Mask UART0 RX interrupts across every reply-polling shim** (`lw saved,0x0C(t0)` / `sw x0,0x0C(t0)` at entry, restore before each `ret`). 0.41 delivers UART RX interrupts promptly, so the Arduino Serial RX ISR steals `uart_input` reply bytes mid-poll and the shim spins forever (proven: guest parked in `spiTransferByteNL` poll, alternating with `_global_interrupt_handler`, freed by manual injection). TX-only shims need no mask. Tight funcs (88B `spiTransferByteNL`, 64B `spiWriteByteNL`) are covered by the existing `pair()` JAL-into-roomy-twin mechanism in `elf.mjs`.
+> - **Virtual time is ~1:1 with cycles now.** 0.39 fast-forwarded through FreeRTOS delays ~100x (BLEDemo heartbeat at batch 75); on 0.41 the same heartbeat needs ~5050 batches. Budget batches for multi-second waits (BLEDemo health runs 6000).
+> - **0.41 multi-instance runs flake upstream** (identical patched images boot differently per process; C6 SPI/I2C-heavy demos fail ~1/3 runs, C3/H2/P4/C5 stable). `spike/21/22/23-verify-*.mjs` retry each demo with a fresh instance up to 3x and log retries; a real regression fails 3/3 loudly.
+> - **C5 gaps are silicon**: no TWAI controller (TWAIDemo doesn't link), no VHCI host interface (BLETest doesn't link; BLEDemo/NimBLE crashes without a radio model). C5 runs the other 17 demos.
+> - **S31 is toolchain-blocked**: no Arduino core and no ESP-IDF here can target S31, so no firmware samples exist. Wired: target acceptance, embedded ROM (`has_default_rom`), chip-ID gate (S31 = `0x20`), UI dropdown + 60-GPIO grid, `spike/29-verify-s31.mjs` ROM-banner smoke via a `mkimg.py`-forged chip-0x20 probe image.
 
 > **Multi-chip SPI bus pointer**: the `spiStartBus` shim returns an opaque DRAM pointer that the app stores SPI state into (fields at +4, +16, etc.). The C3 pointer `0x3FC90000` is **unmapped on C6/H2/P4**, so `relocateShimsForChip` rewrites the shim's `lui` from `SPI_BUS_BASE` (see `shims.mjs`): C3=`0x3fc90000`, C6/H2=`0x40810000`, P4=`0x4ff40000`. Probing an unmapped base makes SPIDemo fault on `sw s2,16(s3)` inside `spiFrequencyToClockDiv`.
 

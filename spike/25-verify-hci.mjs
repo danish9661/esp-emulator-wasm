@@ -69,6 +69,10 @@ async function runSketch(sketch, batches = 400) {
 }
 
 // 2. BLEDemo: init path live (patched VHCI shims), firmware healthy.
+// NOTE (esp-emu 0.41): virtual time now flows ~1:1 with cycles (0.39
+// fast-forwarded through FreeRTOS delays ~100x: heartbeat at batch 75).
+// The heartbeat needs 50x delay(100) = ~505M cycles, so BLEDemo runs 6000
+// batches here. Wall cost is seconds (the WASM core is fast).
 //    (NimBLE's own transport never transmits in the sim — its semaphore take
 //    predates our init and the host never starts — so HCI bytes here come only
 //    from direct calls. Firmware-console observation still applies.)
@@ -76,7 +80,7 @@ async function runSketch(sketch, batches = 400) {
     console.log('\n========================================');
     console.log('TEST: BLEDemo health via patched init path');
     console.log('========================================');
-    const { patched, consoleText } = await runSketch('BLEDemo', 500);
+    const { patched, consoleText } = await runSketch('BLEDemo', 6000);
     const blePatched = patched.filter(p => /vhci|bt_controller/i.test(p));
     const ok = blePatched.length >= 5 &&
         consoleText.includes('init done') &&

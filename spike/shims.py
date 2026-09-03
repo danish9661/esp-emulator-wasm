@@ -65,6 +65,11 @@ def shim_i2cwrite():
 def shim_i2cread():
     """i2cRead(num, address, buff, size, timeout, readCount) -> ESP_OK, buff filled."""
     p = list(li(T0, UART0_FIFO)) + list(li(T1, UART0_STATUS))
+    # Mask UART0 RX interrupts across the transaction: the Arduino Serial RX
+    # ISR would otherwise steal host->firmware reply bytes mid-poll (esp-emu
+    # >= 0.41 delivers UART RX interrupts promptly). A0 (bus num, unused by
+    # the shim) holds the saved INT_ENA; restored before the final addi.
+    p += [lw(A0, T0, 0x0C), sw(0, T0, 0x0C)]
     for ch in (ESC, APC_START, ord('R')):
         p += _emit_const(ch)
     p += _emit_reg_low7(A1)                    # device address
@@ -82,6 +87,7 @@ def shim_i2cread():
     p += [jal(0, -4 * (len(p) - rxloop))]
     p[rxloop] = beq(A3, 0, 4 * (len(p) - rxloop))
 
+    p += [sw(A0, T0, 0x0C)]                    # restore UART0 INT_ENA
     p += [beq(A5, 0, 8), sw(T4, A5, 0)]        # *readCount = length, if non-null
     p += [addi(A0, 0, 0), _ret()]
     return p

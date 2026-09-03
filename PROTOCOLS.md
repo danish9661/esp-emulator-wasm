@@ -1,4 +1,4 @@
-# PROTOCOLS.md — Peripheral Protocol Coverage Matrix (C3 / C6 / H2 / P4)
+# PROTOCOLS.md — Peripheral Protocol Coverage Matrix (C3 / C6 / H2 / P4 / C5; S31 smoke-only)
 
 This document explains how peripheral protocols are emulated, lists every protocol
 exposed by the ESP32-family virtual hardware, and tracks exactly which ones are
@@ -65,26 +65,28 @@ shims — the emulator's silicon model handles them natively.
 
 ## 2. Chip Hardware Capability Reference
 
-| Capability | C3 | C6 | H2 | P4 |
-|---|:---:|:---:|:---:|:---:|
-| CPU | RV32IMC 160 MHz | RV32IMAC 160 MHz | RV32IMAC 96 MHz | RV32IMAFC 400 MHz (dual) |
-| Wi-Fi | Wi-Fi 4 (802.11 b/g/n) | Wi-Fi 6 (802.11ax) | — | — |
-| Bluetooth | BLE 5.0 | BLE 5.0 | BLE 5.0 | — |
-| 802.15.4 (Zigbee/Thread) | — | ✅ | ✅ | — |
-| GPIO | 22 | 30 | 19 | 56 (HP/LP) |
-| I2C / SPI / UART | ✅ / ✅ / 2 | ✅ / ✅ / 2 | ✅ / ✅ / 2 | ✅ / ✅ / 4+ |
-| ADC | 2× SAR | 1× SAR | 1× SAR | 1× SAR |
-| DAC | — | — | — | ✅ |
-| PWM (LEDC) | 6 ch | 6 ch | 6 ch | — |
-| I2S | ✅ | ✅ | — | ✅ |
-| TWAI (CAN) | ✅ | ✅ | ✅ | ✅ |
-| RMT | ✅ | ✅ | — | — |
-| Touch | 10 pads | 15 pads | 15 pads | — |
-| USB | Serial/JTAG | Serial/JTAG | Serial/JTAG | USB-OTG |
-| SD (SPI) / SDMMC | ✅ / — | ✅ / — | ✅ / — | ✅ / ✅ (4-bit) |
-| Camera (MIPI CSI) | — | — | — | ✅ |
-| LCD (MIPI DSI / parallel) | — | — | — | ✅ |
-| Ethernet | — | — | — | — (no on-chip MAC) |
+| Capability | C3 | C6 | H2 | P4 | C5 |
+|---|:---:|:---:|:---:|:---:|:---:|
+| CPU | RV32IMC 160 MHz | RV32IMAC 160 MHz | RV32IMAC 96 MHz | RV32IMAFC 400 MHz (dual) | RV32IMAC 240 MHz |
+| Wi-Fi | Wi-Fi 4 (802.11 b/g/n) | Wi-Fi 6 (802.11ax) | — | — | Wi-Fi 6 (802.11ax)¹ |
+| Bluetooth | BLE 5.0 | BLE 5.0 | BLE 5.0 | — | BLE 5.0¹ |
+| 802.15.4 (Zigbee/Thread) | — | ✅ | ✅ | — | ✅¹ |
+| GPIO | 22 | 30 | 19 | 56 (HP/LP) | 29 |
+| I2C / SPI / UART | ✅ / ✅ / 2 | ✅ / ✅ / 2 | ✅ / ✅ / 2 | ✅ / ✅ / 4+ | ✅ / ✅ / 2 |
+| ADC | 2× SAR | 1× SAR | 1× SAR | 1× SAR | 1× SAR |
+| DAC | — | — | — | ✅ | — |
+| PWM (LEDC) | 6 ch | 6 ch | 6 ch | — | 6 ch |
+| I2S | ✅ | ✅ | — | ✅ | ✅ |
+| TWAI (CAN) | ✅ | ✅ | ✅ | ✅ | — |
+| RMT | ✅ | ✅ | — | — | ✅ |
+| Touch | 10 pads | 15 pads | 15 pads | — | — |
+| USB | Serial/JTAG | Serial/JTAG | Serial/JTAG | USB-OTG | Serial/JTAG |
+| SD (SPI) / SDMMC | ✅ / — | ✅ / — | ✅ / — | ✅ / ✅ (4-bit) | ✅ / — |
+| Camera (MIPI CSI) | — | — | — | ✅ | — |
+| LCD (MIPI DSI / parallel) | — | — | — | ✅ | — |
+| Ethernet | — | — | — | — (no on-chip MAC) | — |
+
+¹ C5 silicon capability; the 0.41 core does not model C5 radios.
 
 ---
 
@@ -94,37 +96,37 @@ Legend: ✅ implemented & verified · ⚠️ emulator core supports it, SDK not 
 ❌ not supported · — not present on the silicon · 🟡 runs natively on the emulated
 silicon (no shim needed), not explicitly regression-tested
 
-| Protocol | C3 | C6 | H2 | P4 | Mechanism | Verified by |
-|---|:---:|:---:|:---:|:---:|---|---|
-| UART0 console | ✅ | ✅ | ✅ | ✅ | native MMIO FIFO | all suites |
-| GPIO (digital I/O) | ✅ | ✅ | ✅ | ✅ | native MMIO | Blink demo |
-| I2C master | ✅ | ✅ | ✅ | ✅ | APC `W`/`R` frames | I2CRead demo |
-| SPI master | ✅ | ✅ | ✅ | ✅ | APC `S` frames | SPIDemo demo |
-| NeoPixel / RMT | ✅ | ✅ | ✅ | ✅ | APC `N` frames | NeoPixelDemo |
-| ADC (analogRead / mV) | ✅ | ✅ | ✅ | ✅ | APC `A`/`V` frames | ADCPWMDemo |
-| PWM / LEDC | ✅ | ✅ | ✅ | ✅ | APC `P` frames | ADCPWMDemo |
-| I2S audio (PCM out) | ✅ | ✅ | ✅ | ✅ | APC `I` frames | I2SDemo |
-| TWAI / CAN bus | ✅ | ✅ | ✅ | ✅ | APC `C` frames | TWAIDemo |
-| SD card (SPI mode, FAT16/32) | ✅ | ✅ | ✅ | ✅ | virtual device + CRC16 | SDCardDemo |
-| SSD1306 OLED (I2C) | ✅ | ✅ | ✅ | ✅ | virtual device `0x3c/0x3d` | OLEDDemo |
-| ST7789 TFT (SPI) | ✅ | ✅ | ✅ | ✅ | virtual device `tft` | ST7789Demo |
-| MPU6050 IMU (I2C) | ✅ | ✅ | ✅ | ✅ | virtual device `0x68` | 18-verify #2 |
-| SPI (IDF driver) | ✅ | ✅ | ✅ | ✅ | `spi_bus_*` noops + `spi_device_transmit`/`polling` full-duplex shims (pointer + `tx_data` paths; cmd/addr phases not modeled) | 27-verify #1 |
-| I2C (IDF v5 driver) | ✅ | ✅ | ✅ | ✅ | `i2c_new_master_bus`/`add_device` (handle carries addr) + transmit/receive/transmit_receive/probe | 27-verify #2 |
-| I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops; cmd-link API not emulated) | 27-verify #3 |
-| Touch pad (`touchRead`) | ✅ | ✅ | ✅ | ✅ | virtual-touch API + APC `T` frames | 24-verify #1 (C3; touch spot-checked C6/H2/P4) |
-| DAC output (`dacWrite`) | ✅ | ✅ | ✅ | ✅ | virtual-dac API + APC `D` frames | 24-verify #2 |
-| SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |
-| Camera (grayscale test pattern) | ✅ | ✅ | ✅ | ✅ | virtual-camera API + APC `F` frames | 24-verify #4 |
-| LCD panel (RGB565 blits) | ✅ | ✅ | ✅ | ✅ | virtual-lcd API + APC `L` frames | 24-verify #5 |
-| Wi-Fi (STA/AP) | ✅* | ✅* | — | — | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
-| BLE HCI (direct transport calls) | ✅ | ✅ | ✅ | — | JS VHCI shims + virtual controller, fully observable | 25-verify |
-| BLE via NimBLE host stack | 🟡 | 🟡 | 🟡 | — | init shims keep firmware healthy; host never transmits (see §4) | observe_ble.mjs |
-| 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | radio frame bridge (native CLI only) | none |
-| Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | native CLI only (`--net tap/user`) | none |
-| USB (Serial/JTAG; OTG on P4) | ❌† | ❌† | ❌† | ❌† | native peripheral in core (CLI), no WASM glue | none |
-| Timers / watchdog / RTC | ✅ | ✅ | ✅ | ✅ | native silicon model (GPTimer IRQ, TWDT, esp_timer) | 26-verify |
-| Flash filesystems (LittleFS / NVS) | ✅ | ✅ | ✅ | ✅ | native flash MMIO model | 26-verify |
+| Protocol | C3 | C6 | H2 | P4 | C5 | Mechanism | Verified by |
+|---|:---:|:---:|:---:|:---:|:---:|---|---|
+| UART0 console | ✅ | ✅ | ✅ | ✅ | ✅ | native MMIO FIFO | all suites |
+| GPIO (digital I/O) | ✅ | ✅ | ✅ | ✅ | ✅ | native MMIO | Blink demo |
+| I2C master | ✅ | ✅ | ✅ | ✅ | ✅ | APC `W`/`R` frames | I2CRead demo |
+| SPI master | ✅ | ✅ | ✅ | ✅ | ✅ | APC `S` frames | SPIDemo demo |
+| NeoPixel / RMT | ✅ | ✅ | ✅ | ✅ | ✅ | APC `N` frames | NeoPixelDemo |
+| ADC (analogRead / mV) | ✅ | ✅ | ✅ | ✅ | ✅ | APC `A`/`V` frames | ADCPWMDemo |
+| PWM / LEDC | ✅ | ✅ | ✅ | ✅ | ✅ | APC `P` frames | ADCPWMDemo |
+| I2S audio (PCM out) | ✅ | ✅ | ✅ | ✅ | ✅ | APC `I` frames | I2SDemo |
+| TWAI / CAN bus | ✅ | ✅ | ✅ | ✅ | — | APC `C` frames | TWAIDemo |
+| SD card (SPI mode, FAT16/32) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual device + CRC16 | SDCardDemo |
+| SSD1306 OLED (I2C) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual device `0x3c/0x3d` | OLEDDemo |
+| ST7789 TFT (SPI) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual device `tft` | ST7789Demo |
+| MPU6050 IMU (I2C) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual device `0x68` | 18-verify #2 |
+| SPI (IDF driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `spi_bus_*` noops + `spi_device_transmit`/`polling` full-duplex shims (pointer + `tx_data` paths; cmd/addr phases not modeled) | 27-verify #1 |
+| I2C (IDF v5 driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `i2c_new_master_bus`/`add_device` (handle carries addr) + transmit/receive/transmit_receive/probe | 27-verify #2 |
+| I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops; cmd-link API not emulated) | 27-verify #3 |
+| Touch pad (`touchRead`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-touch API + APC `T` frames | 24-verify #1 (C3; touch spot-checked C6/H2/P4) |
+| DAC output (`dacWrite`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-dac API + APC `D` frames | 24-verify #2 |
+| SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |
+| Camera (grayscale test pattern) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-camera API + APC `F` frames | 24-verify #4 |
+| LCD panel (RGB565 blits) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-lcd API + APC `L` frames | 24-verify #5 |
+| Wi-Fi (STA/AP) | ✅* | ✅* | — | — | ❌ | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
+| BLE HCI (direct transport calls) | ✅ | ✅ | ✅ | — | ❌ | JS VHCI shims + virtual controller, fully observable | 25-verify |
+| BLE via NimBLE host stack | 🟡 | 🟡 | 🟡 | — | ❌ | init shims keep firmware healthy; host never transmits (see §4) | observe_ble.mjs |
+| 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only) | none |
+| Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | — | native CLI only (`--net tap/user`) | none |
+| USB (Serial/JTAG; OTG on P4) | ❌† | ❌† | ❌† | ❌† | ❌† | native peripheral in core (CLI), no WASM glue | none |
+| Timers / watchdog / RTC | ✅ | ✅ | ✅ | ✅ | 🟡 | native silicon model (GPTimer IRQ, TWDT, esp_timer) | 26-verify |
+| Flash filesystems (LittleFS / NVS) | ✅ | ✅ | ✅ | ✅ | 🟡 | native flash MMIO model | 26-verify |
 
 ---
 
@@ -142,8 +144,10 @@ silicon (no shim needed), not explicitly regression-tested
   `spike/24-verify-new.mjs` (C3, 5 virtualized peripherals),
   `spike/25-verify-hci.mjs` (HCI unit + direct round trip + BLEDemo health),
   `spike/26-verify-native.mjs` (C3, Timer/WDT/RTC/LittleFS/NVS — no shims),
-  `spike/27-verify-idf.mjs` (C3, IDF SPI + I2C-v5 + I2C-legacy) and
-  `spike/21/22/23-verify-*.mjs` (C6/H2/P4, 18 demos each) — all green.
+  `spike/27-verify-idf.mjs` (C3, IDF SPI + I2C-v5 + I2C-legacy),
+  `spike/21/22/23-verify-*.mjs` (C6/H2/P4, 18 demos each),
+  `spike/28-verify-c5.mjs` (C5, 17 demos — no TWAI on the silicon) and
+  `spike/29-verify-s31.mjs` (S31 target/ROM/chip-ID smoke, no firmware) — all green.
 - Virtual devices (interactive in the web UI): SSD1306, ST7789, NeoPixel strip,
   VirtualSDCard (FAT16/32), MPU6050, ADC/PWM/I2S/TWAI controllers, plus
   VirtualTouch, VirtualDAC, VirtualSDMMC, VirtualCamera, VirtualLcdPanel.
@@ -210,6 +214,36 @@ cannot reach them:
 - UART RX polling itself is unreliable for bulk host→guest transfers on this
   core, so BLE events use the shared-memory channel (`core/ble_mirror.mjs`).
   Dribbled polled reads (SDMMC sectors, camera frames) work fine.
+- **esp-emu 0.41: mask UART0 RX interrupts across every reply-polling shim.**
+  0.41 delivers UART RX interrupts promptly, so the Arduino Serial RX ISR
+  steals `uart_input` reply bytes mid-poll and the shim spins forever (guest
+  parked in `spiTransferByteNL` poll + `_global_interrupt_handler`, freed by
+  manual injection). All `lw STATUS/0x1C` poll sites now save/mask/restore
+  `INT_ENA` (`_mask_uart`/`_unmask_uart` in `spike/gen_spi_shims.py`,
+  `spike/shims.py`); tight funcs ride the `pair()` JAL-into-twin mechanism.
+  TX-only shims need no mask.
+- **esp-emu 0.41: virtual time runs ~1:1 with cycles** (0.39 fast-forwarded
+  through FreeRTOS delays ~100x). Multi-second waits need thousands of
+  batches (BLEDemo heartbeat: batch 75 → ~5055; health test runs 6000).
+- **esp-emu 0.41: multi-instance runs flake upstream** (identical patched
+  images boot differently per process; observed on C6 SPI/I2C-heavy demos,
+  ~1/3 runs). `21/22/23-verify-*.mjs` retry each demo with a fresh instance
+  up to 3x; 3/3 failures = real regression.
+
+### ESP32-C5 and ESP32-S31 (esp-emu 0.41)
+
+- **C5** (RV32IMAC, C6-shaped map, P4-style CLIC, 29 GPIOs): full bring-up —
+  `UART0_BASE`/`SPI_BUS_BASE`/`BLE_SCRATCH` = `0x60000000`/`0x40810000`/
+  `0x40810000`, `samples/c5/` (17 demos), `spike/28-verify-c5.mjs` (17/17).
+  Silicon gaps: **no TWAI** (TWAIDemo doesn't link), **no VHCI host interface**
+  (BLETest doesn't link; BLEDemo/NimBLE crashes with no radio model), C5
+  radios (Wi-Fi/BLE/15.4) not modeled by the core.
+- **S31** (dual RV32, 60 GPIOs, chip ID `0x20`, ROM `ESP-ROM:esp32s31-20251218`):
+  target accepted, embedded ROM live, chip-ID gate verified
+  (`spike/29-verify-s31.mjs` ROM-banner smoke via a `mkimg.py`-forged probe
+  image). **Firmware blocked**: no Arduino core and no ESP-IDF toolchain here
+  can target S31, so no samples exist and shim bases are unverified (left at
+  C3 fallbacks).
 
 ### Native, untested (🟡)
 
@@ -230,6 +264,8 @@ node spike/27-verify-idf.mjs      # C3 — IDF SPI + I2C-v5 + I2C-legacy drivers
 node spike/21-verify-c6.mjs       # C6 — 18 demos
 node spike/22-verify-h2.mjs       # H2 — 18 demos
 node spike/23-verify-p4.mjs       # P4 — 18 demos
+node spike/28-verify-c5.mjs       # C5 — 17 demos (no TWAI on silicon)
+node spike/29-verify-s31.mjs      # S31 — target/ROM/chip-ID smoke (no firmware)
 ```
 
 All suites must run with `mcu.step(100000)` (see AGENT.md — the WASM engine can drop

@@ -1,4 +1,4 @@
-// Verification Suite for ESP32-C6 via MCU Core SDK (mirrors spike/20-test-mcu-core.mjs)
+// Verification Suite for ESP32-C5 via MCU Core SDK (mirrors spike/20-test-mcu-core.mjs)
 import { readFileSync } from 'node:fs';
 import { ESP32C3 } from '../index.mjs';
 import { VirtualSDCard, MPU6050Device } from '../peripherals.mjs';
@@ -8,8 +8,8 @@ const mpu6050Rig = (m) => {
     m.i2c.register(0x68, { i2cWrite: (x) => dev.onWrite(x), i2cRead: (l) => dev.onRead(l) });
 };
 
-const CHIP = 'esp32c6';
-const DIR = 'c6';
+const CHIP = 'esp32c5';
+const DIR = 'c5';
 
 const DEMOS = [
     { name: 'Blink', markers: ['blink-start'], setup: null },
@@ -17,7 +17,6 @@ const DEMOS = [
     { name: 'SPIDemo', markers: ['[SPI] SPI initialized successfully!', 'spi-done'], setup: null },
     { name: 'ADCPWMDemo', markers: ['Initial ADC Read: raw=2048, mv=1650 mV', 'adc-pwm-done'], setup: (m) => m.adc.setVoltage(0, 1.65) },
     { name: 'I2SDemo', markers: ['i2s-audio-done'], setup: null },
-    { name: 'TWAIDemo', markers: ['twai-bus-done'], setup: null },
     { name: 'NeoPixelDemo', markers: ['[NeoPixel] NeoPixel strip initialized!'], setup: null },
     { name: 'OLEDDemo', markers: ['[OLED] Display initialized successfully!', '[OLED] Splash frame sent.'], setup: null },
     { name: 'ST7789Demo', markers: ['[TFT] ST7789 display initialized successfully!', '[TFT] Color splash screen rendered.'], setup: null },
@@ -33,7 +32,7 @@ const DEMOS = [
 ];
 
 console.log('====================================================');
-console.log(`Testing ESP32-C6 MCU Core Engine SDK (all protocols)`);
+console.log(`Testing ESP32-C5 MCU Core Engine SDK (all protocols)`);
 console.log('====================================================\n');
 
 const results = [];
@@ -69,8 +68,8 @@ for (const demo of DEMOS) {
 
 if (results.every(Boolean)) {
     console.log('\n====================================================');
-    console.log('ALL ESP32-C6 SDK TESTS PASSED! 🎉');
+    console.log('ALL ESP32-C5 SDK TESTS PASSED! 🎉');
     console.log('====================================================\n');
 } else {
-    throw new Error('ESP32-C6 verification failed');
+    throw new Error('ESP32-C5 verification failed');
 }

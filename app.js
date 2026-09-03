@@ -258,10 +258,10 @@
     let customElfName = null;
 
     let netConnected = false;
-    const CHIP_GPIO_COUNT = { esp32c3: 22, esp32c6: 30, esp32h2: 19, esp32p4: 56 };
-    const CHIP_LABEL = { esp32c3: 'ESP32-C3 (RV32)', esp32c6: 'ESP32-C6 (RV32)', esp32h2: 'ESP32-H2 (RV32)', esp32p4: 'ESP32-P4 (Dual RV32)' };
+    const CHIP_GPIO_COUNT = { esp32c3: 22, esp32c6: 30, esp32h2: 19, esp32c5: 29, esp32p4: 56, esp32s31: 60 };
+    const CHIP_LABEL = { esp32c3: 'ESP32-C3 (RV32)', esp32c6: 'ESP32-C6 (RV32)', esp32h2: 'ESP32-H2 (RV32)', esp32c5: 'ESP32-C5 (RV32)', esp32p4: 'ESP32-P4 (Dual RV32)', esp32s31: 'ESP32-S31 (Dual RV32)' };
     let gpioPinCount = 22;
-    let gpioInputStates = new Uint8Array(56);
+    let gpioInputStates = new Uint8Array(64);
 
     // OLED rendering (128x64)
     let oledCanvas = null;
@@ -488,8 +488,8 @@
         if (n === gpioPinCount && document.getElementById('gpio-grid').children.length === n) return;
         gpioPinCount = n;
         const keep = gpioInputStates;
-        gpioInputStates = new Uint8Array(56);
-        gpioInputStates.set(keep.subarray(0, Math.min(keep.length, 56)));
+        gpioInputStates = new Uint8Array(64);
+        gpioInputStates.set(keep.subarray(0, Math.min(keep.length, 64)));
         initGpioPanel(n);
         const badge = document.getElementById('chip-badge');
         if (badge && CHIP_LABEL[chip]) badge.textContent = CHIP_LABEL[chip];

@@ -1,19 +1,19 @@
 # esp-emulator
 
-A Rust-based RISC-V emulator for ESP32-C3, ESP32-C6, ESP32-H2, and ESP32-P4 firmware. Runs ESP-IDF applications without hardware by emulating the CPU, memory, and key peripherals including WiFi, Ethernet, crypto accelerators, and timers. Also compiles to WebAssembly for browser-based emulation.
+A Rust-based RISC-V emulator for ESP32-C3, ESP32-C5, ESP32-C6, ESP32-H2, and ESP32-P4 firmware. Runs ESP-IDF applications without hardware by emulating the CPU, memory, and key peripherals including WiFi, Ethernet, crypto accelerators, and timers. Also compiles to WebAssembly for browser-based emulation.
 
 ## Features
 
-- **CPU**: Full RV32IMAC on C3/C6/H2; RV32IMAFC (with single-precision FP via Berkeley SoftFloat) on P4. Multi-hart scheduler supports P4's dual HP cores. RV32 PMP and Espressif PMA enforced via a fused two-level page table — catches the same access violations as silicon (IDF panic memprot tests, TEE REE-vs-TEE isolation, IRAM/IROM write protection).
+- **CPU**: Full RV32IMAC on C3/C5/C6/H2; RV32IMAFC (with single-precision FP via Berkeley SoftFloat) on P4. Multi-hart scheduler supports P4's dual HP cores. RV32 PMP and Espressif PMA enforced via a fused two-level page table — catches the same access violations as silicon (IDF panic memprot tests, TEE REE-vs-TEE isolation, IRAM/IROM write protection).
 - **WiFi**: Soft AP with WPA2-PSK, 802.11 management frames, DHCP server, and TAP networking for real connectivity
 - **Ethernet**: OpenCores Ethernet MAC (OpenETH) for QEMU-compatible `CONFIG_ETH_USE_OPENETH` firmware, plus Synopsys DesignWare GMAC for ESP32-P4's built-in EMAC
 - **Networking backends**: user-mode (zero-setup, QEMU-style NAT via smoltcp — DHCP, DNS forwarder, mDNS relay with optional record-rewriting NAT for Matter/HomeKit-style service discovery, IPv6 SLAAC, `hostfwd`, restrict mode, ICMP echo), TAP bridge (Linux), vmnet (macOS)
 - **BLE**: NimBLE host stack support with HCI forwarding to Bumble (virtual controller) or physical Linux HCI adapters
 - **Thread / 802.15.4**: OpenThread `ot_cli` and `ot_br` on ESP32-C6 and ESP32-H2. Single-node forms a partition out of the box; two emulator instances form one Thread mesh (Leader + Child, or Border Router + end device) over a localhost UDP bridge
-- **Crypto**: AES (ECB/CBC/OFB/CTR/CFB), SHA (1/224/256), RSA, ECC, HMAC-SHA256, Digital Signature, XTS-AES flash encryption, ECDSA (P-256/P-384 on P4; P-256 on H2), Key Manager + HUK Generator (P4) — drives flash / HMAC / DS / ECDSA key sourcing for `CONFIG_SECURE_FLASH_ENCRYPTION_KEY_SOURCE_KEY_MGR`
-- **Peripherals**: UART, USB Serial JTAG, GPIO, system timer, timer groups, interrupt controllers (PLIC for C3/C6/H2, CLIC for P4), eFuse, SPI flash, GDMA
+- **Crypto**: AES (ECB/CBC/OFB/CTR/CFB), SHA (1/224/256), RSA, ECC, HMAC-SHA256, Digital Signature, XTS-AES flash encryption, ECDSA (P-256/P-384 on P4 and C5; P-256 on H2), Key Manager + HUK Generator (P4, C5) — drives flash / HMAC / DS / ECDSA key sourcing for `CONFIG_SECURE_FLASH_ENCRYPTION_KEY_SOURCE_KEY_MGR`
+- **Peripherals**: UART, USB Serial JTAG, GPIO, system timer, timer groups, interrupt controllers (PLIC for C3/C6/H2, CLIC for C5/P4), eFuse, SPI flash, GDMA
 - **esptool / espefuse over `socket://`**: a `--uart-tcp HOST:PORT` bridge plus `--strap-mode 0x02` (UART download) lets esptool, espefuse, and `idf.py flash` drive the running emulator over TCP, matching the QEMU-Espressif workflow. See [esptool / espefuse](#esptool--espefuse-over-socket).
-- **Chips**: ESP32-C3, ESP32-C6, ESP32-H2, and ESP32-P4 with per-chip memory maps and interrupt controllers
+- **Chips**: ESP32-C3, ESP32-C5, ESP32-C6, ESP32-H2, and ESP32-P4 with per-chip memory maps and interrupt controllers. C5 is a hybrid: a C6-shaped peripheral map driven by a P4-style CLIC on a single core (its radios are not yet modelled)
 - **WASM**: Browser-based emulation via WebAssembly with JavaScript API
 - **ROM stubs**: Intercepts key ROM functions (printf, UART, delay, WiFi TX) instead of emulating full ROM
 
@@ -23,7 +23,7 @@ A Rust-based RISC-V emulator for ESP32-C3, ESP32-C6, ESP32-H2, and ESP32-P4 firm
 
 - A merged flash binary built with ESP-IDF (see [Building Firmware](#building-firmware-images))
 
-Default ROM ELFs (C3 rev3, C6 rev0, H2 rev0, P4 rev3) are embedded in the binary, so `--rom` is optional for the common case. Pass `--rom <path>` only to override with a different silicon revision or a custom ROM (e.g. from `~/.espressif/tools/esp-rom-elfs/`).
+Default ROM ELFs (C3 rev3, C5 rev100, C6 rev0, H2 rev0, P4 rev3) are embedded in the binary, so `--rom` is optional for the common case. Pass `--rom <path>` only to override with a different silicon revision or a custom ROM (e.g. from `~/.espressif/tools/esp-rom-elfs/`).
 
 ### Running
 
@@ -37,7 +37,7 @@ Default ROM ELFs (C3 rev3, C6 rev0, H2 rev0, P4 rev3) are embedded in the binary
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--chip <CHIP>` | (required) | Target chip: `esp32c3`, `esp32c6`, `esp32h2`, `esp32p4`, or `esp32s31` |
+| `--chip <CHIP>` | (required) | Target chip: `esp32c3`, `esp32c5`, `esp32c6`, `esp32h2`, `esp32p4`, or `esp32s31` |
 | `--firmware <PATH>` | (required) | Path to merged flash binary |
 | `--rom <PATH>` | embedded | Path to ROM ELF file (overrides the built-in default for `--chip`) |
 | `--elf <PATH>` | — | Path to application ELF for BLE symbol lookup (e.g. `build/project.elf`) |
@@ -399,22 +399,30 @@ ESPPORT=socket://localhost:5555 idf.py flash
 
 ### What works
 
-End-to-end verified on **C3, C6, H2, P4, and S31**:
+End-to-end verified on **C3, C6, H2, P4, and S31**; C5 is partial (see ² below):
 
-| command                     | C3 | C6 | H2 | P4 | S31 |
-|-----------------------------|----|----|----|----|-----|
-| `esptool chip-id`           | ✅ | ✅ | ✅ | ✅ | ✅¹ |
-| `esptool flash-id`          | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `esptool read-mac`          | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `esptool read-flash`        | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `esptool write-flash`       | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `esptool verify-flash`      | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `esptool erase-region`      | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `espefuse summary`          | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `espefuse get-custom-mac`   | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `espefuse burn-custom-mac`  | ✅ | ✅ | ✅ | ✅ | ✅ |
+| command                     | C3 | C5 | C6 | H2 | P4 | S31 |
+|-----------------------------|----|----|----|----|----|-----|
+| `esptool chip-id`           | ✅ | ✅² | ✅ | ✅ | ✅ | ✅¹ |
+| `esptool flash-id`          | ✅ | ✅² | ✅ | ✅ | ✅ | ✅ |
+| `esptool read-mac`          | ✅ | ✅² | ✅ | ✅ | ✅ | ✅ |
+| `esptool read-flash`        | ✅ | ✅² | ✅ | ✅ | ✅ | ✅ |
+| `esptool write-flash`       | ✅ | ✅² | ✅ | ✅ | ✅ | ✅ |
+| `esptool verify-flash`      | ✅ | ✅² | ✅ | ✅ | ✅ | ✅ |
+| `esptool erase-region`      | ✅ | ✅² | ✅ | ✅ | ✅ | ✅ |
+| `espefuse summary`          | ✅ | ❌² | ✅ | ✅ | ✅ | ✅ |
+| `espefuse get-custom-mac`   | ✅ | ❌² | ✅ | ✅ | ✅ | ✅ |
+| `espefuse burn-custom-mac`  | ✅ | ❌² | ✅ | ✅ | ✅ | ✅ |
 
 ¹ S31 has no chip ID; esptool reports the MAC instead (same as on silicon).
+
+² C5 works in **`--no-stub` ROM mode only**, and espefuse does not work yet.
+Both limits have one cause: C5's UART uses *synchronised* registers (writes to
+`UART_CLKDIV_SYNC` commit on `UART_REG_UPDATE`), which the shared `Uart` model
+commits immediately. The C5 ROM programs the correct divider (`0x15B`) and a
+later read-modify-write then zeroes it, so esptool computes a 0 MHz crystal.
+Only C5's esptool target consults the crystal (`ESP32C5ROM.change_baud`), which
+is why no other chip is affected. Modelling the UART sync semantics fixes both.
 
 All commands work in both **stub mode** (esptool uploads its RAM flasher — the
 default) and **`--no-stub` ROM mode**. On P4, stub-mode `write-flash` /
@@ -442,7 +450,7 @@ The emulator runs merged flash binaries built with ESP-IDF. Requires ESP-IDF env
 
 ```sh
 cd your-esp-idf-project
-idf.py set-target esp32c3    # or esp32c6, esp32p4
+idf.py set-target esp32c3    # or esp32c5, esp32c6, esp32p4
 idf.py build
 idf.py merge-bin -o build/merged_flash.bin
 ```

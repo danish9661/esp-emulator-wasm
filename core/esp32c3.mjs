@@ -58,7 +58,7 @@ export class ESP32C3 {
     /**
      * Factory: Create and initialize an ESP32 MCU instance.
      * @param {object} [options]
-     * @param {string} [options.chip='esp32c3'] - 'esp32c3', 'esp32c6', 'esp32h2', 'esp32p4'
+     * @param {string} [options.chip='esp32c3'] - 'esp32c3', 'esp32c6', 'esp32h2', 'esp32c5', 'esp32p4', 'esp32s31'
      * @param {boolean} [options.bootFromRom=true] - Enable ROM boot sequence
      * @param {string | URL} [options.wasmModuleUrl] - Custom path to esp_emu.js / wasm
      * @returns {Promise<ESP32C3>}

@@ -2,11 +2,11 @@
 
 [![RISC-V](https://img.shields.io/badge/Architecture-RISC--V%20(RV32)-red.svg)](https://riscv.org/)
 [![WebAssembly](https://img.shields.io/badge/Runtime-WebAssembly%20(WASM)-654FF0.svg)](https://webassembly.org/)
-[![Targets](https://img.shields.io/badge/Targets-ESP32--C3%20%7C%20C6%20%7C%20H2%20%7C%20P4-orange.svg)](https://www.espressif.com/)
-[![Tests](https://img.shields.io/badge/Tests-31%2F31%20Passing-brightgreen.svg)]()
+[![Targets](https://img.shields.io/badge/Targets-ESP32--C3%20%7C%20C6%20%7C%20H2%20%7C%20C5%20%7C%20P4%20%7C%20S31-orange.svg)](https://www.espressif.com/)
+[![Tests](https://img.shields.io/badge/Tests-31%2F31%20C3%20%7C%2017%2F17%20C5-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A blazing-fast, **in-browser WebAssembly emulator** for Espressif **RISC-V 32-bit (RV32)** microcontrollers (**ESP32-C3, ESP32-C6, ESP32-H2, ESP32-P4**). 
+A blazing-fast, **in-browser WebAssembly emulator** for Espressif **RISC-V 32-bit (RV32)** microcontrollers (**ESP32-C3, ESP32-C6, ESP32-H2, ESP32-C5, ESP32-P4, ESP32-S31**). 
 
 Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Arduino and ESP-IDF firmwares to interact with realistic displays, sensors, audio, automotive CAN bus, and storage peripherals directly in the browser with **zero guest modifications or re-compilation**.
 
@@ -24,12 +24,12 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 ## 🚀 Supported Hardware Protocols & Peripherals
 
 > Full per-chip coverage matrix (what is implemented, emulator-ready, or missing on
-> C3/C6/H2/P4): see **[PROTOCOLS.md](PROTOCOLS.md)**.
+> C3/C6/H2/P4/C5; S31 smoke-only): see **[PROTOCOLS.md](PROTOCOLS.md)**.
 
 | Peripheral / Protocol | Status | Emulated Hardware / Library Support | Mechanism |
 |---|:---:|---|---|
 | **UART0 Console** | ✅ | Serial TX / RX (bidirectional 115200 baud terminal) | Native WASM FIFO + XTerm.js |
-| **GPIO Matrix (per-chip)** | ✅ | Digital Out + Direction + Interactive Input Injection (C3:22, C6:30, H2:19, P4:56) | Dynamic memory register auto-calibration |
+| **GPIO Matrix (per-chip)** | ✅ | Digital Out + Direction + Interactive Input Injection (C3:22, C6:30, H2:19, C5:29, P4:56, S31:60) | Dynamic memory register auto-calibration |
 | **I2C Master** | ✅ | `Wire.h` Arduino HAL (SSD1306 OLED 128x64, MPU6050 6-DOF IMU). Raw IDF `i2c_master_*` runs unpatched | HAL shims + APC bridge (`\x1b_W`, `\x1b_R`) |
 | **SPI Master** | ✅ | `SPI.h` Arduino HAL (ST7789 Color TFT 240x240 RGB565, Full Duplex). Raw IDF `spi_device_*` runs unpatched | Chunked RV32 shims (`\x1b_SX`) |
 | **SD Card (SPI)** | ✅ | `SD.h` (FAT16/FAT32 Filesystem, Disk Image Exporter) | CCITT CRC16 + virtual sector streamer |
@@ -54,14 +54,16 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 
 ## 🎯 Supported Espressif RISC-V Chips
 
-All 4 target architectures are binary-compatible with the emulator's universal RV32 base integer instruction shims:
+All 6 target architectures are binary-compatible with the emulator's universal RV32 base integer instruction shims:
 
 | Target Chip | CPU Architecture | Max Frequency | Wireless & Features | Emulator Status |
 |---|---|---|---|:---:|
 | **ESP32-C3** | Single-core 32-bit RISC-V (`RV32IMC`) | 160 MHz | Wi-Fi 4, Bluetooth 5 (LE) | ✅ **Full Peripheral Support** |
 | **ESP32-C6** | Single-core 32-bit RISC-V (`RV32IMAC`) | 160 MHz | Wi-Fi 6, BLE 5, 802.15.4 (Thread/Zigbee) | ✅ **ROM & Flash Boot Verified** |
 | **ESP32-H2** | Single-core 32-bit RISC-V (`RV32IMAC`) | 96 MHz | BLE 5, 802.15.4 (Thread/Zigbee) | ✅ **ROM & Flash Boot Verified** |
+| **ESP32-C5** | Single-core 32-bit RISC-V (`RV32IMAC`) | 240 MHz | Wi-Fi 6, BLE 5, 802.15.4 (radios not modeled; no TWAI/VHCI on silicon libs) | ✅ **17 Demos Verified (no TWAI/BLE)** |
 | **ESP32-P4** | Dual-core 32-bit RISC-V (`RV32IMAFC`) | 400 MHz | High-Performance with Single/Double FPU | ✅ **Core Initialized & Ready** |
+| **ESP32-S31** | Dual-core 32-bit RISC-V | 320 MHz | Wi-Fi 6, BT 5.4+Classic, 802.15.4, EMAC, USB-OTG | 🟡 **Target + ROM smoke only (no toolchain: no firmware samples)** |
 
 ---
 
@@ -172,10 +174,14 @@ node spike/25-verify-hci.mjs
 node spike/26-verify-native.mjs
 node spike/27-verify-idf.mjs
 
-# Run the multi-chip MCU Core SDK verification suites (C6 / H2 / P4)
+# Run the multi-chip MCU Core SDK verification suites (C6 / H2 / P4 / C5)
 node spike/21-verify-c6.mjs
 node spike/22-verify-h2.mjs
 node spike/23-verify-p4.mjs
+node spike/28-verify-c5.mjs
+
+# S31 target/ROM/chip-ID smoke (no firmware: no toolchain targets S31 here)
+node spike/29-verify-s31.mjs
 ```
 
 ### Test Suite Output:
@@ -257,12 +263,16 @@ esp-rv32-emulator/
 ├── shims.mjs               # Auto-generated RV32 machine bytecode shims
 ├── serve.py                # Local development server with no-cache headers
 ├── pkg/
-│   ├── esp_emu.js          # WASM JavaScript wrapper bindings
+│   ├── esp_emu.js          # WASM JavaScript wrapper bindings (esp-emulator v0.41.0)
 │   └── esp_emu_bg.wasm     # High-performance Rust-compiled RV32 emulator core
+├── pkg.prev/               # Previous WASM build (v0.39.0) kept for bisection
 ├── samples/                # Pre-compiled .bin and .elf firmware sample binaries
+│   └── c5/ c6/ h2/ p4/     # Per-chip builds (C5: 17 demos, no TWAI/BLE)
 └── spike/
     ├── gen_spi_shims.py    # RV32 instruction assembler & shim generator
     ├── 18-verify-all.mjs   # Automated multi-peripheral verification test suite
+    ├── 28-verify-c5.mjs    # ESP32-C5 suite (17 demos)
+    ├── 29-verify-s31.mjs   # ESP32-S31 target/ROM/chip-ID smoke
     └── sketches/           # Source Arduino sketches (.ino) for all demos
 ```
 

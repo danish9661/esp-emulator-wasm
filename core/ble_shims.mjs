@@ -32,6 +32,7 @@ export const BLE_SCRATCH = {
     esp32c3: 0x3fc94000,
     esp32c6: 0x40810000,
     esp32h2: 0x40810000,
+    esp32c5: 0x40810000,
     esp32p4: 0x4ff44000,
 };
 export const BLE_CB_OFF = 0;
@@ -43,7 +44,7 @@ export const BLE_EVT_OFF = 0x100;
 export const BLE_MAGIC1 = 0xDEADBEEF;
 export const BLE_MAGIC2 = 0xBEAC0001;
 
-const UART_HI = { esp32c3: 0x60000, esp32c6: 0x60000, esp32h2: 0x60000, esp32p4: 0x500ca };
+const UART_HI = { esp32c3: 0x60000, esp32c6: 0x60000, esp32h2: 0x60000, esp32c5: 0x60000, esp32p4: 0x500ca };
 
 function stubReturn(value) {
     return asm32(assemble([{ op: 'addi', rd: A0, rs1: 0, imm: value }, { op: 'ret' }]));

@@ -32,21 +32,39 @@ def _emit_nibbles(reg):
         andi(28, reg, 15), addi(28, 28, 97), sw(28, 5, 0)
     ]
 
+def _mask_uart(saved):
+    # Save UART0 INT_ENA and mask all UART0 interrupts across a request/reply
+    # transaction. The Arduino Serial RX ISR would otherwise steal
+    # host->firmware reply bytes out of the RX FIFO mid-poll (esp-emu >= 0.41
+    # delivers UART RX interrupts promptly, where 0.39 effectively did not;
+    # the orphaned poll then spins forever). t0 must already hold the UART0
+    # base. RV32I-only. Pair with _unmask_uart(saved) on EVERY exit path.
+    return [lw(saved, 5, 0x0C), sw(0, 5, 0x0C)]
+
+def _unmask_uart(saved):
+    return [sw(saved, 5, 0x0C)]
+
 def shim_spi_transfer_byte_88():
     p = []
     p += [lui(5, 0x60000)]
+    p += _mask_uart(6)                            # t1 = saved INT_ENA (free here)
     p += [lui(7, 0x536), addi(7, 7, -0xE5)]     # '\x1b_S'
     p += [andi(28, 7, 0xFF), sw(28, 5, 0), srli(7, 7, 8), bne(7, 0, -4 * 3)]
     p += [srli(28, 11, 4), addi(28, 28, 97), sw(28, 5, 0)]
     p += [andi(28, 11, 15), addi(28, 28, 97), sw(28, 5, 0)]
     p += [addi(7, 0, 27), sw(7, 5, 0), addi(7, 0, 92), sw(7, 5, 0)]
     p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF), beq(7, 0, -4 * 2)]
-    p += [lw(10, 5, 0), _ret()]
+    p += [lw(10, 5, 0)]                           # a0 = reply byte
+    p += _unmask_uart(6)                          # restore INT_ENA, then return
+    p += [_ret()]
+    # NOTE: 25 words = 100B. Fits spiTransferByte(146)/spiWriteByte(122);
+    # the 88B/64B NL twins get a JAL into the roomy twin via pair() in elf.mjs.
     return p
 
 def shim_spi_transfer_short_nl():
     p = []
     p += [lui(5, 0x60000)]
+    p += _mask_uart(12)                           # a2 = saved INT_ENA (a2 free)
     p += [slli(11, 11, 16)]
     p += [addi(10, 0, 0)]
     p += [addi(6, 0, 2)]
@@ -66,12 +84,14 @@ def shim_spi_transfer_short_nl():
     p += [slli(10, 10, 8), or_r(10, 10, 28)]
     p += [slli(11, 11, 8), addi(6, 6, -1)]
     p += [bne(6, 0, -4 * (len(p) - loop_start))]
+    p += _unmask_uart(12)
     p += [_ret()]
     return p
 
 def shim_spi_transfer_long_nl():
     p = []
     p += [lui(5, 0x60000)]
+    p += _mask_uart(12)                           # a2 = saved INT_ENA (a2 free)
     p += [addi(10, 0, 0)]
     p += [addi(6, 0, 4)]
     loop_start = len(p)
@@ -90,6 +110,7 @@ def shim_spi_transfer_long_nl():
     p += [slli(10, 10, 8), or_r(10, 10, 28)]
     p += [slli(11, 11, 8), addi(6, 6, -1)]
     p += [bne(6, 0, -4 * (len(p) - loop_start))]
+    p += _unmask_uart(12)
     p += [_ret()]
     return p
 
@@ -110,8 +131,11 @@ def shim_spi_write_nl():
 def shim_spi_transfer_bytes_nl(chunk_max=16):
     p = []
     p += [lui(5, 0x60000)]
-    ret_target = 52
+    ret_target = 54                               # index of _ret() (was 52 with
+    # an off-by-one: the a3==0 early exit jumped one word PAST ret into the
+    # next function; harmless by accident, fixed here)
     p += [beq(13, 0, 4 * (ret_target - 1))]     # 1: jump to ret
+    p += _mask_uart(14)                           # a4 = saved INT_ENA (a4 free)
     
     # Outer chunk loop (up to chunk_max bytes per chunk)
     chunk_start = len(p)                        # 2
@@ -166,8 +190,9 @@ def shim_spi_transfer_bytes_nl(chunk_max=16):
     
     p += [sub_r(13, 13, 6)]                     # 50: a3 -= t1
     p += [bne(13, 0, -4 * (len(p) - chunk_start))] # 51
-    
-    p += [_ret()]                               # 52
+
+    p += _unmask_uart(14)
+    p += [_ret()]                               # 54
     return p
 
 # void espShow(uint8_t pin, uint8_t *pixels, uint32_t numBytes, boolean is800KHz)
@@ -205,6 +230,7 @@ def shim_neopixelwrite():
 def shim_analog_read(is_mv=False):
     p = []
     p += [lui(5, 0x60000)]                      # 0
+    p += _mask_uart(11)                           # a1 = saved INT_ENA (a1 free)
     p += [addi(7, 0, 27), sw(7, 5, 0)]          # 2
     p += [addi(7, 0, 95), sw(7, 5, 0)]          # 4
     ch = ord('V') if is_mv else ord('A')
@@ -212,7 +238,7 @@ def shim_analog_read(is_mv=False):
     p += [andi(7, 10, 0x7F), sw(7, 5, 0)]       # 8: pin
     p += [addi(7, 0, 27), sw(7, 5, 0)]          # 10
     p += [addi(7, 0, 92), sw(7, 5, 0)]          # 12
-    
+
     # Read 2 bytes (hi, lo)
     p += [addi(10, 0, 0)]                       # 13: a0 = 0
     p += [addi(6, 0, 2)]                        # 14: t1 = 2
@@ -224,6 +250,7 @@ def shim_analog_read(is_mv=False):
     p += [slli(10, 10, 8), or_r(10, 10, 28)]    # 20, 21: a0 = (a0 << 8) | byte
     p += [addi(6, 6, -1)]                       # 22
     p += [bne(6, 0, -4 * (len(p) - loop_start))]# 23
+    p += _unmask_uart(11)
     p += [_ret()]                               # 24
     return p
 
@@ -247,6 +274,7 @@ def shim_touch_read():
     # a0 = pin -> returns u16 raw in a0.
     p = []
     p += [lui(5, 0x60000)]                      # 0
+    p += _mask_uart(11)                           # a1 = saved INT_ENA (a1 free)
     p += [addi(7, 0, 27), sw(7, 5, 0)]          # 2
     p += [addi(7, 0, 95), sw(7, 5, 0)]          # 4
     p += [addi(7, 0, ord('T')), sw(7, 5, 0)]    # 6
@@ -265,6 +293,7 @@ def shim_touch_read():
     p += [slli(10, 10, 8), or_r(10, 10, 28)]    # 20, 21: a0 = (a0 << 8) | byte
     p += [addi(6, 6, -1)]                       # 22
     p += [bne(6, 0, -4 * (len(p) - loop_start))]# 23
+    p += _unmask_uart(11)
     p += [_ret()]                               # 24
     return p
 
@@ -479,6 +508,7 @@ def shim_idf_i2c_read(a0=10):
     # regs: addr=a0, buf=a0+1, size=a0+2.
     A0, A1, A2 = a0, a0 + 1, a0 + 2
     p = [lui(5, 0x60000)]
+    p += _mask_uart(6)                            # t1 = saved INT_ENA (t1 free)
     for ch in (27, ord('_'), ord('R')): p += _emit_const(ch)
     p += _emit_reg_low7(A0)                       # device address
     p += _emit_reg_low7(A2)                       # requested length
@@ -491,6 +521,7 @@ def shim_idf_i2c_read(a0=10):
     p += [sb(28, A1, 0)]
     p += [addi(A1, A1, 1), addi(A2, A2, -1)]
     p += [bne(A2, 0, -4 * (len(p) - loop_start))]
+    p += _unmask_uart(6)
     p += [addi(10, 0, 0), _ret()]
     return p
 
@@ -499,6 +530,7 @@ def shim_idf_i2c_write_read():
     # a0 = addr, a1 = wbuf, a2 = wsize, a3 = rbuf, a4 = rsize (a5 timeout ignored).
     # Emits a W frame then an R frame back-to-back; host answers the R part.
     p = [lui(5, 0x60000)]
+    p += _mask_uart(6)                            # t1 = saved INT_ENA (t1 free)
     for ch in (27, ord('_'), ord('W')): p += _emit_const(ch)
     p += _emit_reg_low7(10)
     tx_head = len(p)
@@ -521,6 +553,7 @@ def shim_idf_i2c_write_read():
     p += [sb(28, 13, 0)]
     p += [addi(13, 13, 1), addi(14, 14, -1)]
     p += [bne(14, 0, -4 * (len(p) - loop_start))]
+    p += _unmask_uart(6)
     p += [addi(10, 0, 0), _ret()]
     return p
 
@@ -562,7 +595,9 @@ def shim_idf_spi_xfer():
     # rxlength@20, freq@24, user@28, tx_buffer@32, rx_buffer@36.
     # a1/a2/a3 are reused as tx/rx cursors + remaining (free on entry), so the
     # proven chunk-loop body from shim_spi_transfer_bytes_nl is reused verbatim.
+    # a4 holds the saved UART0 INT_ENA across both exit paths (ret0 + fallthrough).
     p = [lui(5, 0x60000)]
+    p += _mask_uart(14)                           # a4 = saved INT_ENA
     p += [lw(7, 11, 0)]                           # t2 = flags
     p += [lw(28, 11, 32)]                         # t3 = tx_buffer (maybe NULL)
     p += [lw(29, 11, 36)]                         # t4 = rx_buffer (maybe NULL)
@@ -617,6 +652,7 @@ def shim_idf_spi_xfer():
     p += [bne(13, 0, -4 * (len(p) - chunk_start))]
     ret0 = len(p)
     p[skip0] = beq(13, 0, 4 * (ret0 - skip0))
+    p += _unmask_uart(14)
     p += [addi(10, 0, 0), _ret()]                 # return ESP_OK
     return p
 

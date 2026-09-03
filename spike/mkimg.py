@@ -36,7 +36,7 @@ def li(rd, val):
     lo = val - (hi << 12)
     return [lui(rd, hi & 0xFFFFF), addi(rd, rd, lo)]
 
-CHIP_ID = {'esp32c3': 5, 'esp32c6': 13, 'esp32h2': 16}
+CHIP_ID = {'esp32c3': 5, 'esp32c6': 13, 'esp32h2': 16, 'esp32c5': 0x17, 'esp32s31': 0x20}
 
 def build_esp_image(words, entry=IRAM, path='out.bin', chip='esp32c3'):
     """Emit an ESP-IDF app image (magic 0xE9) with a single loadable segment."""

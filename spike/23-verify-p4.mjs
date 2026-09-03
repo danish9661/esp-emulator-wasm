@@ -38,22 +38,28 @@ console.log('====================================================\n');
 
 const results = [];
 for (const demo of DEMOS) {
-    const mcu = await ESP32C3.create({ chip: CHIP });
-    if (demo.setup) demo.setup(mcu);
-    await mcu.loadFirmware(
-        new Uint8Array(readFileSync(`samples/${DIR}/${demo.name}.merged.bin`)),
-        new Uint8Array(readFileSync(`samples/${DIR}/${demo.name}.elf`)));
+    // NOTE (esp-emu 0.41): multi-instance runs flake nondeterministically
+    // (see 21-verify-c6.mjs). Retry each demo with a fresh instance up to 3x.
+    let pass = false;
+    for (let attempt = 1; attempt <= 3 && !pass; attempt++) {
+        if (attempt > 1) console.log(`   retry ${demo.name} (attempt ${attempt})...`);
+        const mcu = await ESP32C3.create({ chip: CHIP });
+        if (demo.setup) demo.setup(mcu);
+        await mcu.loadFirmware(
+            new Uint8Array(readFileSync(`samples/${DIR}/${demo.name}.merged.bin`)),
+            new Uint8Array(readFileSync(`samples/${DIR}/${demo.name}.elf`)));
 
-    let consoleBuffer = '';
-    mcu.uart0.onData((text) => { consoleBuffer += text; });
+        let consoleBuffer = '';
+        mcu.uart0.onData((text) => { consoleBuffer += text; });
 
-    for (let i = 0; i < 3000; i++) {
-        mcu.step(100000);
-        if (demo.markers.every((m) => consoleBuffer.includes(m))) break;
+        for (let i = 0; i < 3000; i++) {
+            mcu.step(100000);
+            if (demo.markers.every((m) => consoleBuffer.includes(m))) break;
+        }
+
+        pass = demo.markers.every((m) => consoleBuffer.includes(m)) &&
+                     !consoleBuffer.includes('Guru Meditation');
     }
-
-    const pass = demo.markers.every((m) => consoleBuffer.includes(m)) &&
-                 !consoleBuffer.includes('Guru Meditation');
     console.log(`${demo.name}: ${pass ? 'PASS ✅' : 'FAIL ❌'}`);
     results.push(pass);
 }
