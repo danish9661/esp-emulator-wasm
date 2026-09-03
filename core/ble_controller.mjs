@@ -12,7 +12,60 @@
 const EVT_CMD_COMPLETE = 0x0e;
 const EVT_CMD_STATUS = 0x0f;
 
+// Human-readable names for the HCI opcodes NimBLE actually emits.
+export const HCI_COMMAND_NAMES = {
+    0x0c01: 'Set_Event_Mask',
+    0x0c03: 'Reset',
+    0x0c6d: 'Write_LE_Host_Supported',
+    0x1001: 'Read_Local_Version',
+    0x1002: 'Read_Supported_Commands',
+    0x1009: 'Read_BD_ADDR',
+    0x2001: 'LE_Set_Event_Mask',
+    0x2002: 'LE_Read_Buffer_Size',
+    0x2003: 'LE_Read_Supported_Features',
+    0x2005: 'LE_Set_Random_Address',
+    0x2006: 'LE_Set_Adv_Params',
+    0x2007: 'LE_Read_Adv_Tx_Power',
+    0x2008: 'LE_Set_Adv_Data',
+    0x2009: 'LE_Set_Scan_Rsp_Data',
+    0x200a: 'LE_Set_Adv_Enable',
+    0x200c: 'LE_Set_Scan_Enable',
+    0x2010: 'LE_Read_White_List_Size',
+    0x2011: 'LE_Set_Scan_Params',
+    0x201c: 'LE_Read_Supported_States',
+    0x2022: 'LE_Read_Max_Data_Length',
+    0x2031: 'LE_Set_Ext_Scan_Params',
+    0x2033: 'LE_Read_Num_Adv_Sets',
+    0x2036: 'LE_Set_Ext_Adv_Params',
+    0x2037: 'LE_Set_Ext_Adv_Data',
+    0x2038: 'LE_Set_Ext_Scan_Rsp',
+    0x2039: 'LE_Set_Ext_Adv_Enable',
+    0x203a: 'LE_Read_Max_Adv_Data_Len',
+};
+
 export class BLEController {
+    constructor() {
+        // HCI byte-stream observers (firmware -> controller commands and
+        // controller -> firmware events). Powers --hci timeline output,
+        // the web UI Peripheral Monitor, and headless HCI assertions.
+        this._hciListeners = new Set();
+    }
+
+    /**
+     * Listen for raw HCI traffic.
+     * @param {(msg: { dir: 'cmd'|'evt', opcode?: number, name?: string, bytes: number[] }) => void} callback
+     */
+    onHci(callback) {
+        this._hciListeners.add(callback);
+        return () => this._hciListeners.delete(callback);
+    }
+
+    #notify(msg) {
+        for (const l of this._hciListeners) {
+            try { l(msg); } catch (_) {}
+        }
+    }
+
     /**
      * @param {Uint8Array|number[]} msg - full VHCI message [type, opcode_lo, opcode_hi, ...]
      * @returns {number[]} full VHCI event message [0x04, event_code, ...]
@@ -24,7 +77,9 @@ export class BLEController {
         const opcode = (opHi << 8) | opLo;
         const plen = msg[3] & 0xff;
         const params = msg.slice(4, 4 + plen);
+        this.#notify({ dir: 'cmd', opcode, name: HCI_COMMAND_NAMES[opcode] || ('0x' + opcode.toString(16).padStart(4, '0')), bytes: [...msg] });
         const evt = this._buildEvent(opcode, params);
+        this.#notify({ dir: 'evt', opcode, bytes: [0x04, ...evt] });
         return [0x04, ...evt];
     }
 

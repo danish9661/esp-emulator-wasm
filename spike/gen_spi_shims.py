@@ -9,6 +9,10 @@ from shims import shim_i2cwrite, shim_i2cread
 def slli(rd, rs1, shamt):
     return (shamt & 0x1F) << 20 | (rs1 & 0x1F) << 15 | 0x1 << 12 | (rd & 0x1F) << 7 | 0x13
 def _ret(): return 1 << 15 | 0x67
+def csr_reg(op, rd, csr, rs1):
+    # CSRRS/CSRRC with register mask: op in ('set', 'clear').
+    funct3 = 0x2 if op == 'set' else 0x3
+    return ((csr & 0xFFF) << 20 | (rs1 & 0x1F) << 15 | funct3 << 12 | (rd & 0x1F) << 7 | 0x73)
 def or_r(rd, rs1, rs2):
     return (rs2 & 0x1F) << 20 | (rs1 & 0x1F) << 15 | 0x6 << 12 | (rd & 0x1F) << 7 | 0x33
 def sub_r(rd, rs1, rs2):
@@ -237,6 +241,385 @@ def shim_analog_write():
     p += [_ret()]                               # 18
     return p
 
+def shim_touch_read():
+    # uint16_t touchRead(uint8_t pin) — same wire shape as analogRead ('A'),
+    # distinct kind 'T' so the host routes to the virtual touch pad model.
+    # a0 = pin -> returns u16 raw in a0.
+    p = []
+    p += [lui(5, 0x60000)]                      # 0
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 2
+    p += [addi(7, 0, 95), sw(7, 5, 0)]          # 4
+    p += [addi(7, 0, ord('T')), sw(7, 5, 0)]    # 6
+    p += [andi(7, 10, 0x7F), sw(7, 5, 0)]       # 8: pin
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 10
+    p += [addi(7, 0, 92), sw(7, 5, 0)]          # 12
+
+    # Read 2 bytes (hi, lo)
+    p += [addi(10, 0, 0)]                       # 13: a0 = 0
+    p += [addi(6, 0, 2)]                        # 14: t1 = 2
+    loop_start = len(p)                         # 15
+    poll_start = len(p)                         # 15
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]     # 15, 16
+    p += [beq(7, 0, -4 * (len(p) - poll_start))]# 17
+    p += [lw(28, 5, 0), andi(28, 28, 0xFF)]     # 18, 19
+    p += [slli(10, 10, 8), or_r(10, 10, 28)]    # 20, 21: a0 = (a0 << 8) | byte
+    p += [addi(6, 6, -1)]                       # 22
+    p += [bne(6, 0, -4 * (len(p) - loop_start))]# 23
+    p += [_ret()]                               # 24
+    return p
+
+def shim_dac_write():
+    # bool dacWrite(uint8_t pin, uint8_t value) — fire-and-forget like 'P'.
+    # a0 = pin, a1 = value -> returns 1 (true).
+    # NOTE: every firmware->host byte is nibble-encoded ('a'+nibble): the
+    # UART0->JS string path decodes as UTF-8, so raw bytes >= 0x80 would be
+    # replaced by U+FFFD. Body: D<pin><vhi><vlo>.
+    p = []
+    p += [lui(5, 0x60000)]                      # 0
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 2
+    p += [addi(7, 0, 95), sw(7, 5, 0)]          # 4
+    p += [addi(7, 0, ord('D')), sw(7, 5, 0)]    # 6: 'D'
+    p += [andi(7, 10, 0x7F), sw(7, 5, 0)]       # 8: pin
+    p += _emit_nibbles(11)                      # value as 2 nibbles
+    p += [addi(7, 0, 27), sw(7, 5, 0)]          # 12
+    p += [addi(7, 0, 92), sw(7, 5, 0)]          # 14
+    p += [addi(10, 0, 1)]                       # 15: return true
+    p += [_ret()]                               # 16
+    return p
+
+def shim_sdmmc_read():
+    # int emuSdmmcReadSectors(uint32_t lba, uint8_t *buf, uint32_t count)
+    # a0 = lba, a1 = buf, a2 = count (sectors, 512B each).
+    # Emits ESC _ M R <lba:8nib> <count:4nib> ESC \ then polls count*512 bytes.
+    # Masks UART0 RX interrupts across the bulk poll: the Arduino Serial RX
+    # ISR would otherwise steal FIFO bytes into its ring buffer mid-transfer
+    # (observed on P4: first transfer fine, later ones starve). Uses t1 as the
+    # saved-mask slot (reloaded after, since _emit-free header keeps it safe;
+    # t2/t3/t4 are Poll scratch).
+    p = []
+    p += [lui(5, 0x60000)]
+    p += [lw(6, 5, 0x0C)]                       # t1 = saved INT_ENA
+    p += [sw(0, 5, 0x0C)]                       # mask all UART0 interrupts
+    for ch in (27, ord('_'), ord('M'), ord('R')): p += _emit_const(ch)
+    # lba as 8 nibbles (32-bit)
+    for sh in (28, 24, 20, 16, 12, 8, 4, 0):
+        p += [srli(7, 10, sh), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    # count as 4 nibbles (16-bit, max 64 sectors per call)
+    for sh in (12, 8, 4, 0):
+        p += [srli(7, 12, sh), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    # total = count * 512 -> t3; poll that many bytes into a1
+    p += [slli(28, 12, 9)]                      # t3 = count << 9
+    skip = len(p); p += [0]                     # placeholder: beq t3,0,done
+    rx_start = len(p)
+    poll_start = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, -4 * (len(p) - poll_start))]
+    p += [lw(7, 5, 0)]
+    p += [sb(7, 11, 0)]
+    p += [addi(11, 11, 1)]
+    p += [addi(28, 28, -1)]
+    p += [bne(28, 0, -4 * (len(p) - rx_start))]
+    done = len(p)
+    p[skip] = beq(28, 0, 4 * (done - skip))
+    p += [sw(6, 5, 0x0C)]                       # restore UART0 INT_ENA
+    p += [addi(10, 0, 0), _ret()]               # return 0 (OK)
+    return p
+
+def shim_sdmmc_write(chunk_size=None):
+    # int emuSdmmcWriteSectors(uint32_t lba, const uint8_t *buf, uint32_t count)
+    # a0 = lba, a1 = buf, a2 = count. Payload is split into 128B chunk frames
+    # (`M W <lba:8><count:4><nibbles>`, reassembled by the host) because a
+    # single multi-KB TX frame poisons subsequent RX on some chips (H2): the
+    # tail chars go missing at batch boundaries and eat the next frame.
+    # Nibble-encoded: firmware->host bytes must stay 7-bit (UTF-8 string path).
+    # Temps: t1 = remaining (the ONLY live value across _emit_nibbles, which
+    # clobbers t3), t4 = chunk len, t2 = scratch. a0/a2 are read-only
+    # (lba/count re-emitted per chunk); a1 is the cursor. Chunk len spills to
+    # the stack frame across the TX loop.
+    import os as _os
+    if chunk_size is None:
+        chunk_size = int(_os.environ.get('SDMMC_CHUNK', '128'))
+    p = []
+    p += [lui(5, 0x60000)]
+    p += [addi(2, 2, -16)]                      # frame for chunk-len spill
+    p += [slli(6, 12, 9)]                       # t1 = remaining bytes
+    skip_all = len(p); p += [0]                 # placeholder: beq t1,0,done
+    chunk_start = len(p)
+    p += [addi(29, 6, 0)]                       # t4 = remaining (t1; t3 is _emit scratch!)
+    p += [addi(7, 0, chunk_size)]
+    p += [bltu(29, 7, 8)]                       # if remaining < chunk keep t4
+    p += [addi(29, 0, chunk_size)]              # else t4 = chunk
+    p += [sw(29, 2, 0)]                         # spill chunk len
+    for ch in (27, ord('_'), ord('M'), ord('W')): p += _emit_const(ch)
+    for sh in (28, 24, 20, 16, 12, 8, 4, 0):
+        p += [srli(7, 10, sh), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    for sh in (12, 8, 4, 0):
+        p += [srli(7, 12, sh), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    tx_start = len(p)
+    p += [lbu(7, 11, 0)] + _emit_nibbles(7)
+    p += [addi(11, 11, 1)]
+    p += [addi(29, 29, -1)]
+    p += [bne(29, 0, -4 * (len(p) - tx_start))]
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    p += [lw(29, 2, 0)]                         # restore chunk len
+    p += [sub_r(6, 6, 29)]                      # remaining -= chunk len
+    p += [bne(6, 0, -4 * (len(p) - chunk_start))]
+    done = len(p)
+    p[skip_all] = beq(6, 0, 4 * (done - skip_all))
+    p += [addi(2, 2, 16)]
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_camera_read_band():
+    # int emuCameraReadBand(uint8_t *buf, uint32_t offset, uint32_t len)
+    # a0 = buf, a1 = byte offset into the canonical 96x96 frame, a2 = byte count.
+    # The frame is pulled in small bands (512B) because some chips (P4) cannot
+    # sink multi-KB host->firmware replies: mid-size transfers corrupt, large
+    # ones hang the polling shim. Bands of <=512B verify bit-exact everywhere.
+    # Emits ESC _ F <off:8nib> <len:4nib> ESC \ then polls 4B len + len bytes.
+    # Masks UART0 RX interrupts across the bulk poll (see shim_sdmmc_read);
+    # t5 holds the saved mask (t1 is the len accumulator here).
+    p = []
+    p += [lui(5, 0x60000)]
+    p += [lw(30, 5, 0x0C)]                      # t5 = saved INT_ENA
+    p += [sw(0, 5, 0x0C)]                       # mask all UART0 interrupts
+    for ch in (27, ord('_'), ord('F')): p += _emit_const(ch)
+    for sh in (28, 24, 20, 16, 12, 8, 4, 0):
+        p += [srli(7, 11, sh), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    for sh in (12, 8, 4, 0):
+        p += [srli(7, 12, sh), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    p += [addi(29, 10, 0)]                      # t4 = buf cursor (save a0 first!)
+    # poll 4-byte big-endian length into t1
+    p += [addi(6, 0, 0)]                        # t1 = len
+    p += [addi(28, 0, 4)]                       # t3 = 4
+    len_loop = len(p)
+    len_poll = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, -4 * (len(p) - len_poll))]
+    p += [lw(7, 5, 0), andi(7, 7, 0xFF)]
+    p += [slli(6, 6, 8), or_r(6, 6, 7)]
+    p += [addi(28, 28, -1)]
+    p += [bne(28, 0, -4 * (len(p) - len_loop))]
+    # poll t1 payload bytes into cursor, remaining in t3
+    p += [addi(28, 6, 0)]                       # t3 = len
+    p += [addi(10, 6, 0)]                       # a0 = len (return value)
+    skip = len(p); p += [0]                     # placeholder: beq t3,0,done
+    rx_start = len(p)
+    rx_poll = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, -4 * (len(p) - rx_poll))]
+    p += [lw(7, 5, 0)]
+    p += [sb(7, 29, 0)]
+    p += [addi(29, 29, 1)]
+    p += [addi(28, 28, -1)]
+    p += [bne(28, 0, -4 * (len(p) - rx_start))]
+    done = len(p)
+    p[skip] = beq(28, 0, 4 * (done - skip))
+    p += [sw(30, 5, 0x0C)]                      # restore UART0 INT_ENA
+    p += [_ret()]
+    return p
+
+def shim_lcd_draw():
+    # void emuLcdDraw(const EmuLcdReq *req)
+    # req = {x1,y1,x2,y2 (u16), px (ptr), len (u32 byte count)}.
+    # Emits ESC _ L <coords:16nib> <len:8nib> <raw bytes> ESC \.
+    # Only a0 is a parameter, so t1/t2/t3/t4/a1/a2 are free temporaries.
+    p = []
+    p += [lui(5, 0x60000)]
+    p += [lw(11, 10, 16), lw(12, 10, 20)]       # a1 = px, a2 = len
+    for ch in (27, ord('_'), ord('L')): p += _emit_const(ch)
+    for off in (0, 4, 8, 12):                   # x1, y1, x2, y2 as 4 nibbles each
+        p += [lw(7, 10, off)]
+        for sh in (12, 8, 4, 0):
+            p += [srli(28, 7, sh), andi(28, 28, 15), addi(28, 28, 97), sw(28, 5, 0)]
+    p += [lw(7, 10, 20)]                        # len as 8 nibbles
+    for sh in (28, 24, 20, 16, 12, 8, 4, 0):
+        p += [srli(28, 7, sh), andi(28, 28, 15), addi(28, 28, 97), sw(28, 5, 0)]
+    skip = len(p); p += [0]                     # placeholder: beq len,0,trailer
+    tx_start = len(p)
+    # Nibble-encoded payload (firmware->host must stay 7-bit: see dac note).
+    p += [lbu(28, 11, 0)]
+    p += [srli(7, 28, 4), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    p += [andi(7, 28, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    p += [addi(11, 11, 1)]
+    p += [addi(12, 12, -1)]
+    p += [bne(12, 0, -4 * (len(p) - tx_start))]
+    trailer = len(p)
+    p[skip] = beq(12, 0, 4 * (trailer - skip))
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    p += [_ret()]
+    return p
+
+def shim_idf_i2c_write(a0=10):
+    # esp_err_t i2c_master_transmit(handle, wbuf, wsize, timeout), or legacy
+    # i2c_master_write_to_device(port, addr, wbuf, wsize, timeout) with a0=11.
+    # The v5 handle IS the 7-bit address (our add_device shim stores dev_addr
+    # as the handle). Same wire format as Arduino i2cWrite so all host
+    # parsers work unchanged. Timeout ignored.
+    # regs: addr=a0, buf=a0+1, size=a0+2.
+    A0, A1, A2 = a0, a0 + 1, a0 + 2
+    p = [lui(5, 0x60000)]
+    for ch in (27, ord('_'), ord('W')): p += _emit_const(ch)
+    p += _emit_reg_low7(A0)                       # device address
+    tx_head = len(p)
+    p += [0]
+    tx_body = [lbu(7, A1, 0)] + _emit_nibbles(7) + [addi(A1, A1, 1), addi(A2, A2, -1)]
+    tx_body += [jal(0, -4 * (len(tx_body) + 1))]
+    p[tx_head] = beq(A2, 0, 4 * (len(tx_body) + 1))
+    p += tx_body
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_idf_i2c_read(a0=10):
+    # esp_err_t i2c_master_receive(handle, rbuf, rsize, timeout), or legacy
+    # i2c_master_read_from_device(port, addr, rbuf, rsize, timeout) with a0=11.
+    # regs: addr=a0, buf=a0+1, size=a0+2.
+    A0, A1, A2 = a0, a0 + 1, a0 + 2
+    p = [lui(5, 0x60000)]
+    for ch in (27, ord('_'), ord('R')): p += _emit_const(ch)
+    p += _emit_reg_low7(A0)                       # device address
+    p += _emit_reg_low7(A2)                       # requested length
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    loop_start = len(p)
+    poll_start = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, -4 * (len(p) - poll_start))]
+    p += [lw(28, 5, 0), andi(28, 28, 0xFF)]
+    p += [sb(28, A1, 0)]
+    p += [addi(A1, A1, 1), addi(A2, A2, -1)]
+    p += [bne(A2, 0, -4 * (len(p) - loop_start))]
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_idf_i2c_write_read():
+    # esp_err_t i2c_master_transmit_receive(handle, wbuf, wsize, rbuf, rsize, t/o).
+    # a0 = addr, a1 = wbuf, a2 = wsize, a3 = rbuf, a4 = rsize (a5 timeout ignored).
+    # Emits a W frame then an R frame back-to-back; host answers the R part.
+    p = [lui(5, 0x60000)]
+    for ch in (27, ord('_'), ord('W')): p += _emit_const(ch)
+    p += _emit_reg_low7(10)
+    tx_head = len(p)
+    p += [0]
+    tx_body = [lbu(7, 11, 0)] + _emit_nibbles(7) + [addi(11, 11, 1), addi(12, 12, -1)]
+    tx_body += [jal(0, -4 * (len(tx_body) + 1))]
+    p[tx_head] = beq(12, 0, 4 * (len(tx_body) + 1))
+    p += tx_body
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    # R phase: addr + rsize, then poll rsize bytes into rbuf (a3), count in a4.
+    for ch in (27, ord('_'), ord('R')): p += _emit_const(ch)
+    p += _emit_reg_low7(10)
+    p += _emit_reg_low7(14)
+    for ch in (27, ord('\\')): p += _emit_const(ch)
+    loop_start = len(p)
+    poll_start = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, -4 * (len(p) - poll_start))]
+    p += [lw(28, 5, 0), andi(28, 28, 0xFF)]
+    p += [sb(28, 13, 0)]
+    p += [addi(13, 13, 1), addi(14, 14, -1)]
+    p += [bne(14, 0, -4 * (len(p) - loop_start))]
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_idf_i2c_add_device():
+    # esp_err_t i2c_master_bus_add_device(bus, dev_config, ret_handle).
+    # a0 = bus (ignored), a1 = i2c_device_config_t*, a2 = handle*.
+    # Reads device_address (u16 @ +4) and stores it AS the handle, so later
+    # transmit/receive calls (which only get the opaque handle) recover the
+    # address without version-dependent struct knowledge. Returns ESP_OK.
+    p = [lui(5, 0x60000)]
+    p += [lw(7, 11, 4), slli(7, 7, 16), srli(7, 7, 16)]  # t2 = config->device_address
+    p += [sw(7, 12, 0)]                           # *ret_handle = addr
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_idf_i2c_new_bus():
+    # esp_err_t i2c_new_master_bus(bus_config, ret_handle): dummy handle 1.
+    p = [lui(5, 0x60000)]
+    p += [addi(7, 0, 1), sw(7, 11, 0)]            # *ret_handle = 1
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_idf_spi_add_device():
+    # esp_err_t spi_bus_add_device(host, dev_config, handle*).
+    # Stores a dummy DRAM pointer (relocated per chip like spiStartBus) and
+    # returns ESP_OK. Our transmit shim only uses the transaction struct.
+    p = [lui(10, 0x3FC90), addi(10, 10, 0)]
+    p += [sw(10, 12, 0)]                          # *handle = dummy bus ptr
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_idf_spi_xfer():
+    # esp_err_t spi_device_transmit(handle, trans) and polling variant.
+    # a0 = handle (ignored — single virtual bus), a1 = spi_transaction_t*.
+    # Full-duplex data phase only (cmd/addr phases not modeled): streams the
+    # tx_buffer (0xFF fill when NULL, tx_data[] on USE_TXDATA) through chunked
+    # SX frames and stores replies to rx_buffer (rx_data[] on USE_RXDATA).
+    # Returns ESP_OK. Layout (RV32): flags@0, cmd@4, addr@8, length@16 (bits),
+    # rxlength@20, freq@24, user@28, tx_buffer@32, rx_buffer@36.
+    # a1/a2/a3 are reused as tx/rx cursors + remaining (free on entry), so the
+    # proven chunk-loop body from shim_spi_transfer_bytes_nl is reused verbatim.
+    p = [lui(5, 0x60000)]
+    p += [lw(7, 11, 0)]                           # t2 = flags
+    p += [lw(28, 11, 32)]                         # t3 = tx_buffer (maybe NULL)
+    p += [lw(29, 11, 36)]                         # t4 = rx_buffer (maybe NULL)
+    p += [andi(7, 7, 8), beq(7, 0, 8)]            # USE_TXDATA?
+    p += [addi(28, 11, 32)]                       #   t3 = trans+32 (tx_data)
+    p += [lw(7, 11, 0), andi(7, 7, 4), beq(7, 0, 8)]  # USE_RXDATA?
+    p += [addi(29, 11, 36)]                       #   t4 = trans+36 (rx_data)
+    p += [lw(6, 11, 16), srli(6, 6, 3)]           # t1 = nbytes = length>>3
+    p += [addi(11, 28, 0)]                        # a1 = tx cursor
+    p += [addi(12, 29, 0)]                        # a2 = rx cursor
+    p += [addi(13, 6, 0)]                         # a3 = remaining
+    skip0 = len(p); p += [0]                      # placeholder: beq a3,0,ret0
+    # --- verbatim chunk loop (16B chunks, SX frames) ---
+    chunk_start = len(p)
+    p += [addi(6, 0, 16)]
+    p += [srli(28, 13, 4)]
+    p += [bne(28, 0, 4 * 2)]
+    p += [addi(6, 13, 0)]
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 95), sw(7, 5, 0)]
+    p += [addi(7, 0, 83), sw(7, 5, 0)]
+    p += [addi(7, 0, 88), sw(7, 5, 0)]
+    p += [srli(7, 6, 7), andi(7, 7, 0x7F), sw(7, 5, 0)]
+    p += [andi(7, 6, 0x7F), sw(7, 5, 0)]
+    p += [addi(28, 6, 0)]
+    p += [addi(29, 11, 0)]
+    tx_start = len(p)
+    p += [addi(7, 0, 0xFF)]
+    p += [beq(29, 0, 4 * 3)]
+    p += [lbu(7, 29, 0)]
+    p += [addi(29, 29, 1)]
+    p += [srli(30, 7, 4), addi(30, 30, 97), sw(30, 5, 0)]
+    p += [andi(30, 7, 15), addi(30, 30, 97), sw(30, 5, 0)]
+    p += [addi(28, 28, -1)]
+    p += [bne(28, 0, -4 * (len(p) - tx_start))]
+    p += [beq(11, 0, 4 * 2)]
+    p += [addi(11, 29, 0)]
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 92), sw(7, 5, 0)]
+    p += [addi(28, 6, 0)]
+    rx_start = len(p)
+    poll_start = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, -4 * (len(p) - poll_start))]
+    p += [lw(30, 5, 0)]
+    p += [beq(12, 0, 4 * 3)]
+    p += [sb(30, 12, 0)]
+    p += [addi(12, 12, 1)]
+    p += [addi(28, 28, -1)]
+    p += [bne(28, 0, -4 * (len(p) - rx_start))]
+    p += [sub_r(13, 13, 6)]
+    p += [bne(13, 0, -4 * (len(p) - chunk_start))]
+    ret0 = len(p)
+    p[skip0] = beq(13, 0, 4 * (ret0 - skip0))
+    p += [addi(10, 0, 0), _ret()]                 # return ESP_OK
+    return p
+
 def bltu(rs1, rs2, offset):
     imm12 = (offset >> 12) & 1
     imm10_5 = (offset >> 5) & 0x3F
@@ -427,6 +810,38 @@ if __name__ == '__main__':
         'twai_transmit_v2': shim_twai_transmit(),
         'twai_receive': shim_twai_receive(),
         'twai_receive_v2': shim_twai_receive(),
+        'touchRead': shim_touch_read(),
+        'touchAttachInterrupt': shim_noop(),
+        'touchDetachInterrupt': shim_noop(),
+        'dacWrite': shim_dac_write(),
+        'dacDisable': shim_noop(),
+        'emuSdmmcReadSectors': shim_sdmmc_read(),
+        'emuSdmmcWriteSectors': shim_sdmmc_write(),
+        'emuCameraReadBand': shim_camera_read_band(),
+        'emuLcdDraw': shim_lcd_draw(),
+        'spi_bus_initialize': shim_noop(),
+        'spi_bus_add_device': shim_idf_spi_add_device(),
+        'spi_device_transmit': shim_idf_spi_xfer(),
+        'spi_device_polling_transmit': shim_idf_spi_xfer(),
+        'i2c_new_master_bus': shim_idf_i2c_new_bus(),
+        'i2c_master_bus_add_device': shim_idf_i2c_add_device(),
+        'i2c_master_transmit': shim_idf_i2c_write(),
+        'i2c_master_receive': shim_idf_i2c_read(),
+        'i2c_master_transmit_receive': shim_idf_i2c_write_read(),
+        'i2c_master_probe': shim_noop(),
+        'i2c_param_config': shim_noop(),
+        'i2c_driver_install': shim_noop(),
+        'i2c_master_write_to_device': shim_idf_i2c_write(11),
+        'i2c_master_read_from_device': shim_idf_i2c_read(11),
+        'touchRead': shim_touch_read(),
+        'touchAttachInterrupt': shim_noop(),
+        'touchDetachInterrupt': shim_noop(),
+        'dacWrite': shim_dac_write(),
+        'dacDisable': shim_noop(),
+        'emuSdmmcReadSectors': shim_sdmmc_read(),
+        'emuSdmmcWriteSectors': shim_sdmmc_write(),
+        'emuCameraReadBand': shim_camera_read_band(),
+        'emuLcdDraw': shim_lcd_draw(),
     }
     out_lines = ['// Auto-generated RISC-V shims for esp-emu (I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI)', 'export const SHIMS = {']
     for name, words in all_shims.items():

@@ -175,6 +175,24 @@ export const HOOK_TARGETS = {
         'twai_transmit', 'twai_transmit_v2',
         'twai_receive', 'twai_receive_v2',
     ],
+    // Virtualized in this SDK via sketch-provided symbols (the C3/C6/H2/P4
+    // Arduino cores gate touch/DAC/SDMMC behind SOC_*_SUPPORTED, so sketches
+    // define `extern "C"` fallbacks which the loader overwrites with shims).
+    'virtual-touch': [
+        'touchRead', 'touchAttachInterrupt', 'touchDetachInterrupt',
+    ],
+    'virtual-dac': [
+        'dacWrite', 'dacDisable',
+    ],
+    'virtual-sdmmc': [
+        'emuSdmmcReadSectors', 'emuSdmmcWriteSectors',
+    ],
+    'virtual-camera': [
+        'emuCameraReadBand',
+    ],
+    'virtual-lcd': [
+        'emuLcdDraw',
+    ],
     'idf-i2c-v5': [
         'i2c_master_transmit', 'i2c_master_receive', 'i2c_master_transmit_receive',
         'i2c_master_probe', 'i2c_master_bus_add_device', 'i2c_new_master_bus',
@@ -249,16 +267,53 @@ export function prepareSpiShims(elf, shims) {
 }
 
 /**
- * Decide which tier to patch for each bus. Prefers the Arduino HAL when present.
- * Returns { i2c, spi, neopixel, adc, pwm, i2s, twai }.
+ * IDF-SPI out-of-line pairing: spi_device_transmit / spi_device_polling_transmit
+ * are thin wrappers (too small for the full-duplex shim), so both get a JAL
+ * trampoline into a single body parked in spi_bus_initialize's dead space
+ * (which our noop shim replaces with 8 bytes; body starts at +16).
+ * @param {object} elf - Elf32 instance
+ * @param {Record<string,Uint8Array>} shims - effective (relocated) shims
+ * @returns {{ shims: Record<string,Uint8Array>, extra: Array<{addr:number,bytes:Uint8Array}> }}
+ */
+export function prepareIdfShims(elf, shims) {
+    const out = { shims: {}, extra: [] };
+    const body = shims.spi_device_transmit;
+    if (!body) return out;
+    const { found } = elf.resolve(['spi_bus_initialize', 'spi_device_transmit', 'spi_device_polling_transmit']);
+    const byName = Object.fromEntries(found.map(s => [s.name, s]));
+    const init = byName['spi_bus_initialize'];
+    if (!init) return out;
+    const park = init.addr + 16;
+    if (park + body.length > init.addr + init.size) return out;
+    for (const entry of ['spi_device_transmit', 'spi_device_polling_transmit']) {
+        const sym = byName[entry];
+        if (!sym || sym.size < 4) continue;
+        // JAL range is ±1MB; same image is always in range.
+        out.shims[entry] = makeJal(sym.addr, park);
+    }
+    if (Object.keys(out.shims).length) out.extra.push({ addr: park, bytes: body });
+    return out;
+}
+
+/**
+ * Decide which tiers to patch for each bus. Prefers the Arduino HAL when present.
+ * Unions ALL matching tiers per bus (symbol sets are disjoint, e.g. a sketch
+ * may use both idf-i2c-v5 and idf-i2c-legacy convenience APIs); `tier` names
+ * the first (preferred) match for display.
+ * Returns { i2c, spi, neopixel, adc, pwm, i2s, twai, ... }.
  */
 export function planHooks(elf) {
     const pick = (tiers) => {
+        let name = null;
+        const hooks = [];
         for (const tier of tiers) {
             const { found } = elf.resolve(HOOK_TARGETS[tier]);
-            if (found.length) return { tier, hooks: found };
+            if (found.length) {
+                if (!name) name = tier;
+                hooks.push(...found);
+            }
         }
-        return null;
+        return hooks.length ? { tier: name, hooks } : null;
     };
     return {
         i2c: pick(['arduino-i2c', 'idf-i2c-v5', 'idf-i2c-legacy']),
@@ -268,6 +323,11 @@ export function planHooks(elf) {
         pwm: pick(['arduino-pwm']),
         i2s: pick(['idf-i2s']),
         twai: pick(['idf-twai']),
+        touch: pick(['virtual-touch']),
+        dac: pick(['virtual-dac']),
+        sdmmc: pick(['virtual-sdmmc']),
+        camera: pick(['virtual-camera']),
+        lcd: pick(['virtual-lcd']),
     };
 }
 

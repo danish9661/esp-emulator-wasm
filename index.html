@@ -575,6 +575,11 @@
                         <option value="i2cread">I2C Sensor Read (0x68 IMU)</option>
                         <option value="spidemo">SPI Master Transfer (Full Duplex)</option>
                         <option value="busprobe">Dual Bus Probe (I2C + SPI)</option>
+                        <option value="touch_demo">Touch Pad Sensor (virtual)</option>
+                        <option value="dac_demo">DAC Output 8-bit (virtual)</option>
+                        <option value="sdmmc_demo">SDMMC 4-bit Host (virtual)</option>
+                        <option value="camera_demo">Camera Grayscale Frame (virtual)</option>
+                        <option value="lcd_demo">LCD Panel RGB565 Blits (virtual)</option>
                         <option value="bledemo">BLE Server Demo (NimBLE)</option>
                         <option value="bledetect">BLE VHCI Detector</option>
                         <option value="bletest">BLE VHCI Call Test</option>
@@ -739,7 +744,7 @@
         <!-- Right Panel: GPIO Matrix, I2C Inspector, Registers -->
         <div class="right-panel">
             <div class="panel-section">
-                <h3>GPIO Status & Injection (22 Pins)</h3>
+                <h3>GPIO Status & Injection (per-chip)</h3>
                 <div class="gpio-grid" id="gpio-grid"></div>
             </div>
 
@@ -816,6 +821,12 @@
                     <label style="font-size: 10px; color: #fb7185;"><input type="checkbox" id="peri-filt-tft" checked> ST7789</label>
                     <label style="font-size: 10px; color: #facc15;"><input type="checkbox" id="peri-filt-sd" checked> SD</label>
                     <label style="font-size: 10px; color: #94a3b8;"><input type="checkbox" id="peri-filt-gpio" checked> GPIO</label>
+                    <label style="font-size: 10px; color: #f97316;"><input type="checkbox" id="peri-filt-touch" checked> Touch</label>
+                    <label style="font-size: 10px; color: #e879f9;"><input type="checkbox" id="peri-filt-dac" checked> DAC</label>
+                    <label style="font-size: 10px; color: #fde047;"><input type="checkbox" id="peri-filt-sdmmc" checked> SDMMC</label>
+                    <label style="font-size: 10px; color: #7dd3fc;"><input type="checkbox" id="peri-filt-cam" checked> CAM</label>
+                    <label style="font-size: 10px; color: #fda4af;"><input type="checkbox" id="peri-filt-lcd" checked> LCD</label>
+                    <label style="font-size: 10px; color: #5eead4;"><input type="checkbox" id="peri-filt-ble" checked> BLE-HCI</label>
                 </div>
                 <div class="i2c-log-box" id="peri-log" style="max-height: 160px; font-family: 'Fira Code', monospace; font-size: 10px;">
                     <div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses any peripheral (I2C / SPI / TWAI / ADC / PWM / I2S / …).</div>

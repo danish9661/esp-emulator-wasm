@@ -43,6 +43,20 @@ Virtual devices live in `peripherals.mjs` and can be interactive in the web UI
 | `P` | PWM / LEDC | write | pin + duty |
 | `I` | I2S | write | PCM bytes |
 | `C` | TWAI / CAN | tx/rx | id, dlc, data |
+| `T` | Touch pad | read | pin -> u16 raw (nibbles a-p) |
+| `D` | DAC | write | pin + value (nibbles a-p) |
+| `M` | SDMMC | read/write | op + lba + count + sector nibbles |
+| `F` | Camera | read | w + h + fmt -> len + frame bytes |
+| `L` | LCD panel | write | coords + len + RGB565 nibbles |
+| `B` | BLE HCI | write | hex-encoded VHCI command packet |
+| `E` | BLE HCI | read (legacy) | hex-encoded VHCI event packet |
+
+All firmware→host bytes are nibble-encoded (`'a'+nibble`): the UART0→JS
+string path decodes as UTF-8, so raw bytes ≥ 0x80 would arrive as U+FFFD
+(I2S PCM is the known exception — audible, not bit-exact; see §4).
+Host→firmware replies travel as raw bytes via `uart_input`, dribbled in
+≤16B slices per batch (the guest HW RX FIFO drops larger bursts; measured).
+BLE events prefer a shared-memory channel over `E` frames (see §4).
 
 Protocols that only touch CPU-visible MMIO registers (GPIO, UART0 console) need no
 shims — the emulator's silicon model handles them natively.
@@ -95,18 +109,22 @@ silicon (no shim needed), not explicitly regression-tested
 | SSD1306 OLED (I2C) | ✅ | ✅ | ✅ | ✅ | virtual device `0x3c/0x3d` | OLEDDemo |
 | ST7789 TFT (SPI) | ✅ | ✅ | ✅ | ✅ | virtual device `tft` | ST7789Demo |
 | MPU6050 IMU (I2C) | ✅ | ✅ | ✅ | ✅ | virtual device `0x68` | 18-verify #2 |
+| SPI (IDF driver) | ✅ | ✅ | ✅ | ✅ | `spi_bus_*` noops + `spi_device_transmit`/`polling` full-duplex shims (pointer + `tx_data` paths; cmd/addr phases not modeled) | 27-verify #1 |
+| I2C (IDF v5 driver) | ✅ | ✅ | ✅ | ✅ | `i2c_new_master_bus`/`add_device` (handle carries addr) + transmit/receive/transmit_receive/probe | 27-verify #2 |
+| I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops; cmd-link API not emulated) | 27-verify #3 |
+| Touch pad (`touchRead`) | ✅ | ✅ | ✅ | ✅ | virtual-touch API + APC `T` frames | 24-verify #1 (C3; touch spot-checked C6/H2/P4) |
+| DAC output (`dacWrite`) | ✅ | ✅ | ✅ | ✅ | virtual-dac API + APC `D` frames | 24-verify #2 |
+| SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |
+| Camera (grayscale test pattern) | ✅ | ✅ | ✅ | ✅ | virtual-camera API + APC `F` frames | 24-verify #4 |
+| LCD panel (RGB565 blits) | ✅ | ✅ | ✅ | ✅ | virtual-lcd API + APC `L` frames | 24-verify #5 |
 | Wi-Fi (STA/AP) | ✅* | ✅* | — | — | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
-| BLE (NimBLE) | ❌† | ❌† | ❌† | — | native BLE runs in wasm as a black box; HCI not observable from JS (see §4) | observe_ble.mjs |
+| BLE HCI (direct transport calls) | ✅ | ✅ | ✅ | — | JS VHCI shims + virtual controller, fully observable | 25-verify |
+| BLE via NimBLE host stack | 🟡 | 🟡 | 🟡 | — | init shims keep firmware healthy; host never transmits (see §4) | observe_ble.mjs |
 | 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | radio frame bridge (native CLI only) | none |
 | Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | native CLI only (`--net tap/user`) | none |
-| Touch sensors | ❌ | ❌ | ❌ | — | — | none |
 | USB (Serial/JTAG; OTG on P4) | ❌† | ❌† | ❌† | ❌† | native peripheral in core (CLI), no WASM glue | none |
-| SDMMC (4-bit SD, P4) | — | — | — | ❌ | — | none |
-| MIPI CSI camera (P4) | — | — | — | ❌ | — | none |
-| MIPI DSI / parallel LCD (P4) | — | — | — | ❌ | — | none |
-| DAC (P4) | — | — | — | ❌ | — | none |
-| Timers / watchdog / RTC | 🟡 | 🟡 | 🟡 | 🟡 | native silicon model | none |
-| Flash filesystems (SPIFFS / LittleFS / NVS) | 🟡 | 🟡 | 🟡 | 🟡 | native flash MMIO model | none |
+| Timers / watchdog / RTC | ✅ | ✅ | ✅ | ✅ | native silicon model (GPTimer IRQ, TWDT, esp_timer) | 26-verify |
+| Flash filesystems (LittleFS / NVS) | ✅ | ✅ | ✅ | ✅ | native flash MMIO model | 26-verify |
 
 ---
 
@@ -114,12 +132,21 @@ silicon (no shim needed), not explicitly regression-tested
 
 ### Implemented & verified (✅)
 
-- All 10 Arduino sketches (`spike/sketches/`) run on all 4 chips with zero firmware
+- All 10 original Arduino sketches (`spike/sketches/`) run on all 4 chips with zero firmware
   changes — only driver symbol shims at load time.
-- Verify suites: `spike/18-verify-all.mjs` (C3, 15 tests) and
-  `spike/21/22/23-verify-*.mjs` (C6/H2/P4, 10 demos each) — all green.
+- 5 virtualized sketches (`TouchDemo`, `DACDemo`, `SDMMCDemo`, `CameraDemo`,
+  `LCDDemo`) define their own `extern "C"` API (the C3/C6/H2/P4 Arduino cores
+  gate touch/DAC/SDMMC behind `SOC_*_SUPPORTED`) which the loader overwrites
+  with shims — same zero-guest-change principle, C3-verified.
+- Verify suites: `spike/18-verify-all.mjs` (C3, 15 tests),
+  `spike/24-verify-new.mjs` (C3, 5 virtualized peripherals),
+  `spike/25-verify-hci.mjs` (HCI unit + direct round trip + BLEDemo health),
+  `spike/26-verify-native.mjs` (C3, Timer/WDT/RTC/LittleFS/NVS — no shims),
+  `spike/27-verify-idf.mjs` (C3, IDF SPI + I2C-v5 + I2C-legacy) and
+  `spike/21/22/23-verify-*.mjs` (C6/H2/P4, 18 demos each) — all green.
 - Virtual devices (interactive in the web UI): SSD1306, ST7789, NeoPixel strip,
-  VirtualSDCard (FAT16/32), MPU6050, ADC/PWM/I2S/TWAI controllers.
+  VirtualSDCard (FAT16/32), MPU6050, ADC/PWM/I2S/TWAI controllers, plus
+  VirtualTouch, VirtualDAC, VirtualSDMMC, VirtualCamera, VirtualLcdPanel.
 
 ### Provided natively by the emulator glue (✅*)
 
@@ -136,27 +163,26 @@ The upstream esp-emulator core supports more than the WASM glue exposes. These w
 in the native `esp-emu` binary but have **no JS/wasm exports**, so this SDK (WASM-based)
 cannot reach them:
 
-- **BLE (C3/C6/H2)**: the NimBLE host stack runs unmodified. The upstream native
-  `esp-emu` binary intercepts HCI via firmware symbols (requires `--elf`) and forwards
-  it to (a) a built-in virtual controller, (b) **Google Bumble** over TCP
-  (`tools/bumble_test.py`), or (c) a **physical Linux adapter** (`--ble-hci hci0`).
+- **BLE direct transport calls (C3/C6/H2)**: firmware that calls
+  `esp_vhci_host_send_packet` / `API_vhci_host_send_packet` directly (e.g. the
+  extended `spike/sketches/BLETest`) gets a **fully observable round trip**:
+  the command crosses into JS as a `B` APC frame (see `BLEController.onHci`,
+  `observe_ble.mjs --hci`, the web UI BLE-HCI tag), the virtual controller
+  answers, and the event returns through a **shared-memory channel** (the shim
+  polls a flag word; the host writes event bytes to the WASM linear-memory
+  mirror — UART RX is not involved). Verified by `spike/25-verify-hci.mjs`.
 
-  **WASM limitation (this SDK):** BLE firmware runs via the JS-side VHCI shim
-  (`core/ble_shims.mjs` + `core/ble_controller.mjs`), which is **required** — without
-  it BLEDemo hangs in the ROM PHY spin. As a result:
-  - The HCI command/event **byte stream is not observable from JS** — only the
-    firmware's own `Serial` output is visible.
-  - While BLE is active, the shim's HCI frames do not reach the JS observer, so emit/APC
-    hooks cannot surface the HCI traffic.
-  - Calling `esp_vhci_host_send_packet()` from firmware **hangs** the wasm.
-
-  **Workaround for observation:** watch the firmware's own `Serial` console. Enrich the
-  sketch to log MAC, service/characteristic UUIDs, advertising config, and
-  connection/GATT callbacks, then run `node spike/observe_ble.mjs <Sketch>` (renders
-  `[BLE]`/`[DETECT]`/`[TEST]` lines into a structured timeline). See the enriched
-  `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest`. This observes firmware *behavior*,
-  not the hidden HCI traffic. Full how-to (CLI, `BleInspector` API, web UI panel, event
-  reference, sketch rebuild) is in `BLE-OBSERVABILITY.md`.
+  **WASM limitation (this SDK):** the NimBLE *host stack* never transmits in
+  the sim (verified by call-graph + detour analysis): its transport blocks in
+  `xQueueSemaphoreTake` until our init shim creates the semaphore, and even
+  then the host task never invokes the transport — so `BLEDemo` stays
+  host-silent. Our init/enable/check/register shims keep such firmware healthy
+  (no ROM PHY hang); observe it through its own `Serial` console
+  (`observe_ble.mjs`, BLE Monitor). Enrich sketches to log MAC,
+  service/characteristic UUIDs, advertising config, and connection/GATT
+  callbacks (see `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest`).
+  Full how-to (CLI, `BleInspector` API, web UI panel, event reference, sketch
+  rebuild) is in `BLE-OBSERVABILITY.md`.
 - **802.15.4 / Thread (C6/H2)**: OpenThread `ot_cli` / `ot_br` run on the emulated
   radio; two instances bridge raw radio frames over localhost UDP (`--thread-sim`).
 - **Ethernet**: OpenCores OpenETH (QEMU-compatible firmware) on all chips plus the
@@ -166,15 +192,29 @@ cannot reach them:
 
 ### Not supported (❌)
 
-- Touch sensors, SDMMC (4-bit SD on P4), MIPI CSI camera, MIPI DSI / parallel LCD,
-  and P4 DAC: not present in the emulator core at all (no wasm exports, no CLI
-  flags), so they cannot be emulated without upstream work in esp-emulator itself.
+- MIPI CSI camera / MIPI DSI / SDMMC-4bit *silicon* (P4-only hardware with no
+  Arduino API on our targets): covered instead by the virtualized
+  sector-level SDMMC host, test-pattern camera, and RGB565 LCD panel above
+  (virtual peripherals, not silicon models).
+- P4 hardware DAC: no Arduino API and no virtual device yet.
+
+### Transport notes (measured, ESP32-C3 WASM build)
+
+- Firmware→host bytes must be nibble-encoded (7-bit): the UART0→JS string
+  path decodes as UTF-8, so raw bytes ≥ 0x80 arrive as U+FFFD. (I2S PCM still
+  streams raw bytes — audible but not bit-exact.)
+- Host→firmware bursts must be dribbled in ≤16B slices per batch
+  (`reply_queue.mjs`): larger single `uart_input` pushes lose their tail
+  (guest HW RX FIFO), hanging the polling shim. Always pump once per batch,
+  including silent batches.
+- UART RX polling itself is unreliable for bulk host→guest transfers on this
+  core, so BLE events use the shared-memory channel (`core/ble_mirror.mjs`).
+  Dribbled polled reads (SDMMC sectors, camera frames) work fine.
 
 ### Native, untested (🟡)
 
-- Timers, watchdogs, RTC, and flash-backed filesystems execute directly on the
-  emulated silicon (no bridge required). They are used implicitly by the firmware
-  during boot, but no dedicated regression test exercises them.
+- NimBLE host-stack internals (see BLE notes above): the stack runs healthy
+  but never transmits in the sim; observe it through the firmware console.
 
 ---
 
@@ -183,9 +223,13 @@ cannot reach them:
 ```bash
 node spike/18-verify-all.mjs      # C3 — 15 firmware tests (all protocols)
 node spike/20-test-mcu-core.mjs   # modular SDK unit tests (I2C/SPI/ADC/PWM/TWAI)
-node spike/21-verify-c6.mjs       # C6 — 10 demos
-node spike/22-verify-h2.mjs       # H2 — 10 demos
-node spike/23-verify-p4.mjs       # P4 — 10 demos
+node spike/24-verify-new.mjs      # C3 — Touch/DAC/SDMMC/Camera/LCD firmware tests
+node spike/25-verify-hci.mjs      # C3 — HCI unit + direct round trip + BLEDemo health
+node spike/26-verify-native.mjs   # C3 — Timer/WDT/RTC/LittleFS/NVS (no shims)
+node spike/27-verify-idf.mjs      # C3 — IDF SPI + I2C-v5 + I2C-legacy drivers
+node spike/21-verify-c6.mjs       # C6 — 18 demos
+node spike/22-verify-h2.mjs       # H2 — 18 demos
+node spike/23-verify-p4.mjs       # P4 — 18 demos
 ```
 
 All suites must run with `mcu.step(100000)` (see AGENT.md — the WASM engine can drop
@@ -197,8 +241,8 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 
 | Status | Count | Protocols |
 |---|:---:|---|
-| ✅ Implemented & verified | 13 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050 |
+| ✅ Implemented & verified | 27 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, Timers, WDT, RTC, LittleFS, NVS |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
-| ❌ Native CLI only, no WASM glue | 4 | BLE, 802.15.4, Ethernet, USB Serial/JTAG |
-| ❌ Not supported at all | 5 | Touch, SDMMC, Camera, DSI/parallel LCD, DAC |
-| 🟡 Native, untested | 2 | Timers/WDT/RTC, flash filesystems |
+| ❌ Native CLI only, no WASM glue | 3 | 802.15.4, Ethernet, USB Serial/JTAG |
+| ❌ Not supported | 2 | P4 hardware DAC, legacy I2C command-link API |
+| 🟡 Native, untested (+ BLE-via-NimBLE) | 1 | NimBLE host behavior (firmware-console observation) |

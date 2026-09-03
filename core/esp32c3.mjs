@@ -2,7 +2,7 @@
 // Provides rp2040js-style JavaScript API for CPU execution, memory access,
 // load-time binary patching, and on-chip peripheral buses.
 
-import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
+import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS, relocateShimsForChip } from '../shims.mjs';
 import { prepareBleShims } from './ble_shims.mjs';
@@ -15,6 +15,11 @@ import { I2SController } from './i2s.mjs';
 import { TWAIController } from './twai.mjs';
 import { NeoPixelController } from './neopixel.mjs';
 import { UARTController } from './uart.mjs';
+import { TouchController } from './touch.mjs';
+import { DACController } from './dac.mjs';
+import { SDMMCController } from './sdmmc.mjs';
+import { CameraController } from './camera.mjs';
+import { LCDController } from './lcd.mjs';
 
 export class ESP32C3 {
     /**
@@ -39,7 +44,13 @@ export class ESP32C3 {
         this.i2s = new I2SController();
         this.twai = new TWAIController();
         this.neopixel = new NeoPixelController();
+        this.touch = new TouchController();
+        this.dac = new DACController();
+        this.sdmmc = new SDMMCController();
+        this.camera = new CameraController();
+        this.lcd = new LCDController();
         this.uart0 = new UARTController(this.emu);
+        this.uart0.bindMemory(this.memory);
 
         this._patchedHooks = [];
     }
@@ -108,6 +119,8 @@ export class ESP32C3 {
     async loadFirmware(flashBinary, elfBinary = null) {
         let flashBuf = flashBinary instanceof Uint8Array ? flashBinary : new Uint8Array(flashBinary);
         this._patchedHooks = [];
+        // Fresh boot image: forget any cached BLE mirror mapping.
+        if (this.uart0 && this.uart0.bleMirror) this.uart0.bleMirror.clear();
 
         if (elfBinary) {
             try {
@@ -122,10 +135,33 @@ export class ESP32C3 {
                     .concat(hookPlan?.adc?.hooks || [])
                     .concat(hookPlan?.pwm?.hooks || [])
                     .concat(hookPlan?.i2s?.hooks || [])
-                    .concat(hookPlan?.twai?.hooks || []);
+                    .concat(hookPlan?.twai?.hooks || [])
+                    .concat(hookPlan?.touch?.hooks || [])
+                    .concat(hookPlan?.dac?.hooks || [])
+                    .concat(hookPlan?.sdmmc?.hooks || [])
+                    .concat(hookPlan?.camera?.hooks || [])
+                    .concat(hookPlan?.lcd?.hooks || []);
 
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
                 const effectiveShims = prepareSpiShims(elf, relocateShimsForChip(SHIMS, this.chip));
+                const idfExtras = [];
+
+                // IDF raw-driver shims (SPI transaction trampolines park a body
+                // in dead init space; I2C shims patch inline). Warn for tiers
+                // that resolve but still lack bytecode (e.g. cmd-link API).
+                {
+                    const idf = prepareIdfShims(elf, effectiveShims);
+                    for (const [fn, shim] of Object.entries(idf.shims)) effectiveShims[fn] = shim;
+                    idfExtras.push(...idf.extra);
+                }
+                for (const [bus, plan] of Object.entries(hookPlan || {})) {
+                    if (!plan || !plan.tier || !plan.tier.startsWith('idf-') ||
+                        (bus !== 'i2c' && bus !== 'spi')) continue;
+                    const uncovered = (plan.hooks || []).filter(h => !effectiveShims[h.name]);
+                    if (uncovered.length) {
+                        console.warn(`[ESP32C3] ${bus} tier ${plan.tier} unpatched: ${uncovered.map(h => h.name).join(', ')}`);
+                    }
+                }
 
                 // BLE interception shims (JS-side VHCI controller). The 4 trivial
                 // functions are inlined; esp_vhci_host_send_packet parks a large shim
@@ -139,12 +175,20 @@ export class ESP32C3 {
                     if (hooks[fn] && shim.length <= hooks[fn].size) {
                         img.writeAtVaddr(hooks[fn].addr, shim);
                         this._patchedHooks.push(fn);
+                    } else if (hooks[fn] && shim.length > hooks[fn].size) {
+                        console.warn(`[ESP32C3] skip ${fn}: shim ${shim.length}B > func ${hooks[fn].size}B`);
                     }
                 }
                 for (const ex of ble.extra || []) {
                     try {
                         img.writeAtVaddr(ex.addr, ex.bytes);
                         this._patchedHooks.push('ble:' + ex.addr.toString(16));
+                    } catch (_) {}
+                }
+                for (const ex of idfExtras || []) {
+                    try {
+                        img.writeAtVaddr(ex.addr, ex.bytes);
+                        this._patchedHooks.push('idf:' + ex.addr.toString(16));
                     } catch (_) {}
                 }
 
@@ -178,6 +222,11 @@ export class ESP32C3 {
             i2s: this.i2s,
             twai: this.twai,
             ble: this.uart0.ble,
+            touch: this.touch,
+            dac: this.dac,
+            sdmmc: this.sdmmc,
+            camera: this.camera,
+            lcd: this.lcd,
         });
     }
 

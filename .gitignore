@@ -1,6 +1,7 @@
 # Arduino build output (large, regenerate with arduino-cli)
 spike/build/
 spike/sketches/*/build/
+spike/sketches/*/build_*/
 
 # Raw memory dumps from differential scans
 *.raw

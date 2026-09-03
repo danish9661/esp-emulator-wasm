@@ -1,7 +1,11 @@
-import { Elf32, planHooks, prepareSpiShims } from './elf.mjs';
+import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
-import { SHIMS } from './shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM, VirtualI2S, VirtualTWAI } from './peripherals.mjs';
+import { SHIMS, relocateShimsForChip } from './shims.mjs';
+import { prepareBleShims } from './core/ble_shims.mjs';
+import { BLEController } from './core/ble_controller.mjs';
+import { BLEMirror } from './core/ble_mirror.mjs';
+import { ReplyDribbler } from './reply_queue.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM, VirtualI2S, VirtualTWAI, VirtualTouch, VirtualDAC, VirtualSDMMC, VirtualCamera, VirtualLcdPanel } from './peripherals.mjs';
 
 let wasmExports = null;
 let wasm = null;
@@ -10,6 +14,31 @@ let running = false;
 let batchSize = 100000;
 let pendingLoad = null;
 let ws = null;
+let currentChip = 'esp32c3';
+const bleController = new BLEController();
+const bleMirror = new BLEMirror(() => {
+    if (!wasmExports?.memory) throw new Error('no memory bound');
+    return wasmExports.memory.buffer;
+});
+// Forward raw HCI traffic to the UI thread (Peripheral Monitor, BLE tag).
+bleController.onHci((msg) => {
+    postMessage({
+        type: 'ble_hci',
+        dir: msg.dir,
+        opcode: msg.opcode,
+        name: msg.name,
+        data: Array.from(msg.bytes || []),
+    });
+});
+// Paced host->firmware replies: the guest HW RX FIFO drops bursts larger
+// than ~128B, so SDMMC/camera replies dribble out across batches.
+const replyDribbler = new ReplyDribbler();
+
+function pumpReplies() {
+    replyDribbler.pump((b) => {
+        if (emulator) emulator.uart_input(b);
+    });
+}
 
 // Virtual buses and devices
 const i2cBus = new I2CBus();
@@ -23,6 +52,11 @@ const adcDevice = new VirtualADC();
 const pwmDevice = new VirtualPWM();
 const i2sDevice = new VirtualI2S(16000);
 const twaiDevice = new VirtualTWAI();
+const touchDevice = new VirtualTouch();
+const dacDevice = new VirtualDAC();
+const sdmmcDevice = new VirtualSDMMC();
+const cameraDevice = new VirtualCamera();
+const lcdDevice = new VirtualLcdPanel(240, 240);
 
 i2cBus.register(0x3c, oledDevice);
 i2cBus.register(0x3d, oledDevice);
@@ -62,6 +96,46 @@ sdCardDevice.onActivity((act) => {
     postMessage({
         type: 'sd_activity',
         ...act,
+    });
+});
+
+touchDevice.onActivity((act) => {
+    postMessage({
+        type: 'touch_activity',
+        ...act,
+    });
+});
+
+dacDevice.onActivity((act) => {
+    postMessage({
+        type: 'dac_activity',
+        ...act,
+    });
+});
+
+sdmmcDevice.onActivity((act) => {
+    postMessage({
+        type: 'sdmmc_activity',
+        ...act,
+    });
+});
+
+cameraDevice.onFrame((frame) => {
+    postMessage({
+        type: 'camera_frame',
+        width: frame.width,
+        height: frame.height,
+        fmt: frame.fmt,
+        buffer: frame.buffer,
+    });
+});
+
+lcdDevice.onFrame((frame) => {
+    postMessage({
+        type: 'lcd_frame',
+        width: frame.width,
+        height: frame.height,
+        buffer: frame.buffer,
     });
 });
 
@@ -189,6 +263,7 @@ async function initWasm(wasmUrl) {
 
 async function handleLoad(msg) {
     const chip = msg.chip || 'esp32c3';
+    currentChip = chip;
     try {
         let firmwareBytes = new Uint8Array(msg.firmware);
 
@@ -204,17 +279,71 @@ async function handleLoad(msg) {
                     .concat(hookPlan?.adc?.hooks || [])
                     .concat(hookPlan?.pwm?.hooks || [])
                     .concat(hookPlan?.i2s?.hooks || [])
-                    .concat(hookPlan?.twai?.hooks || []);
+                    .concat(hookPlan?.twai?.hooks || [])
+                    .concat(hookPlan?.touch?.hooks || [])
+                    .concat(hookPlan?.dac?.hooks || [])
+                    .concat(hookPlan?.sdmmc?.hooks || [])
+                    .concat(hookPlan?.camera?.hooks || [])
+                    .concat(hookPlan?.lcd?.hooks || []);
 
-                const effectiveShims = prepareSpiShims(elf, SHIMS);
+                // Relocate UART0/SPI-bus bases per chip (C3 vs C6/H2 vs P4).
+                const effectiveShims = prepareSpiShims(elf, relocateShimsForChip(SHIMS, chip));
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
+                const idfExtras = [];
+
+                // BLE VHCI shims (required or BLEDemo hangs in ROM PHY spin).
+                // Merged here so browser matches core/esp32c3.mjs behavior.
+                let bleExtra = [];
+                try {
+                    const ble = prepareBleShims(elf, chip);
+                    for (const [fn, shim] of Object.entries(ble.shims || {})) effectiveShims[fn] = shim;
+                    for (const h of ble.hooks || []) hooks[h.name] = h;
+                    bleExtra = ble.extra || [];
+                } catch (bleErr) {
+                    console.warn('BLE shim prep skipped:', bleErr);
+                }
+
+                // IDF raw-driver shims (SPI transaction trampolines + extras).
+                try {
+                    const idf = prepareIdfShims(elf, effectiveShims);
+                    for (const [fn, shim] of Object.entries(idf.shims || {})) effectiveShims[fn] = shim;
+                    idfExtras.push(...(idf.extra || []));
+                } catch (idfErr) {
+                    console.warn('IDF shim prep skipped:', idfErr);
+                }
+
+                // Warn for tiers that resolve but still lack shim bytecode
+                // (e.g. legacy i2c command-link API).
+                for (const [bus, plan] of Object.entries(hookPlan || {})) {
+                    if (!plan || !plan.tier || !plan.tier.startsWith('idf-') ||
+                        (bus !== 'i2c' && bus !== 'spi')) continue;
+                    const uncovered = (plan.hooks || []).filter(h => !effectiveShims[h.name]);
+                    if (uncovered.length) {
+                        console.warn(`[patcher] ${bus} tier ${plan.tier} unpatched: ${uncovered.map(h => h.name).join(', ')}`);
+                    }
+                }
+
                 const img = new EspImage(firmwareBytes);
                 const patched = [];
                 for (const [fn, shim] of Object.entries(effectiveShims)) {
                     if (hooks[fn] && shim.length <= hooks[fn].size) {
                         img.writeAtVaddr(hooks[fn].addr, shim);
                         patched.push({ name: fn, addr: hooks[fn].addr, size: shim.length });
+                    } else if (hooks[fn] && shim.length > hooks[fn].size) {
+                        console.warn(`[patcher] skip ${fn}: shim ${shim.length}B > func ${hooks[fn].size}B`);
                     }
+                }
+                for (const ex of bleExtra) {
+                    try {
+                        img.writeAtVaddr(ex.addr, ex.bytes);
+                        patched.push({ name: 'ble:' + ex.addr.toString(16), addr: ex.addr, size: ex.bytes.length });
+                    } catch (_) {}
+                }
+                for (const ex of idfExtras) {
+                    try {
+                        img.writeAtVaddr(ex.addr, ex.bytes);
+                        patched.push({ name: 'idf:' + ex.addr.toString(16), addr: ex.addr, size: ex.bytes.length });
+                    } catch (_) {}
                 }
                 if (patched.length > 0) {
                     await img.reseal();
@@ -243,7 +372,17 @@ async function handleLoad(msg) {
         emulator.set_boot_from_rom(!msg.skipRom);
         emulator.load_firmware(firmwareBytes);
 
+        // Re-run GPIO auto-calibration for the actual target chip (C3 vs
+        // C6/H2 vs P4 have different peripheral base addresses). The boot-time
+        // c3 calibration above is only a default until the chip is known.
+        try {
+            if (chip !== 'esp32c3') calibrateGpio(chip);
+        } catch (_) {}
+        postMessage({ type: 'chip', chip });
+
         streamBuffer = '';
+        replyDribbler.clear();
+        bleMirror.clear();
         lastGpioOut = -1n;
         lastGpioEn = -1n;
 
@@ -315,6 +454,8 @@ function drainTxToNetwork() {
 const APC = /\x1b_(.)([\s\S]*?)\x1b\\/;
 
 function processStream(chunk) {
+    // Flush previously queued replies first (a polling shim is silent).
+    pumpReplies();
     streamBuffer += chunk;
     let cleanOutput = '';
 
@@ -337,6 +478,8 @@ function processStream(chunk) {
             break;
         }
     }
+    // Release newly queued reply bytes in the same batch.
+    pumpReplies();
     return cleanOutput;
 }
 
@@ -464,6 +607,92 @@ function handleApcFrame(kind, body) {
                 data,
             });
         }
+    } else if (kind === 'T') {
+        // Touch pad read: T<pin>
+        const pin = body.charCodeAt(0) & 0x7F;
+        const raw = touchDevice.read(pin);
+        if (emulator) {
+            emulator.uart_input(new Uint8Array([(raw >> 8) & 0xFF, raw & 0xFF]));
+        }
+    } else if (kind === 'D') {
+        // DAC write: D<pin><vhi><vlo> (nibble-encoded, UART string is UTF-8)
+        const pin = body.charCodeAt(0) & 0x7F;
+        const value = (((body.charCodeAt(1) - 97) & 0xF) << 4) | ((body.charCodeAt(2) - 97) & 0xF);
+        dacDevice.write(pin, value);
+    } else if (kind === 'M') {
+        // SDMMC sector transfer: M<R|W><lba:8nib><count:4nib>[nibbles...]
+        const op = body[0];
+        const nib = (c) => (body.charCodeAt(c) - 97) & 0xF;
+        let lba = 0;
+        for (let i = 1; i <= 8; i++) lba = (lba << 4) | nib(i);
+        let count = 0;
+        for (let i = 9; i <= 12; i++) count = (count << 4) | nib(i);
+        count = Math.max(0, Math.min(64, count));
+        if (op === 'R') {
+            replyDribbler.push(sdmmcDevice.readSectors(lba >>> 0, count));
+        } else if (op === 'W') {
+            // Chunked writes (see shim_sdmmc_write): reassembled by the device.
+            const bytes = [];
+            for (let i = 13; i + 1 < body.length; i += 2) {
+                bytes.push((nib(i) << 4) | nib(i + 1));
+            }
+            sdmmcDevice.writeChunk(lba >>> 0, count, new Uint8Array(bytes));
+        }
+            sdmmcDevice.writeSectors(lba >>> 0, new Uint8Array(bytes));
+        }
+    } else if (kind === 'F') {
+        // Camera band: F<off:8nib><len:4nib> -> len + bytes
+        const nib = (c) => (body.charCodeAt(c) - 97) & 0xF;
+        let off = 0;
+        for (let i = 0; i < 8; i++) off = (off << 4) | nib(i);
+        let count = 0;
+        for (let i = 8; i < 12; i++) count = (count << 4) | nib(i);
+        count = Math.max(0, Math.min(1024, count));
+        const frame = cameraDevice.readBand(off >>> 0, count);
+        {
+            const out = new Uint8Array(4 + frame.length);
+            out[0] = (frame.length >>> 24) & 0xFF;
+            out[1] = (frame.length >>> 16) & 0xFF;
+            out[2] = (frame.length >>> 8) & 0xFF;
+            out[3] = frame.length & 0xFF;
+            out.set(frame, 4);
+            replyDribbler.push(out);
+        }
+    } else if (kind === 'L') {
+        // LCD panel blit: L<x1:4><y1:4><x2:4><y2:4><len:8><nibbles...>
+        const nib = (c) => (body.charCodeAt(c) - 97) & 0xF;
+        const rd16 = (o) => (nib(o) << 12) | (nib(o + 1) << 8) | (nib(o + 2) << 4) | nib(o + 3);
+        const x1 = rd16(0), y1 = rd16(4), x2 = rd16(8), y2 = rd16(12);
+        let len = 0;
+        for (let i = 16; i < 24; i++) len = (len << 4) | nib(i);
+        len = Math.max(0, Math.min(240 * 240 * 2, len));
+        const bytes = new Uint8Array(len);
+        for (let i = 0, o = 24; i < len && o + 1 < body.length; i++, o += 2) {
+            bytes[i] = (nib(o) << 4) | nib(o + 1);
+        }
+        lcdDevice.drawBitmap(x1, y1, x2, y2, bytes);
+    } else if (kind === 'B') {        // BLE HCI command -> virtual controller -> E event frame.
+        // Mirrors core/uart.mjs so browser BLE matches Node SDK behavior.
+        // (E replies dribble: long events exceed one RX FIFO.)
+        if (!emulator) return;
+        try {
+            const hex = [...body].map(c => c.charCodeAt(0) - 97);
+            const bytes = [];
+            for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
+            const event = bleController.handle(new Uint8Array(bytes));
+            // Preferred: shared-memory event channel (reliable, no RX).
+            // Fallback: legacy E-UART reply (dribbled).
+            if (!bleMirror.deliver(event)) {
+                let out = '\x1b_E';
+                const len = event.length;
+                out += String.fromCharCode(97 + ((len >> 4) & 0xf), 97 + (len & 0xf));
+                for (const b of event) out += String.fromCharCode(97 + ((b >> 4) & 0xf), 97 + (b & 0xf));
+                out += '\x1b\\';
+                replyDribbler.push(new TextEncoder().encode(out));
+            }
+        } catch (e) {
+            console.warn('BLE HCI bridge error:', e);
+        }
     }
 }
 
@@ -477,10 +706,18 @@ function pollGpio() {
         if (outVal !== lastGpioOut || enVal !== lastGpioEn) {
             lastGpioOut = outVal;
             lastGpioEn = enVal;
+            // Mask widens per chip (P4 has 56 GPIOs > 53-bit Number precision),
+            // so send BigInt strings alongside numeric fallbacks for compat.
+            const mask = (1n << 56n) - 1n;
+            const outM = outVal & mask;
+            const enM = enVal & mask;
             postMessage({
                 type: 'gpio_update',
-                out: Number(outVal & 0x3fffff_ffffffffn),
-                enable: Number(enVal & 0x3fffff_ffffffffn),
+                out: Number(outM & 0xffffffffn),
+                enable: Number(enM & 0xffffffffn),
+                outStr: outM.toString(),
+                enableStr: enM.toString(),
+                chip: currentChip,
             });
         }
     } catch (e) {}
@@ -531,6 +768,8 @@ onmessage = async function(e) {
             } else if (output) {
                 const clean = processStream(output);
                 output = clean;
+            } else {
+                pumpReplies(); // keep dribbled replies flowing on silent batches
             }
             pollGpio();
             postMessage({
@@ -549,6 +788,8 @@ onmessage = async function(e) {
                 try {
                     emulator.restart();
                     streamBuffer = '';
+                    replyDribbler.clear();
+                    bleMirror.clear();
                     lastGpioOut = -1n;
                     lastGpioEn = -1n;
                     postMessage({ type: 'reset', reloaded: true, pc: emulator.pc() });
@@ -631,6 +872,10 @@ onmessage = async function(e) {
             adcDevice.setVoltage(msg.pin, (msg.raw / 4095) * 3.3);
             break;
 
+        case 'touch_set':
+            touchDevice.setTouched(msg.pin, !!msg.touched);
+            break;
+
         case 'twai_inject':
             if (msg.frame) {
                 const raw = twaiDevice.inject(msg.frame);
@@ -655,6 +900,8 @@ function runLoop() {
         const rawOutput = emulator.run_batch(batchSize);
         if (rawOutput) {
             accumulatedOutput += processStream(rawOutput);
+        } else {
+            pumpReplies(); // keep dribbled replies flowing on silent batches
         }
         totalCycles += batchSize;
 

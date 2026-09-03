@@ -18,19 +18,30 @@
 //                     UART0 RX; the shim decodes it and calls cb())
 // Hex encoding matches the SPI convention: nibble n -> 'a' + n (decoded -97).
 
-import { assemble, asm32, li, jalr, A0, A1, T0, T1, T2, T3, T4, T5, SP } from './rvasm.mjs';
+import { assemble, asm32, li, jalr, A0, A1, A2, A3, T0, T1, T2, T3, T4, T5, SP } from './rvasm.mjs';
 
 // Per-chip DRAM scratch for runtime data (callback ptr + event buffer). Lives in the
 // firmware's RAM; .bss is zeroed at boot but that is fine — the firmware writes cb
 // and the event bytes here at runtime.
+//
+// NOTE: the chosen addresses overlap stale, boot-time-only SPI-flash probe
+// structs (.dram0.data) on Arduino builds — harmless in practice (never
+// touched after boot), but the event bytes are only ever written by the host
+// through the WASM linear-memory mirror, never by guest code.
 export const BLE_SCRATCH = {
     esp32c3: 0x3fc94000,
-    esp32c6: 0x40814000,
-    esp32h2: 0x40814000,
+    esp32c6: 0x40810000,
+    esp32h2: 0x40810000,
     esp32p4: 0x4ff44000,
 };
-const CB_OFF = 0;
-const EVT_OFF = 0x100;
+export const BLE_CB_OFF = 0;
+export const BLE_FLAG_OFF = 8;
+export const BLE_EVT_OFF = 0x100;
+// Guest->host rendezvous mark (guest writes both words before emitting B;
+// host scans WASM linear memory for the pair once per boot to discover the
+// mirror, writes the event, then sets flag=1).
+export const BLE_MAGIC1 = 0xDEADBEEF;
+export const BLE_MAGIC2 = 0xBEAC0001;
 
 const UART_HI = { esp32c3: 0x60000, esp32c6: 0x60000, esp32h2: 0x60000, esp32p4: 0x500ca };
 
@@ -39,7 +50,7 @@ function stubReturn(value) {
 }
 
 function registerCb(scratch) {
-    const cbAddr = scratch + CB_OFF;
+    const cbAddr = scratch + BLE_CB_OFF;
     return asm32(assemble([
         ...li(T1, cbAddr),
         { op: 'sw', rs2: A0, rs1: T1, imm: 0 },
@@ -48,8 +59,9 @@ function registerCb(scratch) {
 }
 
 function sendPacket(scratch, uartHi) {
-    const evtBase = scratch + EVT_OFF;
-    const cbBase = scratch + CB_OFF;
+    const evtBase = scratch + BLE_EVT_OFF;
+    const cbBase = scratch + BLE_CB_OFF;
+    const flagBase = scratch + BLE_FLAG_OFF;
     const p = [
         // prologue: save ra, a0 (pkt), a1 (len)
         { op: 'addi', rd: SP, rs1: SP, imm: -16 },
@@ -57,6 +69,17 @@ function sendPacket(scratch, uartHi) {
         { op: 'sw', rs2: A0, rs1: SP, imm: 8 },
         { op: 'sw', rs2: A1, rs1: SP, imm: 4 },
         { op: 'lui', rd: T0, imm: uartHi << 12 },
+
+        // mark rendezvous BEFORE emitting B: the host discovers the WASM
+        // linear-memory mirror by scanning for this magic pair (once per
+        // boot), writes the HCI event to the evtBase mirror, then sets flag=1.
+        // (UART RX is not used: pushed bytes are unreliable for the guest to
+        // poll on this core — see BLE-OBSERVABILITY.md.)
+        ...li(T1, flagBase),
+        ...li(T2, BLE_MAGIC1),
+        { op: 'sw', rs2: T2, rs1: T1, imm: 0 },
+        ...li(T2, BLE_MAGIC2),
+        { op: 'sw', rs2: T2, rs1: T1, imm: 4 },
 
         // ---- transmit ESC _ B ----
         { op: 'addi', rd: T2, rs1: 0, imm: 27 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
@@ -66,6 +89,7 @@ function sendPacket(scratch, uartHi) {
         // ---- hex-encode command bytes ----
         { op: 'lw', rd: T3, rs1: SP, imm: 8 },   // t3 = pkt
         { op: 'lw', rd: T5, rs1: SP, imm: 4 },   // t5 = len
+        { op: 'addi', rd: T4, rs1: 0, imm: 0 },  // t4 = index (was garbage -> empty frames)
         { label: 'tx_loop' },
         { op: 'bge', rs1: T4, rs2: T5, label: 'tx_done' },
         { op: 'lbu', rd: T1, rs1: T3, imm: 0 },
@@ -78,51 +102,23 @@ function sendPacket(scratch, uartHi) {
         { op: 'addi', rd: T2, rs1: 0, imm: 27 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
         { op: 'addi', rd: T2, rs1: 0, imm: 92 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
 
-        // ---- receive ESC _ E <2hex len> <hex event> ESC \ ----
-        ...li(T3, evtBase),                       // t3 = event buffer base
+        // ---- wait for the host's shared-memory event (flag==1) ----
+        ...li(T1, flagBase),
+        { label: 'rx_wait' },
+        { op: 'lw', rd: T2, rs1: T1, imm: 0 },
+        { op: 'addi', rd: T2, rs1: T2, imm: -1 },
+        { op: 'bne', rs1: T2, rs2: 0, label: 'rx_wait' },
 
-        { label: 'rx_esc' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_esc' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'bne', rs1: T1, rs2: 27, label: 'rx_esc' },
-        { label: 'rx_und' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_und' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'bne', rs1: T1, rs2: 95, label: 'rx_esc' },
-        { label: 'rx_E' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_E' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'bne', rs1: T1, rs2: 69, label: 'rx_esc' },
-
-        // length: 2 hex chars
-        { label: 'rx_lenhi' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_lenhi' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'addi', rd: T1, rs1: T1, imm: -97 }, { op: 'slli', rd: T4, rs1: T1, sh: 4 },
-        { label: 'rx_lenlo' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_lenlo' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'addi', rd: T1, rs1: T1, imm: -97 }, { op: 'addi', rd: T4, rs1: T4, imm: T1 },
-        { op: 'addi', rd: T5, rs1: 0, imm: 0 },  // index
-
-        { label: 'rx_data' },
-        { op: 'bge', rs1: T5, rs2: T4, label: 'rx_endesc' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_data' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'addi', rd: T1, rs1: T1, imm: -97 }, { op: 'slli', rd: T1, rs1: T1, sh: 4 },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_data' },
-        { op: 'lbu', rd: T2, rs1: T0, imm: 0 }, { op: 'addi', rd: T2, rs1: T2, imm: -97 }, { op: 'or', rd: T1, rs1: T1, rs2: T2 },
-        { op: 'sb', rs2: T1, rs1: T3, imm: 0 },
-        { op: 'addi', rd: T3, rs1: T3, imm: 1 },
-        { op: 'addi', rd: T5, rs1: T5, imm: 1 },
-        { op: 'jal', rd: 0, label: 'rx_data' },
-
-        { label: 'rx_endesc' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_endesc' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'bne', rs1: T1, rs2: 27, label: 'rx_endesc' },
-        { op: 'lw', rd: T2, rs1: T0, imm: 0x1C }, { op: 'andi', rd: T2, rs1: T2, imm: 0xFF }, { op: 'beq', rs1: T2, rs2: 0, label: 'rx_endesc' },
-        { op: 'lbu', rd: T1, rs1: T0, imm: 0 }, { op: 'bne', rs1: T1, rs2: 92, label: 'rx_endesc' },
-
-        // call cb(event buffer)
+        // call cb(event buffer) — skipped when no callback is registered
+        // (firmware calling send_packet before register_callback used to jump
+        // to address 0 and hang the emulator).
         ...li(T1, cbBase),
         { op: 'lw', rd: T1, rs1: T1, imm: 0 },     // t1 = cb pointer
+        { op: 'beq', rs1: T1, rs2: 0, label: 'skip_cb' },
         ...li(A0, evtBase),                        // a0 = event buffer
         { op: 'jalr_ra', rs1: T1 },
         { label: 'after_cb' },
+        { label: 'skip_cb' },
 
         // epilogue
         { op: 'lw', rd: 1, rs1: SP, imm: 12 },
@@ -139,6 +135,46 @@ function makeTrampoline(targetAddr) {
 }
 
 /**
+ * Replacement for esp_bt_controller_init: instead of running the real radio
+ * init (which spins on absent PHY hardware), create the VHCI send semaphore
+ * the NimBLE transport needs and report success.
+ *
+ * Why: ble_hci_trans_hs_cmd_tx does
+ *   xQueueSemaphoreTake(vhci_send_sem /* NULL *\/, 2000) -> fails -> drops
+ *   every packet before esp_vhci_host_send_packet is reached. Creating and
+ *   giving the semaphore lets commands flow into our send_packet shim, where
+ *   the JS virtual controller answers them (fully observable HCI).
+ * (xSemaphoreCreateBinary/Give are macros -> resolve xQueueGenericCreate/
+ * xQueueGenericSend; binary semaphore == create(1, 0, 3).)
+ * Falls back to reporting success without the semaphore if any symbol is
+ * missing (degraded: silent BLE, same as the old stub).
+ */
+function initWithSem(createAddr, sendAddr, semAddr) {
+    return asm32(assemble([
+        { op: 'addi', rd: SP, rs1: SP, imm: -16 },
+        { op: 'sw', rs2: 1, rs1: SP, imm: 12 },
+        { op: 'addi', rd: A0, rs1: 0, imm: 1 },
+        { op: 'addi', rd: A1, rs1: 0, imm: 0 },
+        { op: 'addi', rd: A2, rs1: 0, imm: 3 },  // queueQUEUE_TYPE_BINARY_SEMAPHORE
+        ...li(T0, createAddr),
+        { op: 'jalr_ra', rs1: T0 },              // a0 = xQueueGenericCreate(1, 0, 3)
+        { op: 'beq', rs1: A0, rs2: 0, label: 'init_done' },
+        ...li(T1, semAddr),
+        { op: 'sw', rs2: A0, rs1: T1, imm: 0 },  // *vhci_send_sem = handle
+        { op: 'addi', rd: A1, rs1: 0, imm: 0 },
+        { op: 'addi', rd: A2, rs1: 0, imm: 0 },
+        { op: 'addi', rd: A3, rs1: 0, imm: 0 },
+        ...li(T0, sendAddr),
+        { op: 'jalr_ra', rs1: T0 },              // xQueueGenericSend(handle, 0, 0, 0)
+        { label: 'init_done' },
+        { op: 'lw', rd: 1, rs1: SP, imm: 12 },
+        { op: 'addi', rd: SP, rs1: SP, imm: 16 },
+        { op: 'addi', rd: A0, rs1: 0, imm: 0 },  // return ESP_OK
+        { op: 'ret' },
+    ]));
+}
+
+/**
  * Build BLE shims + out-of-line writes for a given chip.
  * @param {object} elf - Elf32 instance (for symbol resolution + dead-init body addr)
  * @param {string} chip
@@ -151,6 +187,13 @@ export function prepareBleShims(elf, chip) {
         'esp_bt_controller_init', 'esp_bt_controller_enable',
         'esp_vhci_host_check_send_available', 'esp_vhci_host_register_callback',
         'esp_vhci_host_send_packet',
+        // Live HCI path on ESP32-C3 Arduino/NimBLE: the transport calls the
+        // API_ layer (flash, forwards to ROM r_vhci_*), NOT esp_vhci_host_*
+        // (48B, never executed — verified with an illegal-instruction trap).
+        'API_vhci_host_send_packet', 'API_vhci_host_check_send_available',
+        // Created+given by our init replacement so the transport's semaphore
+        // take succeeds and packets reach the send_packet shim.
+        'xQueueGenericCreate', 'xQueueGenericSend', 'vhci_send_sem',
     ];
     const { found } = elf.resolve(names);
     const byName = Object.fromEntries(found.map(s => [s.name, s]));
@@ -161,21 +204,43 @@ export function prepareBleShims(elf, chip) {
         const initAddr = byName['esp_bt_controller_init'].addr;
         const initSize = byName['esp_bt_controller_init'].size;
         const big = sendPacket(scratch, uartHi);
-        const shimAddr = initAddr + 16; // park inside dead init body
-        if (byName['esp_vhci_host_send_packet']) {
-            const spSize = byName['esp_vhci_host_send_packet'].size;
-            if (big.length <= spSize) {
-                // small enough to inline; otherwise trampoline into init body
-                shims['esp_vhci_host_send_packet'] = big;
-            } else if (shimAddr + big.length <= initAddr + initSize) {
-                shims['esp_vhci_host_send_packet'] = makeTrampoline(shimAddr);
-                extra.push({ addr: shimAddr, bytes: big });
+        // Park the out-of-line body AFTER the init replacement itself: the
+        // init shim (up to 96B) lives at initAddr, so the body must not start
+        // at +16 anymore (an 88B init shim would overlap and corrupt both).
+        const RESERVED = 96;
+        const shimAddr = initAddr + RESERVED;
+        const bodyFits = shimAddr + big.length <= initAddr + initSize;
+        // Both send_packet entry points share one out-of-line body.
+        for (const entry of ['esp_vhci_host_send_packet', 'API_vhci_host_send_packet']) {
+            if (!byName[entry]) continue;
+            const size = byName[entry].size;
+            if (big.length <= size) {
+                shims[entry] = big;
+            } else if (bodyFits && size >= makeTrampoline(shimAddr).length) {
+                shims[entry] = makeTrampoline(shimAddr);
+                if (!extra.length) extra.push({ addr: shimAddr, bytes: big });
             }
         }
         shims['esp_bt_controller_init'] = stubReturn(0);
+        if (byName['xQueueGenericCreate'] && byName['xQueueGenericSend'] && byName['vhci_send_sem']) {
+            const initShim = initWithSem(
+                byName['xQueueGenericCreate'].addr,
+                byName['xQueueGenericSend'].addr,
+                byName['vhci_send_sem'].addr);
+            // The out-of-line send_packet body starts at +RESERVED: the init
+            // replacement must fit before it or both get corrupted.
+            if (initShim.length <= RESERVED && initShim.length <= initSize) {
+                shims['esp_bt_controller_init'] = initShim;
+            } else {
+                console.warn('[ble] init shim too large, keeping success stub (BLE will be silent)');
+            }
+        }
         shims['esp_bt_controller_enable'] = stubReturn(0);
         shims['esp_vhci_host_check_send_available'] = stubReturn(1);
         shims['esp_vhci_host_register_callback'] = registerCb(scratch);
+        if (byName['API_vhci_host_check_send_available']) {
+            shims['API_vhci_host_check_send_available'] = stubReturn(1);
+        }
     }
     return { shims, extra, hooks: found };
 }

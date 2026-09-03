@@ -29,12 +29,12 @@
     let periDiffEl = null;
     let periSnapshot = null;
     let periLastReportT = 0;
-    const periTagFilter = { I2C: true, SPI: true, TWAI: true, ADC: true, PWM: true, I2S: true, NEO: true, OLED: true, TFT: true, SD: true, GPIO: true };
+    const periTagFilter = { I2C: true, SPI: true, TWAI: true, ADC: true, PWM: true, I2S: true, NEO: true, OLED: true, TFT: true, SD: true, GPIO: true, TOUCH: true, DAC: true, SDMMC: true, CAM: true, LCD: true, BLE: true };
     // High-frequency streams (frames / audio) are sampled in the live log but
     // still counted in full in the report.
-    const periHighFreq = { OLED: true, TFT: true, NEO: true, I2S: true };
+    const periHighFreq = { OLED: true, TFT: true, NEO: true, I2S: true, CAM: true, LCD: true };
     const periLogThrottle = {};
-    const periColor = { I2C: '#22d3ee', SPI: '#8b5cf6', TWAI: '#10b981', ADC: '#f59e0b', PWM: '#f472b6', I2S: '#38bdf8', NEO: '#34d399', OLED: '#a78bfa', TFT: '#fb7185', SD: '#facc15', GPIO: '#94a3b8' };
+    const periColor = { I2C: '#22d3ee', SPI: '#8b5cf6', TWAI: '#10b981', ADC: '#f59e0b', PWM: '#f472b6', I2S: '#38bdf8', NEO: '#34d399', OLED: '#a78bfa', TFT: '#fb7185', SD: '#facc15', GPIO: '#94a3b8', TOUCH: '#f97316', DAC: '#e879f9', SDMMC: '#fde047', CAM: '#7dd3fc', LCD: '#fda4af', BLE: '#5eead4' };
     const periColorOf = (p) => periColor[p] || '#94a3b8';
 
     // --- Unified Timeline: a single chronological stream of BLE + Peripheral events ---
@@ -129,6 +129,14 @@
             i2cread: ['I2C'],
             spidemo: ['SPI'],
             busprobe: ['I2C', 'SPI'],
+            touch_demo: ['TOUCH'],
+            dac_demo: ['DAC'],
+            sdmmc_demo: ['SDMMC'],
+            camera_demo: ['CAM'],
+            lcd_demo: ['LCD', 'SPI'],
+            bledemo: ['BLE'],
+            bledetect: ['BLE'],
+            bletest: ['BLE'],
         };
         const set = map[key];
         if (!set) return; // BLE presets keep the default (all) tags
@@ -160,7 +168,14 @@
             full.width = width; full.height = height;
             const fctx = full.getContext('2d');
             const img = fctx.createImageData(width, height);
-            if (proto === 'OLED') {
+            if (proto === 'CAM') {
+                // Grayscale test-pattern frame: expand to RGBA.
+                for (let i = 0; i < width * height && i < buffer.length; i++) {
+                    const v = buffer[i] || 0;
+                    img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v;
+                    img.data[i * 4 + 3] = 255;
+                }
+            } else if (proto === 'OLED') {
                 const pages = Math.ceil(height / 8);
                 for (let page = 0; page < pages; page++) {
                     for (let col = 0; col < width; col++) {
@@ -225,7 +240,7 @@
             ctx.stroke();
             return c;
         }
-        if ((ev.proto === 'OLED' || ev.proto === 'TFT') && d.thumb) {
+        if ((ev.proto === 'OLED' || ev.proto === 'TFT' || ev.proto === 'CAM' || ev.proto === 'LCD') && d.thumb) {
             const img = document.createElement('img');
             img.src = d.thumb;
             img.style.height = '16px';
@@ -243,7 +258,10 @@
     let customElfName = null;
 
     let netConnected = false;
-    const gpioInputStates = new Uint8Array(22);
+    const CHIP_GPIO_COUNT = { esp32c3: 22, esp32c6: 30, esp32h2: 19, esp32p4: 56 };
+    const CHIP_LABEL = { esp32c3: 'ESP32-C3 (RV32)', esp32c6: 'ESP32-C6 (RV32)', esp32h2: 'ESP32-H2 (RV32)', esp32p4: 'ESP32-P4 (Dual RV32)' };
+    let gpioPinCount = 22;
+    let gpioInputStates = new Uint8Array(56);
 
     // OLED rendering (128x64)
     let oledCanvas = null;
@@ -465,10 +483,25 @@
     }
 
     // --- Initialize GPIO Grid ---
-    function initGpioPanel() {
+    function setGpioChip(chip) {
+        const n = CHIP_GPIO_COUNT[chip] || 22;
+        if (n === gpioPinCount && document.getElementById('gpio-grid').children.length === n) return;
+        gpioPinCount = n;
+        const keep = gpioInputStates;
+        gpioInputStates = new Uint8Array(56);
+        gpioInputStates.set(keep.subarray(0, Math.min(keep.length, 56)));
+        initGpioPanel(n);
+        const badge = document.getElementById('chip-badge');
+        if (badge && CHIP_LABEL[chip]) badge.textContent = CHIP_LABEL[chip];
+        const h3 = document.querySelector('#gpio-grid')?.closest('.panel-section')?.querySelector('h3');
+        if (h3) h3.textContent = `GPIO Status & Injection (${n} Pins)`;
+    }
+
+    function initGpioPanel(count) {
+        const n = count || gpioPinCount || 22;
         const grid = document.getElementById('gpio-grid');
         grid.innerHTML = '';
-        for (let i = 0; i < 22; i++) {
+        for (let i = 0; i < n; i++) {
             const pin = document.createElement('div');
             pin.className = 'gpio-pin dir-in';
             pin.id = `gpio-${i}`;
@@ -484,6 +517,7 @@
     }
 
     function toggleGpioInput(pin, el) {
+        if (pin < 0 || pin >= gpioPinCount) return;
         gpioInputStates[pin] = gpioInputStates[pin] ? 0 : 1;
         if (worker) {
             worker.postMessage({
@@ -495,10 +529,24 @@
         updatePinUi(pin, gpioInputStates[pin] === 1, false);
     }
 
-    function updateGpioState(outMask, enableMask) {
-        for (let i = 0; i < 22; i++) {
-            const isOutput = ((enableMask >> i) & 1) === 1;
-            const level = isOutput ? ((outMask >> i) & 1) === 1 : (gpioInputStates[i] === 1);
+    function updateGpioState(outMask, enableMask, outStr, enableStr) {
+        // Prefer BigInt strings (P4 has 56 pins > Number precision); fall back to numbers.
+        let outB = null, enB = null;
+        try {
+            if (outStr !== undefined && enableStr !== undefined) {
+                outB = BigInt(outStr);
+                enB = BigInt(enableStr);
+            }
+        } catch (_) { outB = null; }
+        for (let i = 0; i < gpioPinCount; i++) {
+            let isOutput, level;
+            if (outB !== null) {
+                isOutput = ((enB >> BigInt(i)) & 1n) === 1n;
+                level = isOutput ? ((outB >> BigInt(i)) & 1n) === 1n : (gpioInputStates[i] === 1);
+            } else {
+                isOutput = ((enableMask >> i) & 1) === 1;
+                level = isOutput ? ((outMask >> i) & 1) === 1 : (gpioInputStates[i] === 1);
+            }
             updatePinUi(i, level, isOutput);
         }
     }
@@ -658,8 +706,10 @@
             } else {
                 periLogThrottle[proto] = now;
                 // Convert heavy frame buffers into a small thumbnail for shown events only.
-                if ((proto === 'OLED' || proto === 'TFT') && detail && detail.buffer) {
+                if ((proto === 'OLED' || proto === 'TFT' || proto === 'LCD') && detail && detail.buffer) {
                     evtDetail = { width: detail.width, height: detail.height, thumb: makeFrameThumb(proto, detail.buffer, detail.width, detail.height) };
+                } else if (proto === 'CAM' && detail && detail.buffer) {
+                    evtDetail = { width: detail.width, height: detail.height, thumb: makeFrameThumb('CAM', detail.buffer, detail.width, detail.height) };
                 }
             }
         }
@@ -882,6 +932,10 @@
                     terminal.writeln(`\x1b[35m[Auto-Calibrate] Dynamic GPIO offsets: OUT=0x${msg.out.toString(16)}, EN=0x${msg.enable.toString(16)}, IN=0x${msg.in.toString(16)}\x1b[0m`);
                     break;
 
+                case 'chip':
+                    if (msg.chip) setGpioChip(msg.chip);
+                    break;
+
                 case 'loaded':
                     firmwareLoaded = true;
                     isRunning = false;
@@ -898,11 +952,16 @@
                         const spiTier = msg.plan?.spi?.tier || 'none';
                         const neoTier = msg.plan?.neopixel?.tier || 'none';
                         const syms = msg.patched.map(p => `${p.name}`).join(', ');
+                        const bleCount = msg.patched.filter(p => `${p.name}`.startsWith('esp_') || `${p.name}`.startsWith('ble:')).length;
+                        const idfWarn = [msg.plan?.i2c?.tier, msg.plan?.spi?.tier].some(t => t && t.startsWith('idf-'))
+                            ? `<div style="color: #f59e0b;">⚠ IDF I2C/SPI tier has no shim bytecode — running unpatched (Arduino HAL preferred)</div>` : '';
                         statusEl.innerHTML = `
-                            <div style="color: #10b981; margin-bottom: 2px;">✓ Tiers: I2C (${i2cTier}), SPI (${spiTier}), NeoPixel (${neoTier})</div>
+                            <div style="color: #10b981; margin-bottom: 2px;">✓ Tiers: I2C (${i2cTier}), SPI (${spiTier}), NeoPixel (${neoTier})${bleCount ? `, BLE (${bleCount})` : ''}</div>
                             <div style="color: #06b6d4;">Shims: ${syms}</div>
+                            ${idfWarn}
                         `;
                         terminal.writeln(`\x1b[36m[Patcher] Applied RISC-V shims: ${syms}\x1b[0m`);
+                        if (idfWarn) terminal.writeln('\x1b[33m[Patcher] IDF I2C/SPI detected without shims — Arduino builds fully supported, IDF raw-driver unpatched\x1b[0m');
                     }
                     break;
                 }
@@ -929,8 +988,8 @@
                     break;
 
                 case 'gpio_update':
-                    updateGpioState(msg.out, msg.enable);
-                    emitPeripheral('GPIO', 'update', `GPIO out=0x${msg.out?.toString(16) || msg.out}`, { out: msg.out, enable: msg.enable });
+                    updateGpioState(msg.out, msg.enable, msg.outStr, msg.enableStr);
+                    emitPeripheral('GPIO', 'update', `GPIO out=0x${msg.outStr || (msg.out?.toString(16) || msg.out)}`, { out: msg.out, enable: msg.enable, outStr: msg.outStr, enableStr: msg.enableStr });
                     break;
 
                 case 'i2c_activity':
@@ -1011,6 +1070,48 @@
 
                 case 'twai_activity': {
                     logCanActivity(msg);
+                    break;
+                }
+
+                case 'touch_activity': {
+                    emitPeripheral('TOUCH', msg.type || 'read',
+                        `Touch pin=${msg.pin ?? '?'} raw=${msg.raw ?? '?'}${msg.touched ? ' TOUCHED' : ''}`,
+                        { pin: msg.pin, raw: msg.raw, touched: msg.touched });
+                    break;
+                }
+
+                case 'dac_activity': {
+                    emitPeripheral('DAC', msg.type || 'update',
+                        `DAC pin=${msg.pin ?? '?'} value=${msg.value ?? '?'} (${(msg.voltage ?? 0).toFixed(2)}V)`,
+                        { pin: msg.pin, value: msg.value, voltage: msg.voltage });
+                    break;
+                }
+
+                case 'sdmmc_activity': {
+                    emitPeripheral('SDMMC', msg.type || 'activity',
+                        `SDMMC ${msg.type || 'activity'} lba=${msg.lba ?? '?'} count=${msg.count ?? '?'}`,
+                        { type: msg.type, lba: msg.lba, count: msg.count });
+                    break;
+                }
+
+                case 'camera_frame': {
+                    emitPeripheral('CAM', 'frame', `Camera frame (${msg.width || '?'}x${msg.height || '?'})`,
+                        { width: msg.width, height: msg.height, buffer: msg.buffer });
+                    break;
+                }
+
+                case 'lcd_frame': {
+                    renderTftFrame(msg);
+                    emitPeripheral('LCD', 'frame', `LCD frame (${msg.width || 240}x${msg.height || 240})`,
+                        { width: msg.width, height: msg.height, buffer: msg.buffer });
+                    break;
+                }
+
+                case 'ble_hci': {
+                    const hex = (msg.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+                    emitPeripheral('BLE', msg.dir === 'evt' ? 'hci_evt' : 'hci_cmd',
+                        msg.dir === 'evt' ? `HCI EVT ${hex}` : `HCI CMD ${msg.name || ''} ${hex}`,
+                        { dir: msg.dir, opcode: msg.opcode, name: msg.name, data: msg.data });
                     break;
                 }
 
@@ -1096,6 +1197,11 @@
             i2cread: { bin: 'samples/i2cread.merged.bin', elf: 'samples/i2cread.elf', title: 'I2C Sensor Read (0x68)' },
             spidemo: { bin: 'samples/spidemo.merged.bin', elf: 'samples/spidemo.elf', title: 'SPI Master Transfer' },
             busprobe: { bin: 'samples/busprobe.merged.bin', elf: 'samples/busprobe.elf', title: 'Dual Bus Probe (I2C + SPI)' },
+            touch_demo: { bin: 'samples/touch_demo.merged.bin', elf: 'samples/touch_demo.elf', title: 'Touch Pad Sensor (virtual)' },
+            dac_demo: { bin: 'samples/dac_demo.merged.bin', elf: 'samples/dac_demo.elf', title: 'DAC Output 8-bit (virtual)' },
+            sdmmc_demo: { bin: 'samples/sdmmc_demo.merged.bin', elf: 'samples/sdmmc_demo.elf', title: 'SDMMC 4-bit Host (virtual)' },
+            camera_demo: { bin: 'samples/camera_demo.merged.bin', elf: 'samples/camera_demo.elf', title: 'Camera Grayscale Frame (virtual)' },
+            lcd_demo: { bin: 'samples/lcd_demo.merged.bin', elf: 'samples/lcd_demo.elf', title: 'LCD Panel RGB565 Blits (virtual)' },
             bledemo: { bin: 'spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/BLEDemo.ino.merged.bin', elf: 'spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/BLEDemo.ino.elf', title: 'BLE Server Demo (NimBLE)' },
             bledetect: { bin: 'spike/sketches/BLEDetect/build/esp32.esp32.esp32c3/BLEDetect.ino.merged.bin', elf: 'spike/sketches/BLEDetect/build/esp32.esp32.esp32c3/BLEDetect.ino.elf', title: 'BLE VHCI Detector' },
             bletest: { bin: 'spike/sketches/BLETest/build/esp32.esp32.esp32c3/BLETest.ino.merged.bin', elf: 'spike/sketches/BLETest/build/esp32.esp32.esp32c3/BLETest.ino.elf', title: 'BLE VHCI Call Test' },
@@ -1121,6 +1227,7 @@
 
             const chip = document.getElementById('chip-select').value;
             const bootRom = document.getElementById('boot-rom-chk').checked;
+            setGpioChip(chip);
 
             worker.postMessage({
                 type: 'load',
@@ -1177,6 +1284,9 @@
             const key = document.getElementById('preset-select').value;
             loadPresetFirmware(key);
         });
+
+        const chipSel = document.getElementById('chip-select');
+        if (chipSel) chipSel.addEventListener('change', () => setGpioChip(chipSel.value));
 
         document.getElementById('firmware-file').addEventListener('change', async (e) => {
             const file = e.target.files[0];
@@ -1303,6 +1413,12 @@
         bindPeriFilt('peri-filt-tft', 'TFT');
         bindPeriFilt('peri-filt-sd', 'SD');
         bindPeriFilt('peri-filt-gpio', 'GPIO');
+        bindPeriFilt('peri-filt-touch', 'TOUCH');
+        bindPeriFilt('peri-filt-dac', 'DAC');
+        bindPeriFilt('peri-filt-sdmmc', 'SDMMC');
+        bindPeriFilt('peri-filt-cam', 'CAM');
+        bindPeriFilt('peri-filt-lcd', 'LCD');
+        bindPeriFilt('peri-filt-ble', 'BLE');
 
         const periExportJson = document.getElementById('peri-export-json');
         if (periExportJson) periExportJson.addEventListener('click', () => {
@@ -1502,6 +1618,8 @@
         initGpioPanel();
         initRegTable();
         setupControls();
+        const sel = document.getElementById('chip-select');
+        if (sel) setGpioChip(sel.value);
         initWorker();
     });
 })();

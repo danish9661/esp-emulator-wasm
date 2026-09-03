@@ -139,27 +139,50 @@ async function testTargetChip(chipName, binPath, elfPath) {
 | **I2S Digital Audio** | ✅ | `i2s_write`, `i2s_driver_install` | APC PCM streaming frames (`\x1b_I`) |
 | **TWAI / CAN Bus** | ✅ | `twai_transmit_v2`, `twai_receive_v2` | APC CAN frames (`\x1b_C`, `\x1b_CR`) |
 | **Storage (SD Card)** | ✅ | SPI block sector engine | Virtual FAT16/FAT32 CCITT CRC16 sector streamer |
-| **BLE (Bluetooth LE)** | ⚠️ runs via VHCI shims; HCI not observable from JS | ✅ native CLI | `esp_bt_controller_init`, `esp_bt_controller_enable`, `esp_vhci_host_send_packet`, `esp_vhci_host_register_callback`, `esp_vhci_host_check_send_available` | WASM: VHCI shims (`core/ble_shims.mjs` + `core/ble_controller.mjs`) make BLE firmware runnable, but the HCI command/event bytes are NOT observable from JS — observe behavior via the firmware's own Serial log (see BLE-OBSERVABILITY.md). Native CLI: Rust-core HCI interception + virtual controller / Bumble / physical `hci0`. |
+| **IDF SPI / I2C drivers** | ✅ | `spi_device_transmit`/`polling` (trampoline-parked), `i2c_master_transmit/receive/...`, legacy `write/read_to_device` | Same APC `S`/`W`/`R` frames as Arduino (handle carries addr for v5) |
+| **Touch pad** | ✅ | `touchRead`, `touchAttachInterrupt` (+ sketch fallbacks) | APC frames (`\x1b_T`) |
+| **DAC output** | ✅ | `dacWrite` (+ sketch fallback) | APC frames (`\x1b_D`) |
+| **SDMMC host** | ✅ | `emuSdmmcReadSectors`, `emuSdmmcWriteSectors` (sketch API) | APC sector frames (`\x1b_M`) |
+| **Camera** | ✅ | `emuCameraFbGet` (sketch API) | APC frame request (`\x1b_F`) |
+| **LCD panel** | ✅ | `emuLcdDraw` (sketch API) | APC blit frames (`\x1b_L`) |
+| **BLE (Bluetooth LE)** | ✅ direct calls fully observable; NimBLE host-silent (healthy) | `esp_bt_controller_init` (semaphore-creating), `esp/API_vhci_host_send_packet` trampolines, `register_callback`, `check_send_available` | WASM: VHCI shims (`core/ble_shims.mjs` + `core/ble_controller.mjs` + `core/ble_mirror.mjs` shared-memory event channel). Direct transport calls round-trip observably; NimBLE behavior via firmware `Serial` log (see BLE-OBSERVABILITY.md). Native CLI: Rust-core HCI interception + virtual controller / Bumble / physical `hci0`. |
 
-### 6.1 BLE — WASM runs via VHCI shims; HCI not observable from JS
+### 6.1 BLE — VHCI shims with fully observable direct-call path
 
-The JS-side VHCI shim design (`core/ble_shims.mjs` + `core/ble_controller.mjs`) is
-**active and required**: without it, BLE firmware (e.g. BLEDemo) hangs in the ROM
-PHY spin. The shim replaces the VHCI/controller symbols so the NimBLE host stack
-initializes and advertises.
+The JS-side VHCI shim design (`core/ble_shims.mjs` + `core/ble_controller.mjs` +
+`core/ble_mirror.mjs`) is **active and required**: without it, BLE firmware
+(e.g. BLEDemo) hangs in the ROM PHY spin. Verified by call-graph + trap
+analysis on real firmware:
 
-- **`core/ble_shims.mjs`** (`prepareBleShims(elf, chip)`): replaces the 5 VHCI/controller symbols (init/enable stubs, `esp_vhci_host_send_packet` trampoline, register_callback, check_send_available).
-- **`core/ble_controller.mjs`** (`BLEController.handle(msg)`): JS virtual controller answering HCI commands so NimBLE never wedges.
-- **`core/uart.mjs`**: `_routeApcFrame` handles `case 'B'` (HCI command → virtual controller → event).
-- **`core/esp32c3.mjs`**: `loadFirmware` calls `prepareBleShims`, merges into the SPI shim patch set, and writes the out-of-line shim into flash (reseals).
+- **`core/ble_shims.mjs`** (`prepareBleShims(elf, chip)`): replaces 7 symbols —
+  `esp_bt_controller_init` (creates+ gives the VHCI send semaphore via real
+  `xQueueGenericCreate/Send`, so the transport's take succeeds, else a success
+  stub), `esp_bt_controller_enable` (stub), both `*_check_send_available`
+  (stub 1, incl. the `API_` variant), `esp_vhci_host_register_callback`
+  (stashes the RX callback), and **both** `esp_vhci_host_send_packet` (48B,
+  never executed — proven with an illegal-instruction trap) and
+  `API_vhci_host_send_packet` (210B, the live NimBLE path) with trampolines
+  sharing one out-of-line body parked after the init replacement
+  (`init+96`, guarded against overlap).
+- **`core/ble_controller.mjs`** (`BLEController.handle(msg)` + `onHci`):
+  JS virtual controller answering HCI commands; every command/event is
+  observable (`spike/observe_ble.mjs --hci`, web UI BLE-HCI tag).
+- **Event delivery is shared-memory, not UART RX** (`core/ble_mirror.mjs`):
+  the shim writes a magic rendezvous pair, emits `B`, and polls a flag; the
+  host discovers the WASM linear-memory mirror by scanning for the magic
+  (once per boot), writes event bytes, sets flag=1. (Pushed UART RX bytes are
+  unreliable for the guest to poll on this core — measured.)
+- **`core/uart.mjs`**: `_routeApcFrame` handles `case 'B'` (command →
+  controller → shared-memory event, legacy `E` frame as fallback).
+- **`core/esp32c3.mjs`**: `loadFirmware` calls `prepareBleShims`, merges into
+  the SPI shim patch set, and writes the out-of-line shim into flash (reseals).
 
-**Limitation — HCI is NOT observable from JS**: the HCI command/event bytes do not
-reach the JS observer, so BLE behavior is watched through the firmware's own `Serial`
-output (see BLE-OBSERVABILITY.md), not raw HCI. `esp_vhci_host_send_packet()` called
-directly from firmware **hangs** the wasm.
-
-BLE firmware **runs** (the virtual controller answers HCI) and only its own `Serial`
-debug output is visible. Observe it with the firmware-console tools in
-`BLE-OBSERVABILITY.md` (`spike/observe_ble.mjs`, `BleInspector`, web UI BLE Monitor).
-The native CLI path remains fully functional (Rust-core HCI
-interception + virtual controller / Bumble / physical `hci0`).
+**Known limitation — NimBLE host stack stays silent**: its transport drops
+packets until our init creates the semaphore, and even then the host task
+never invokes the transport in the sim (verified: host task runs, `ble_hs_start`
+/ transport entry never fire), so `BLEDemo` shows no HCI bytes. It still runs
+healthy (init → advertise → heartbeats) — observe it through `Serial`
+(`BLE-OBSERVABILITY.md`). Direct transport calls (extended `BLETest`) round-trip
+fully and observably (`spike/25-verify-hci.mjs`). The native CLI path remains
+fully functional (Rust-core HCI interception + virtual controller / Bumble /
+physical `hci0`).

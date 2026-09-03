@@ -898,8 +898,7 @@ export class VirtualI2S {
 /**
  * Emulates the ESP32-C3 TWAI / CAN Bus Controller (ISO 11898-1 Standard/Extended Frames).
  */
-export class VirtualTWAI {
-    constructor() {
+export class VirtualTWAI {    constructor() {
         this.listeners = new Set();
         this.rxQueue = [];
     }
@@ -957,6 +956,289 @@ export class VirtualTWAI {
             raw[7 + i] = (frame.data && i < frame.data.length) ? frame.data[i] : 0x00;
         }
         return raw;
+    }
+}
+
+/**
+ * Virtual capacitive touch pad sensor (Arduino `touchRead` API).
+ *
+ * The C3/C6/H2/P4 Arduino cores gate touch behind SOC_TOUCH_SENSOR_SUPPORTED,
+ * so sketches define an `extern "C"` fallback which the loader overwrites with
+ * the `touchRead` shim. Untouched pads read high (~1200); touched pads read
+ * low (~300). Threshold crossing fires interrupt listeners.
+ */
+export class VirtualTouch {
+    constructor(touchedValue = 300, releasedValue = 1200) {
+        this.touchedValue = touchedValue;
+        this.releasedValue = releasedValue;
+        this.touched = new Map(); // pin -> bool
+        this.thresholds = new Map(); // pin -> threshold
+        this.listeners = new Set();
+    }
+
+    onActivity(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(type, data) {
+        for (const l of this.listeners) {
+            try { l({ type, ...data, timestamp: Date.now() }); } catch (e) {}
+        }
+    }
+
+    setTouched(pin, touched) {
+        const was = this.touched.get(pin) || false;
+        this.touched.set(pin, !!touched);
+        const raw = this.getRaw(pin);
+        if (!!touched !== was) {
+            this.#emit('touch_event', { pin, touched: !!touched, raw });
+            const th = this.thresholds.get(pin);
+            if (th !== undefined && !!touched && raw < th) {
+                this.#emit('interrupt', { pin, raw, threshold: th });
+            }
+        }
+    }
+
+    attachInterrupt(pin, threshold) {
+        this.thresholds.set(pin, threshold);
+        this.#emit('attach', { pin, threshold });
+    }
+
+    detachInterrupt(pin) {
+        this.thresholds.delete(pin);
+        this.#emit('detach', { pin });
+    }
+
+    getRaw(pin) {
+        return this.touched.get(pin) ? this.touchedValue : this.releasedValue;
+    }
+
+    read(pin) {
+        const raw = this.getRaw(pin);
+        this.#emit('read', { pin, raw, touched: !!this.touched.get(pin) });
+        return raw;
+    }
+}
+
+/**
+ * Virtual DAC output (Arduino `dacWrite` API, 8-bit 0..255 -> 0..3.3V).
+ *
+ * Same sketch-fallback pattern as touch: C3/C6/H2 Arduino cores provide no
+ * `dacWrite`, so sketches define an `extern "C"` fallback patched at load.
+ */
+export class VirtualDAC {
+    constructor(referenceVoltage = 3.3) {
+        this.refVoltage = referenceVoltage;
+        this.channels = new Map(); // pin -> { value, voltage }
+        this.listeners = new Set();
+    }
+
+    onActivity(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(type, data) {
+        for (const l of this.listeners) {
+            try { l({ type, ...data, timestamp: Date.now() }); } catch (e) {}
+        }
+    }
+
+    write(pin, value) {
+        const v = Math.max(0, Math.min(255, value | 0));
+        const voltage = (v / 255) * this.refVoltage;
+        this.channels.set(pin, { value: v, voltage });
+        this.#emit('dac_update', { pin, value: v, voltage });
+        return true;
+    }
+
+    getChannel(pin) {
+        return this.channels.get(pin) || { value: 0, voltage: 0 };
+    }
+}
+
+/**
+ * Virtual SDMMC host (4-bit SD bus, sector-level emulation).
+ *
+ * Firmware calls `emuSdmmcReadSectors` / `emuSdmmcWriteSectors` (sketch-defined
+ * symbols patched at load). Backed by a FAT disk image shared in format with
+ * VirtualSDCard so the same /README.TXT content is visible on both buses.
+ */
+export class VirtualSDMMC {
+    constructor(diskBuffer = null) {
+        this.disk = diskBuffer instanceof Uint8Array ? diskBuffer : createDefaultFat16Image();
+        this.listeners = new Set();
+    }
+
+    onActivity(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+
+    #emit(type, data) {
+        for (const l of this.listeners) {
+            try { l({ type, ...data, timestamp: Date.now() }); } catch (e) {}
+        }
+    }
+
+    get sectorCount() {
+        return Math.floor(this.disk.length / 512);
+    }
+
+    readSectors(lba, count) {
+        const out = new Uint8Array(count * 512);
+        for (let i = 0; i < out.length; i++) {
+            const off = lba * 512 + i;
+            out[i] = off < this.disk.length ? this.disk[off] : 0x00;
+        }
+        this.#emit('read', { lba, count });
+        return out;
+    }
+
+    writeSectors(lba, data) {
+        const count = Math.floor(data.length / 512);
+        for (let i = 0; i < count * 512; i++) {
+            const off = lba * 512 + i;
+            if (off < this.disk.length) this.disk[off] = data[i];
+        }
+        this.#emit('write', { lba, count });
+        return 0;
+    }
+
+    /**
+     * Accumulate one `M W` chunk frame (`lba`, `count`, partial payload).
+     * The shim splits sector payloads into ≤128B frames so no single TX frame
+     * is large enough to get its tail dropped at batch boundaries (H2); the
+     * write applies once all `count*512` bytes have arrived.
+     * @returns {number} 0 when the write applied, -1 while still accumulating.
+     */
+    writeChunk(lba, count, chunk) {
+        const bytes = chunk instanceof Uint8Array ? chunk : Uint8Array.from(chunk || []);
+        const key = (lba >>> 0) + ':' + count;
+        if (!this._pending || this._pending.key !== key) {
+            this._pending = { key, lba: lba >>> 0, count, parts: [], total: 0 };
+        }
+        this._pending.parts.push(bytes);
+        this._pending.total += bytes.length;
+        if (this._pending.total >= count * 512) {
+            const full = new Uint8Array(count * 512);
+            let off = 0;
+            for (const part of this._pending.parts) {
+                const take = Math.min(part.length, full.length - off);
+                full.set(part.subarray(0, take), off);
+                off += take;
+                if (off >= full.length) break;
+            }
+            this._pending = null;
+            return this.writeSectors(lba, full);
+        }
+        return -1;
+    }
+}
+
+/**
+ * Virtual camera (grayscale test-pattern frames).
+ *
+ * Firmware calls `int emuCameraFbGet(buf, w, h, fmt)`; the host synthesizes a
+ * deterministic gradient + bar pattern so firmware can verify checksum/length.
+ * fmt 0 = 8-bit grayscale.
+ */
+export class VirtualCamera {
+    constructor() {
+        this.onFrameCallback = null;
+        this.frameCount = 0;
+    }
+
+    onFrame(cb) {
+        this.onFrameCallback = cb;
+    }
+
+    capture(w, h, fmt = 0) {
+        w = Math.max(1, Math.min(320, w | 0));
+        h = Math.max(1, Math.min(240, h | 0));
+        const data = new Uint8Array(w * h);
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                // Deterministic pattern: horizontal gradient XORed with 8px bars.
+                const bar = ((x >> 3) & 1) ? 0x70 : 0x00;
+                data[y * w + x] = (((x * 255) / Math.max(1, w - 1)) | 0) ^ bar ^ ((y * 31) & 0xff);
+            }
+        }
+        this.frameCount++;
+        if (this.onFrameCallback) {
+            this.onFrameCallback({ width: w, height: h, fmt, buffer: data.slice(), frame: this.frameCount });
+        }
+        return data;
+    }
+
+    /**
+     * Slice [offset, offset+len) of the canonical 96x96 grayscale frame.
+     * Backs banded transfers (`emuCameraReadBand`): each band is small enough
+     * for every chip's host->firmware path (see PROTOCOLS.md transport notes).
+     */
+    readBand(offset, len, w = 96, h = 96) {
+        const full = this.capture(w, h, 0);
+        return full.subarray(offset >>> 0, Math.min(full.length, (offset >>> 0) + len));
+    }
+}
+
+/**
+ * Virtual MIPI-DSI / parallel LCD panel (RGB565 bitmap blits).
+ *
+ * Firmware calls `emuLcdDraw(&req)` with {x1,y1,x2,y2,px,len}; the panel keeps
+ * a 240x240 RGBA framebuffer (same geometry as ST7789Device) and emits frames.
+ */
+export class VirtualLcdPanel {
+    constructor(width = 240, height = 240) {
+        this.width = width;
+        this.height = height;
+        this.rgbaBuffer = new Uint8Array(width * height * 4);
+        this.onFrameCallback = null;
+        this.drawCount = 0;
+        // Default to opaque black.
+        for (let i = 3; i < this.rgbaBuffer.length; i += 4) this.rgbaBuffer[i] = 255;
+    }
+
+    onFrame(cb) {
+        this.onFrameCallback = cb;
+    }
+
+    notifyFrame() {
+        if (this.onFrameCallback) {
+            this.onFrameCallback({
+                width: this.width,
+                height: this.height,
+                buffer: this.rgbaBuffer.slice(),
+                draws: this.drawCount,
+            });
+        }
+    }
+
+    drawBitmap(x1, y1, x2, y2, rgb565Bytes) {
+        // NOTE: bytes are little-endian guest-memory order (uint16_t array as
+        // the 'L' shim streams it), unlike ST7789Device which takes big-endian
+        // SPI wire order.
+        x1 = Math.max(0, Math.min(this.width - 1, x1 | 0));
+        y1 = Math.max(0, Math.min(this.height - 1, y1 | 0));
+        x2 = Math.max(x1, Math.min(this.width - 1, x2 | 0));
+        y2 = Math.max(y1, Math.min(this.height - 1, y2 | 0));
+        let p = 0;
+        const px = rgb565Bytes instanceof Uint8Array ? rgb565Bytes : Uint8Array.from(rgb565Bytes || []);
+        for (let y = y1; y <= y2 && p + 1 < px.length; y++) {
+            for (let x = x1; x <= x2 && p + 1 < px.length; x++) {
+                const c = (px[p + 1] << 8) | px[p];
+                p += 2;
+                const idx = (y * this.width + x) * 4;
+                this.rgbaBuffer[idx] = Math.round((((c >> 11) & 0x1f) * 255) / 31);
+                this.rgbaBuffer[idx + 1] = Math.round((((c >> 5) & 0x3f) * 255) / 63);
+                this.rgbaBuffer[idx + 2] = Math.round((((c) & 0x1f) * 255) / 31);
+                this.rgbaBuffer[idx + 3] = 255;
+            }
+        }
+        this.drawCount++;
+        this.notifyFrame();
+        return { x1, y1, x2, y2, draws: this.drawCount };
     }
 }
 

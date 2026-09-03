@@ -115,6 +115,18 @@ const df = formatDiff(d);
 check('formatDiff has mac line', df.indexOf('BB:BB') >= 0);
 check('formatDiff has diff header', df.indexOf('BLE session diff') >= 0);
 
+// Direct-HCI exchange lines (BLETest sends Reset via both entry points).
+eq('test send_hci_reset via', parseLine('[TEST] sending HCI reset via esp (send_available=1)'),
+    { type: 'test.send_hci_reset', available: 1, via: 'esp' });
+eq('test send_returned', parseLine('[TEST] send returned: 0'),
+    { type: 'test.send_returned', returned: 0 });
+eq('test hci_evt', parseLine('[TEST] hci-evt-esp len=7: 04 0e 04 01 03 0c 00'),
+    { type: 'test.hci_evt', which: 'esp', len: 7, bytes: '04 0e 04 01 03 0c 00' });
+eq('test hci_reset', parseLine('[TEST] hci-reset-esp ok'),
+    { type: 'test.hci_reset', which: 'esp', ok: true });
+eq('test hci_direct', parseLine('[TEST] hci-direct ok'),
+    { type: 'test.hci_direct', ok: true });
+
 console.log('');
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

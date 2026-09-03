@@ -78,8 +78,19 @@ function parseTest(msg) {
                                            return { type: 'test.init', returned: +mm[1] };
   if ((mm = msg.match(/^enable returned: (\d+)$/)))
                                            return { type: 'test.enable', returned: +mm[1] };
-  if ((mm = msg.match(/^sending HCI reset \(send_available=(\d+)\)$/)))
-                                           return { type: 'test.send_hci_reset', available: +mm[1] };
+  if ((mm = msg.match(/^sending HCI reset(?: via (\S+))? \(send_available=(\d+)\)$/))) {
+                                           const ev = { type: 'test.send_hci_reset', available: +mm[2] };
+                                           if (mm[1]) ev.via = mm[1];
+                                           return ev;
+  }
+  if ((mm = msg.match(/^send returned: (\d+)$/)))
+                                           return { type: 'test.send_returned', returned: +mm[1] };
+  if ((mm = msg.match(/^hci-evt-(\S+) len=(\d+):\s*(.*)$/)))
+                                           return { type: 'test.hci_evt', which: mm[1], len: +mm[2], bytes: mm[3].trim() };
+  if ((mm = msg.match(/^hci-reset-(\S+) (ok|FAIL)$/)))
+                                           return { type: 'test.hci_reset', which: mm[1], ok: mm[2] === 'ok' };
+  if ((mm = msg.match(/^hci-direct (ok|FAIL)$/)))
+                                           return { type: 'test.hci_direct', ok: mm[1] === 'ok' };
   if (msg === 'done')                      return { type: 'test.done' };
   if ((mm = msg.match(/^heartbeat loop=(\d+) send_available=(\d+)$/)))
                                            return { type: 'test.heartbeat', loop: +mm[1], sendAvailable: +mm[2] };

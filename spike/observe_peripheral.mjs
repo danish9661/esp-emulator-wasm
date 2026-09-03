@@ -17,19 +17,29 @@
  *   node spike/observe_peripheral.mjs sdcard
  *   node spike/observe_peripheral.mjs adcpwm
  *   node spike/observe_peripheral.mjs i2s
+ *   node spike/observe_peripheral.mjs touch
+ *   node spike/observe_peripheral.mjs dac
+ *   node spike/observe_peripheral.mjs sdmmc
+ *   node spike/observe_peripheral.mjs camera
+ *   node spike/observe_peripheral.mjs lcd
+ *   node spike/observe_peripheral.mjs idfspi    # raw IDF SPI driver
+ *   node spike/observe_peripheral.mjs idfi2c    # raw IDF I2C v5 driver
+ *   node spike/observe_peripheral.mjs idfi2clegacy  # raw IDF legacy I2C
  *
  * Flags: --json  (dump the raw event array)   --steps=N  (batch count, default 1500)
  */
 import { readFileSync } from 'node:fs';
-import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
+import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS } from '../shims.mjs';
-import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM, VirtualI2S, VirtualTWAI } from '../peripherals.mjs';
+import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM, VirtualI2S, VirtualTWAI, VirtualTouch, VirtualDAC, VirtualSDMMC, VirtualCamera, VirtualLcdPanel } from '../peripherals.mjs';
+import { ReplyDribbler } from '../reply_queue.mjs';
 import { boot } from './harness.mjs';
 import { PeripheralInspector, buildPeripheralReport, formatPeripheralReport, diffPeripheralReports, formatPeripheralDiff } from './peripheral_inspector.mjs';
 
 const APC = /\x1b_(.)([\s\S]*?)\x1b\\/;
 const hexOf = (b) => [...b].map(x => (x & 0xff).toString(16).toUpperCase().padStart(2, '0')).join(' ');
+const nibbleVal = (c) => (c.charCodeAt(0) - 97) & 0xF;
 
 const PRESETS = {
   i2c:      ['samples/i2cread.merged.bin', 'samples/i2cread.elf', 'I2C Sensor Read'],
@@ -42,6 +52,14 @@ const PRESETS = {
   sdcard:   ['samples/sdcard_demo.merged.bin', 'samples/sdcard_demo.elf', 'SDCard'],
   adcpwm:   ['samples/adcpwm_demo.merged.bin', 'samples/adcpwm_demo.elf', 'ADC/PWM'],
   i2s:      ['samples/i2s_demo.merged.bin', 'samples/i2s_demo.elf', 'I2S'],
+  touch:    ['samples/touch_demo.merged.bin', 'samples/touch_demo.elf', 'TouchDemo'],
+  dac:      ['samples/dac_demo.merged.bin', 'samples/dac_demo.elf', 'DACDemo'],
+  sdmmc:    ['samples/sdmmc_demo.merged.bin', 'samples/sdmmc_demo.elf', 'SDMMCDemo'],
+  camera:   ['samples/camera_demo.merged.bin', 'samples/camera_demo.elf', 'CameraDemo'],
+  lcd:      ['samples/lcd_demo.merged.bin', 'samples/lcd_demo.elf', 'LCDDemo'],
+  idfspi:   ['samples/idfspi_demo.merged.bin', 'samples/idfspi_demo.elf', 'IDFSPIDemo'],
+  idfi2c:   ['samples/idfi2c_demo.merged.bin', 'samples/idfi2c_demo.elf', 'IDFI2CDemo'],
+  idfi2clegacy: ['samples/idfi2c_legacy_demo.merged.bin', 'samples/idfi2c_legacy_demo.elf', 'IDFI2CLegacyDemo'],
 };
 
 const args = process.argv.slice(2);
@@ -67,15 +85,23 @@ const allHooks = []
   .concat(hookPlan?.adc?.hooks || [])
   .concat(hookPlan?.pwm?.hooks || [])
   .concat(hookPlan?.i2s?.hooks || [])
-  .concat(hookPlan?.twai?.hooks || []);
+  .concat(hookPlan?.twai?.hooks || [])
+  .concat(hookPlan?.touch?.hooks || [])
+  .concat(hookPlan?.dac?.hooks || [])
+  .concat(hookPlan?.sdmmc?.hooks || [])
+  .concat(hookPlan?.camera?.hooks || [])
+  .concat(hookPlan?.lcd?.hooks || []);
 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
 
 const img = new EspImage(flash);
 const effectiveShims = prepareSpiShims(elf, SHIMS);
+const idfPair = prepareIdfShims(elf, effectiveShims);
+Object.assign(effectiveShims, idfPair.shims);
 const patched = [];
 for (const [fn, shim] of Object.entries(effectiveShims)) {
   if (hooks[fn] && shim.length <= hooks[fn].size) { img.writeAtVaddr(hooks[fn].addr, shim); patched.push(fn); }
 }
+for (const ex of idfPair.extra) { try { img.writeAtVaddr(ex.addr, ex.bytes); patched.push('idf:' + ex.addr.toString(16)); } catch (_) {} }
 if (patched.length) await img.reseal();
 
 // --- host-side peripheral models (same as the browser worker + verifier) ---
@@ -90,11 +116,24 @@ const adc = new VirtualADC();
 const pwm = new VirtualPWM();
 const i2s = new VirtualI2S();
 const twai = new VirtualTWAI();
+const touch = new VirtualTouch();
+const dac = new VirtualDAC();
+const sdmmc = new VirtualSDMMC();
+const camera = new VirtualCamera();
+const lcdPanel = new VirtualLcdPanel(240, 240);
+// Paced host->firmware replies (HW RX FIFO drops large bursts).
+const dribbler = new ReplyDribbler();
+const pump = () => dribbler.pump((b) => emu.uart_input(b));
 i2cBus.register(0x3c, oled);
 i2cBus.register(0x3d, oled);
 i2cBus.register(0x68, mpu);
-spiBus.register('tft', tft);
-spiBus.register('sd', sd);
+if (presetKey === 'idfspi') {
+  // Loopback rig: leave the bus empty so the default GenericSPIDevice
+  // answers every byte with (b ^ 0x55), like 27-verify-idf.mjs expects.
+} else {
+  spiBus.register('tft', tft);
+  spiBus.register('sd', sd);
+}
 
 // --- the inspector that powers the web UI Peripheral Monitor ---
 const inspector = new PeripheralInspector();
@@ -109,11 +148,17 @@ twai.onActivity((act) => {
 oled.onFrame((f) => emit('OLED', 'frame', `OLED frame (${f.width}x${f.height})`, { width: f.width, height: f.height }));
 tft.onFrame((f) => emit('TFT', 'frame', `TFT frame (${f.width}x${f.height})`, { width: f.width, height: f.height }));
 sd.onActivity((act) => emit('SD', act.type || (act.cmd ? 'cmd' : 'activity'), `SD ${act.type || act.cmd || 'activity'}`, act));
+touch.onActivity((act) => emit('TOUCH', act.type || 'read', `Touch pin=${act.pin ?? '?'} raw=${act.raw ?? '?'}`, act));
+dac.onActivity((act) => emit('DAC', act.type || 'update', `DAC pin=${act.pin ?? '?'} value=${act.value ?? '?'}`, act));
+sdmmc.onActivity((act) => emit('SDMMC', act.type || 'activity', `SDMMC ${act.type || ''} lba=${act.lba ?? '?'}`, act));
+camera.onFrame((f) => emit('CAM', 'frame', `Camera frame (${f.width}x${f.height})`, { width: f.width, height: f.height }));
+lcdPanel.onFrame((f) => emit('LCD', 'frame', `LCD frame (${f.width}x${f.height}) draws=${f.draws ?? '?'}`, { width: f.width, height: f.height }));
 
 const { emu } = await boot({ chip: 'esp32c3', firmware: flash, bootFromRom: true });
 
 let streamBuffer = '', cleanConsole = '';
 function processStream(chunk) {
+  pump(); // flush previously queued replies (polling shims are silent)
   streamBuffer += chunk;
   while (true) {
     const m = streamBuffer.match(APC);
@@ -192,9 +237,66 @@ function processStream(chunk) {
         for (let i = 0; i < dlc && 6 + i < body.length; i++) data.push(body.charCodeAt(6 + i) & 0xff);
         twai.transmit({ id, extd: (flags & 1) !== 0, rtr: (flags & 2) !== 0, dlc, data });
       }
+    } else if (kind === 'T') {
+      const pin = body.charCodeAt(0) & 0x7F;
+      const raw = touch.read(pin);
+      emit('TOUCH', 'read', `Touch pin=${pin} raw=${raw}`, { pin, raw });
+      emu.uart_input(new Uint8Array([(raw >> 8) & 0xFF, raw & 0xFF]));
+    } else if (kind === 'D') {
+      const pin = body.charCodeAt(0) & 0x7F;
+      const value = (((body.charCodeAt(1) - 97) & 0xF) << 4) | ((body.charCodeAt(2) - 97) & 0xF);
+      emit('DAC', 'write', `DAC pin=${pin} value=${value}`, { pin, value });
+      dac.write(pin, value);
+    } else if (kind === 'M') {
+      const op = body[0];
+      let lba = 0;
+      for (let i = 1; i <= 8; i++) lba = (lba << 4) | nibbleVal(body[i]);
+      let count = 0;
+      for (let i = 9; i <= 12; i++) count = (count << 4) | nibbleVal(body[i]);
+      count = Math.max(0, Math.min(64, count));
+      if (op === 'R') {
+        emit('SDMMC', 'read', `SDMMC read lba=${lba} count=${count}`, { lba, count });
+        dribbler.push(sdmmc.readSectors(lba >>> 0, count));
+      } else if (op === 'W') {
+        // Chunked writes (see shim_sdmmc_write).
+        const bytes = [];
+        for (let i = 13; i + 1 < body.length; i += 2) {
+          bytes.push((nibbleVal(body[i]) << 4) | nibbleVal(body[i + 1]));
+        }
+        emit('SDMMC', 'write', `SDMMC write lba=${lba} count=${count}`, { lba, count });
+        sdmmc.writeChunk(lba >>> 0, count, new Uint8Array(bytes));
+      }
+                } else if (kind === 'F') {
+                    let off = 0;
+                    for (let i = 0; i < 8; i++) off = (off << 4) | nibbleVal(body[i]);
+                    let count = 0;
+                    for (let i = 8; i < 12; i++) count = (count << 4) | nibbleVal(body[i]);
+                    count = Math.max(0, Math.min(1024, count));
+                    const fr = camera.readBand(off >>> 0, count);
+                    emit('CAM', 'capture', `Camera band off=${off} len=${fr.length}`, { offset: off, len: fr.length });
+                    const out = new Uint8Array(4 + fr.length);
+                    out[0] = (fr.length >>> 24) & 0xFF;
+                    out[1] = (fr.length >>> 16) & 0xFF;
+                    out[2] = (fr.length >>> 8) & 0xFF;
+                    out[3] = fr.length & 0xFF;
+                    out.set(fr, 4);
+                    dribbler.push(out);
+                } else if (kind === 'L') {
+      const rd16 = (o) => (nibbleVal(body[o]) << 12) | (nibbleVal(body[o + 1]) << 8) | (nibbleVal(body[o + 2]) << 4) | nibbleVal(body[o + 3]);
+      const x1 = rd16(0), y1 = rd16(4), x2 = rd16(8), y2 = rd16(12);
+      let len = 0;
+      for (let i = 16; i < 24; i++) len = (len << 4) | nibbleVal(body[i]);
+      len = Math.max(0, Math.min(240 * 240 * 2, len));
+      const bytes = new Uint8Array(len);
+      for (let i = 0, o = 24; i < len && o + 1 < body.length; i++, o += 2) {
+        bytes[i] = (nibbleVal(body[o]) << 4) | nibbleVal(body[o + 1]);
+      }
+      emit('LCD', 'draw', `LCD blit (${x1},${y1})-(${x2},${y2}) ${len}B`, { x1, y1, x2, y2, len });
+      lcdPanel.drawBitmap(x1, y1, x2, y2, bytes);
     }
     streamBuffer = streamBuffer.slice(m.index + frame.length);
   }
+  pump(); // release newly queued reply bytes in the same batch
 }
 
 function decodeHex(s) {
@@ -207,6 +309,7 @@ function decodeHex(s) {
 for (let i = 0; i < steps; i++) {
   const raw = emu.run_batch(50000);
   if (raw) processStream(raw);
+  else pump(); // keep dribbled replies flowing on silent batches
   if (cleanConsole.includes('done') || cleanConsole.includes('ble-done') || cleanConsole.includes('bus-done')) break;
 }
 

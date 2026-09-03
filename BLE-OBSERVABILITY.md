@@ -2,29 +2,38 @@
 
 ## Why this exists
 
-In the WASM build, the emulator's loader intercepts the VHCI symbols
-(`esp_vhci_host_send_packet`, `esp_bt_controller_init/enable`, …) at
-`load_firmware` and routes HCI to its own built-in native BLE controller.
-Consequences (see `PROTOCOLS.md` §4):
+Two complementary observation paths exist, because two different BLE software
+stacks run on the emulator:
 
-- The HCI **byte stream is not observable from JS** — only the firmware's own `Serial`
-  output is visible. The VHCI shim (`core/ble_shims.mjs` + `core/ble_controller.mjs`) is
-  active and required for BLE firmware to run, but its HCI frames do not reach the JS
-  observer.
-- `esp_vhci_host_send_packet()` called from firmware **hangs** the wasm.
-
-So BLE observability here means **watching what the firmware itself prints** — its own
-`Serial` debug log — not the hidden HCI traffic. This is exactly what the tooling below does.
+1. **Direct transport calls are fully observable.** Firmware that calls
+   `esp_vhci_host_send_packet` / `API_vhci_host_send_packet` directly (e.g. the
+   extended `spike/sketches/BLETest`) gets a complete, byte-visible round trip:
+   the command crosses into JS as a UART APC `B` frame (see
+   `BLEController.onHci`), the virtual controller answers, and the event comes
+   back through a **shared-memory channel** — the shim writes a magic
+   rendezvous pair, emits `B`, and polls a flag word; the host discovers the
+   WASM linear-memory mirror by scanning for the magic (once per boot, see
+   `core/ble_mirror.mjs`), writes the event bytes, and sets flag=1. UART RX is
+   deliberately not involved (pushed bytes are unreliable for the guest to
+   poll on this core — measured during development).
+2. **NimBLE host-stack behavior is observed via firmware console.** `BLEDemo`
+   runs healthy through our init shims (no ROM PHY hang) but its transport
+   never transmits in the sim (verified by call-graph + detour analysis), so
+   there are no HCI bytes to show for it — only its own `Serial` log. The
+   tooling below covers both paths.
 
 ## Components
 
 | File | Role |
 |---|---|
-| `spike/observe_ble.mjs` | CLI harness: runs a BLE sketch and renders its console. |
+| `spike/observe_ble.mjs` | CLI harness: runs a BLE sketch and renders its console (+ `--hci` interleaves the raw HCI stream). |
 | `spike/ble_inspector.mjs` | `parseLine()` / `BleInspector` — turn console lines into typed events. |
 | `spike/ble_report.mjs` | `buildReport()` / `formatReport()` / `renderEvent()` — aggregate events into a session report. |
-| `spike/ble_inspector.test.mjs` | 41-assertion regression test for the parser. |
+| `spike/ble_inspector.test.mjs` | 53-assertion regression test for the parser. |
+| `spike/25-verify-hci.mjs` | Headless HCI proof: controller unit + direct round trip x2 + BLEDemo health. |
 | `ble_monitor_api.js` + `app.js` + `index.html` | Web UI "BLE Monitor" panel (live event log + session report). |
+| `core/ble_controller.mjs` | Virtual HCI controller + `onHci` byte-stream observers. |
+| `core/ble_mirror.mjs` | Shared-memory event channel (mirror discovery + delivery). |
 | `spike/peripheral_inspector.mjs` | Generic `PeripheralInspector` — structured event log for ALL protocols (observed from the emulator's own JS callbacks, not console text). |
 | `peripheral_monitor_api.js` + `app.js` + `index.html` | Web UI "Peripheral Monitor" panel — same tooling as BLE Monitor, aggregated across ALL protocols. |
 | `spike/peripheral_inspector.test.mjs` | 20-assertion regression test for the generic inspector. |
@@ -35,6 +44,9 @@ So BLE observability here means **watching what the firmware itself prints** —
 ```bash
 # Default sketch is BLEDemo; also: BLEDetect, BLETest
 node spike/observe_ble.mjs BLEDemo
+
+# Interleave the raw HCI command/event stream (direct-call paths like BLETest)
+node spike/observe_ble.mjs BLETest --hci
 
 # Structured JSON Lines (one JSON object per event)
 node spike/observe_ble.mjs BLEDemo --json
@@ -247,12 +259,15 @@ What each logs:
 - **BLEDetect** — MAC + classification of each VHCI symbol from flash (the firmware's
   weak stubs; the live override is invisible to `rd32`).
 - **BLETest** — MAC + calls `esp_bt_controller_init/enable` (proving the loader returns
-  0) and reports `send_available`; documents that `esp_vhci_host_send_packet` hangs.
+  0) and reports `send_available`; then performs a **direct HCI Reset round
+  trip through both send_packet entries** (`esp_` + `API_`), printing each
+  Command Complete event and `hci-direct ok`. This is the real-firmware proof
+  of the observable HCI path (`spike/25-verify-hci.mjs` asserts it headlessly).
 
 ## Regression test
 
 ```bash
-node spike/ble_inspector.test.mjs   # 41 passed
+node spike/ble_inspector.test.mjs   # 53 passed
 ```
 
 Covers every event type, non-tagged-line rejection, and `BleInspector` accumulation.

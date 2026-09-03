@@ -3,7 +3,7 @@
 [![RISC-V](https://img.shields.io/badge/Architecture-RISC--V%20(RV32)-red.svg)](https://riscv.org/)
 [![WebAssembly](https://img.shields.io/badge/Runtime-WebAssembly%20(WASM)-654FF0.svg)](https://webassembly.org/)
 [![Targets](https://img.shields.io/badge/Targets-ESP32--C3%20%7C%20C6%20%7C%20H2%20%7C%20P4-orange.svg)](https://www.espressif.com/)
-[![Tests](https://img.shields.io/badge/Tests-11%2F11%20Passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-31%2F31%20Passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A blazing-fast, **in-browser WebAssembly emulator** for Espressif **RISC-V 32-bit (RV32)** microcontrollers (**ESP32-C3, ESP32-C6, ESP32-H2, ESP32-P4**). 
@@ -29,17 +29,26 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 | Peripheral / Protocol | Status | Emulated Hardware / Library Support | Mechanism |
 |---|:---:|---|---|
 | **UART0 Console** | ✅ | Serial TX / RX (bidirectional 115200 baud terminal) | Native WASM FIFO + XTerm.js |
-| **GPIO Matrix (22 Pins)** | ✅ | Digital Out + Direction + Interactive Input Injection | Dynamic memory register auto-calibration |
-| **I2C Master** | ✅ | `Wire.h` (SSD1306 OLED 128x64, MPU6050 6-DOF IMU) | HAL shims + APC bridge (`\x1b_W`, `\x1b_R`) |
-| **SPI Master** | ✅ | `SPI.h` (ST7789 Color TFT 240x240 RGB565, Full Duplex) | Chunked RV32 shims (`\x1b_SX`) |
+| **GPIO Matrix (per-chip)** | ✅ | Digital Out + Direction + Interactive Input Injection (C3:22, C6:30, H2:19, P4:56) | Dynamic memory register auto-calibration |
+| **I2C Master** | ✅ | `Wire.h` Arduino HAL (SSD1306 OLED 128x64, MPU6050 6-DOF IMU). Raw IDF `i2c_master_*` runs unpatched | HAL shims + APC bridge (`\x1b_W`, `\x1b_R`) |
+| **SPI Master** | ✅ | `SPI.h` Arduino HAL (ST7789 Color TFT 240x240 RGB565, Full Duplex). Raw IDF `spi_device_*` runs unpatched | Chunked RV32 shims (`\x1b_SX`) |
 | **SD Card (SPI)** | ✅ | `SD.h` (FAT16/FAT32 Filesystem, Disk Image Exporter) | CCITT CRC16 + virtual sector streamer |
 | **RMT (Remote Control)** | ✅ | WS2812 NeoPixel (8x RGB LED Strip Animation) | `espShow` / `neopixelWrite` interceptor |
 | **ADC (Analog Input)** | ✅ | `analogRead()`, `analogReadMilliVolts()`, 12-bit SAR | Virtual ADC model + interactive UI slider |
 | **PWM / LEDC Output** | ✅ | `analogWrite()`, `ledcWrite()`, Live Duty Visualizer | Virtual PWM tracker + glowing progress meter |
 | **I2S Digital Audio** | ✅ | `i2s_write()`, Web Audio API (`AudioContext`), VU Meter | 16-bit stereo PCM streaming (`\x1b_I`) |
 | **TWAI / CAN Bus** | ✅ | `twai_transmit()`, `twai_receive()`, ISO 11898-1 (500 kbps) | Live CAN traffic inspector & packet injector |
-| **Networking (WiFi/ETH)** | ✅ | TCP/IP TAP WebSocket Bridge (`ws://localhost:8765`) | WASM Ethernet MAC + Host TAP bridge |
-| **Bluetooth (BLE)** | 🟡 | Symbol interception hook table | Built-in WASM `load_app_elf` BLE layer |
+| **Touch Pad** | ✅ | `touchRead()`, virtual capacitive pads (touched/released + thresholds) | Virtual touch model (`\x1b_T`) |
+| **DAC Output** | ✅ | `dacWrite()`, 8-bit 0..3.3V | Virtual DAC model (`\x1b_D`) |
+| **SDMMC Host** | ✅ | 4-bit SD bus, sector-level R/W on FAT image | Virtual SDMMC host (`\x1b_M`) |
+| **Camera** | ✅ | Grayscale test-pattern frames with checksum | Virtual camera (`\x1b_F`) |
+| **LCD Panel** | ✅ | RGB565 bitmap blits (240x240) | Virtual LCD panel (`\x1b_L`) |
+| **SPI (IDF driver)** | ✅ | `spi_device_transmit` / polling (pointer + inline data, full duplex) | IDF SPI shims (chunked `\x1b_SX`) |
+| **I2C (IDF v5 + legacy)** | ✅ | `i2c_master_transmit/receive` + `write/read_to_device` (cmd-link API excluded) | IDF I2C shims (`\x1b_W`, `\x1b_R`) |
+| **Timers / WDT / RTC** | ✅ | GPTimer alarms, task watchdog, `esp_timer`/`gettimeofday` | Native silicon model, no shims |
+| **LittleFS / NVS** | ✅ | Flash filesystems + settings storage | Native flash MMIO model |
+| **Networking (WiFi)** | ✅* | Native emulator glue (`set_wifi_config`/`wifi_rx_push`/`wifi_tx_drain`, C3/C6). Ethernet TAP is native-CLI only, no WASM glue | WASM Wi-Fi MAC (no shims by design) |
+| **Bluetooth (BLE)** | ✅/🟡 | Direct VHCI calls: full HCI round trip via JS shims + virtual controller (observable). NimBLE host stack: runs healthy via init shims, host-silent (observe via firmware console) | VHCI trampoline + shared-memory event channel |
 
 ---
 
@@ -154,6 +163,14 @@ The repository includes a comprehensive, automated regression test suite that bo
 ```bash
 # Run all 15 automated firmware test suites
 node spike/18-verify-all.mjs
+
+# Virtualized peripherals (Touch/DAC/SDMMC/Camera/LCD) + HCI, all real firmware
+node spike/24-verify-new.mjs
+node spike/25-verify-hci.mjs
+
+# Native silicon (timers, watchdog, RTC, LittleFS, NVS) + raw IDF drivers
+node spike/26-verify-native.mjs
+node spike/27-verify-idf.mjs
 
 # Run the multi-chip MCU Core SDK verification suites (C6 / H2 / P4)
 node spike/21-verify-c6.mjs

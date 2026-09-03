@@ -1,6 +1,6 @@
 // Comprehensive Verification Suite for esp-emu Virtual Peripherals (I2C, SPI, GPIO, SSD1306, ST7789, NeoPixel, SDCard)
 import { readFileSync } from 'node:fs';
-import { Elf32, planHooks, prepareSpiShims } from '../elf.mjs';
+import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS } from '../shims.mjs';
 import { I2CBus, SPIBus, SSD1306Device, ST7789Device, NeoPixelStrip, MPU6050Device, VirtualSDCard, VirtualADC, VirtualPWM, VirtualI2S, VirtualTWAI } from '../peripherals.mjs';
@@ -23,10 +23,17 @@ async function runTest(testName, binPath, elfPath, customVerify) {
         .concat(hookPlan?.adc?.hooks || [])
         .concat(hookPlan?.pwm?.hooks || [])
         .concat(hookPlan?.i2s?.hooks || [])
-        .concat(hookPlan?.twai?.hooks || []);
+        .concat(hookPlan?.twai?.hooks || [])
+        .concat(hookPlan?.touch?.hooks || [])
+        .concat(hookPlan?.dac?.hooks || [])
+        .concat(hookPlan?.sdmmc?.hooks || [])
+        .concat(hookPlan?.camera?.hooks || [])
+        .concat(hookPlan?.lcd?.hooks || []);
 
     const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
     const effectiveShims = prepareSpiShims(elf, SHIMS);
+    const idfPair = prepareIdfShims(elf, effectiveShims);
+    Object.assign(effectiveShims, idfPair.shims);
 
     const img = new EspImage(flash);
     const patched = [];
@@ -35,6 +42,9 @@ async function runTest(testName, binPath, elfPath, customVerify) {
             img.writeAtVaddr(hooks[fn].addr, shim);
             patched.push(fn);
         }
+    }
+    for (const ex of idfPair.extra) {
+        try { img.writeAtVaddr(ex.addr, ex.bytes); patched.push('idf:' + ex.addr.toString(16)); } catch (_) {}
     }
     if (patched.length > 0) {
         await img.reseal();

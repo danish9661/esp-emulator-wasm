@@ -1,7 +1,12 @@
 // Verification Suite for ESP32-P4 via MCU Core SDK (mirrors spike/20-test-mcu-core.mjs)
 import { readFileSync } from 'node:fs';
 import { ESP32C3 } from '../index.mjs';
-import { VirtualSDCard } from '../peripherals.mjs';
+import { VirtualSDCard, MPU6050Device } from '../peripherals.mjs';
+
+const mpu6050Rig = (m) => {
+    const dev = new MPU6050Device();
+    m.i2c.register(0x68, { i2cWrite: (x) => dev.onWrite(x), i2cRead: (l) => dev.onRead(l) });
+};
 
 const CHIP = 'esp32p4';
 const DIR = 'p4';
@@ -17,6 +22,14 @@ const DEMOS = [
     { name: 'OLEDDemo', markers: ['[OLED] Display initialized successfully!', '[OLED] Splash frame sent.'], setup: null },
     { name: 'ST7789Demo', markers: ['[TFT] ST7789 display initialized successfully!', '[TFT] Color splash screen rendered.'], setup: null },
     { name: 'SDCardDemo', markers: ['[SD] before begin', '[SD] sd-done'], setup: (m) => m.spi.register('sd', new VirtualSDCard()) },
+    { name: 'TouchDemo', markers: ['[TOUCH] touch-done'], setup: null },
+    { name: 'DACDemo', markers: ['[DAC] dac-done'], setup: null },
+    { name: 'SDMMCDemo', markers: ['[SDMMC] sdmmc-done'], setup: null },
+    { name: 'CameraDemo', markers: ['[CAM] cam-done'], setup: null },
+    { name: 'LCDDemo', markers: ['[LCD] lcd-done'], setup: null },
+    { name: 'IDFSPIDemo', markers: ['idf-spi-done'], setup: (m) => m.spi.onTransfer((b) => b ^ 0x55) },
+    { name: 'IDFI2CDemo', markers: ['idf-i2c-done'], setup: mpu6050Rig },
+    { name: 'IDFI2CLegacyDemo', markers: ['idf-i2c-legacy-done'], setup: mpu6050Rig },
 ];
 
 console.log('====================================================');

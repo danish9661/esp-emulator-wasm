@@ -4,6 +4,8 @@
 const APC_REGEX = /\x1b_(.)([\s\S]*?)\x1b\\/;
 
 import { BLEController } from './ble_controller.mjs';
+import { ReplyDribbler } from '../reply_queue.mjs';
+import { BLEMirror } from './ble_mirror.mjs';
 
 export class UARTController {
         constructor(wasmEmu) {
@@ -11,6 +13,23 @@ export class UARTController {
         this.streamBuffer = '';
         this._dataListeners = new Set();
         this.ble = new BLEController();
+        // Paced host->firmware replies (see reply_queue.mjs): large replies
+        // must be dribbled across batches or the HW RX FIFO drops them.
+        this.dribbler = new ReplyDribbler();
+        // Shared-memory HCI event channel (see ble_mirror.mjs). Memory is
+        // bound by ESP32C3 after construction (needs the WASM export).
+        this.bleMirror = new BLEMirror(() => this._memoryBuf());
+        this._memory = null;
+    }
+
+    /** Bind WASM linear memory for the BLE shared-memory channel. */
+    bindMemory(memory) {
+        this._memory = memory;
+    }
+
+    _memoryBuf() {
+        if (!this._memory) throw new Error('no memory bound');
+        return this._memory.buffer;
     }
 
     /**
@@ -44,6 +63,9 @@ export class UARTController {
      * and forwarding clean text to data listeners.
      */
     processOutputChunk(rawChunk, controllers = {}) {
+        // Flush previously queued replies first: a polling shim produces no
+        // console output while it waits, so this must run even for empty chunks.
+        this.dribbler.pump((b) => this.write(b));
         if (!rawChunk) return '';
         this.streamBuffer += rawChunk;
         let cleanText = '';
@@ -79,10 +101,13 @@ export class UARTController {
             }
         }
 
+        // Release newly queued reply bytes (if any) in the same batch.
+        this.dribbler.pump((b) => this.write(b));
+
         return cleanText;
     }
 
-    _routeApcFrame(kind, body, { i2c, spi, neopixel, adc, pwm, i2s, twai, ble }) {
+    _routeApcFrame(kind, body, { i2c, spi, neopixel, adc, pwm, i2s, twai, ble, touch, dac, sdmmc, camera, lcd }) {
         switch (kind) {
             case 'B': { // BLE HCI command -> virtual controller -> event
                 if (!ble) break;
@@ -90,12 +115,16 @@ export class UARTController {
                 const bytes = [];
                 for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                 const event = ble.handle(new Uint8Array(bytes));
-                let out = '\x1b_E';
-                const len = event.length;
-                out += String.fromCharCode(97 + ((len >> 4) & 0xf), 97 + (len & 0xf));
-                for (const b of event) out += String.fromCharCode(97 + ((b >> 4) & 0xf), 97 + (b & 0xf));
-                out += '\x1b\\';
-                this.write(out);
+                // Preferred: shared-memory event channel (reliable, no RX).
+                // Fallback: legacy E-UART reply (dribbled).
+                if (!this.bleMirror.deliver(event)) {
+                    let out = '\x1b_E';
+                    const len = event.length;
+                    out += String.fromCharCode(97 + ((len >> 4) & 0xf), 97 + (len & 0xf));
+                    for (const b of event) out += String.fromCharCode(97 + ((b >> 4) & 0xf), 97 + (b & 0xf));
+                    out += '\x1b\\';
+                    this.dribbler.push(new TextEncoder().encode(out));
+                }
                 break;
             }
             case 'W': { // I2C Write
@@ -202,6 +231,79 @@ export class UARTController {
                     for (let i = 0; i < dlc && 6 + i < body.length; i++) data.push(body.charCodeAt(6 + i) & 0xFF);
                     twai.transmit({ id, extd: (flags & 1) !== 0, rtr: (flags & 2) !== 0, dlc, data });
                 }
+                break;
+            }
+            case 'T': { // Touch pad read: T<pin>
+                if (!touch) break;
+                const pin = body.charCodeAt(0) & 0x7F;
+                const raw = touch.read(pin);
+                this.write(new Uint8Array([(raw >> 8) & 0xFF, raw & 0xFF]));
+                break;
+            }
+            case 'D': { // DAC write: D<pin><vhi><vlo> (nibble-encoded)
+                if (!dac) break;
+                const pin = body.charCodeAt(0) & 0x7F;
+                const value = (((body.charCodeAt(1) - 97) & 0xF) << 4) | ((body.charCodeAt(2) - 97) & 0xF);
+                dac.write(pin, value);
+                break;
+            }
+            case 'M': { // SDMMC sector transfer: M<R|W><lba:8nib><count:4nib>[nibbles...]
+                if (!sdmmc) break;
+                const op = body[0];
+                const nib = (c) => (c.charCodeAt(0) - 97) & 0xF;
+                let lba = 0;
+                for (let i = 1; i <= 8; i++) lba = (lba << 4) | nib(body[i]);
+                let count = 0;
+                for (let i = 9; i <= 12; i++) count = (count << 4) | nib(body[i]);
+                count = Math.max(0, Math.min(64, count));
+                if (op === 'R') {
+                    // 512B+ replies exceed the HW RX FIFO: dribble across batches.
+                    this.dribbler.push(sdmmc.readSectors(lba >>> 0, count));
+                } else if (op === 'W') {
+                    // Chunked writes (see shim_sdmmc_write): reassembled by the
+                    // device; emits 'write' only once the sector is complete.
+                    const bytes = [];
+                    for (let i = 13; i + 1 < body.length; i += 2) {
+                        bytes.push((nib(body[i]) << 4) | nib(body[i + 1]));
+                    }
+                    sdmmc.writeChunk(lba >>> 0, count, new Uint8Array(bytes));
+                }
+                break;
+            }
+            case 'F': { // Camera band: F<off:8nib><len:4nib> -> len + bytes
+                if (!camera) break;
+                const nib = (c) => (c.charCodeAt(0) - 97) & 0xF;
+                let off = 0;
+                for (let i = 0; i < 8; i++) off = (off << 4) | nib(body[i]);
+                let count = 0;
+                for (let i = 8; i < 12; i++) count = (count << 4) | nib(body[i]);
+                count = Math.max(0, Math.min(1024, count));
+                const frame = camera.readBand(off >>> 0, count);
+                const hdr = new Uint8Array(4);
+                hdr[0] = (frame.length >>> 24) & 0xFF;
+                hdr[1] = (frame.length >>> 16) & 0xFF;
+                hdr[2] = (frame.length >>> 8) & 0xFF;
+                hdr[3] = frame.length & 0xFF;
+                const out = new Uint8Array(4 + frame.length);
+                out.set(hdr, 0);
+                out.set(frame, 4);
+                // Band replies are small (<=1KB); dribble anyway (HW RX FIFO).
+                this.dribbler.push(out);
+                break;
+            }
+            case 'L': { // LCD panel blit: L<x1:4><y1:4><x2:4><y2:4><len:8><nibbles...>
+                if (!lcd) break;
+                const nib = (c) => (c.charCodeAt(0) - 97) & 0xF;
+                const rd16 = (o) => (nib(body[o]) << 12) | (nib(body[o + 1]) << 8) | (nib(body[o + 2]) << 4) | nib(body[o + 3]);
+                const x1 = rd16(0), y1 = rd16(4), x2 = rd16(8), y2 = rd16(12);
+                let len = 0;
+                for (let i = 16; i < 24; i++) len = (len << 4) | nib(body[i]);
+                len = Math.max(0, Math.min(240 * 240 * 2, len));
+                const bytes = new Uint8Array(len);
+                for (let i = 0, o = 24; i < len && o + 1 < body.length; i++, o += 2) {
+                    bytes[i] = (nib(body[o]) << 4) | nib(body[o + 1]);
+                }
+                lcd.drawBitmap(x1, y1, x2, y2, bytes);
                 break;
             }
         }

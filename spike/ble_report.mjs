@@ -198,7 +198,11 @@ export function renderEvent(ev) {
     case 'test.send_available':text = 'send_available ' + ev.phase + ': ' + ev.available; break;
     case 'test.init':          text = 'init returned: ' + ev.returned; break;
     case 'test.enable':        text = 'enable returned: ' + ev.returned; break;
-    case 'test.send_hci_reset':text = 'sending HCI reset (send_available=' + ev.available + ')'; break;
+    case 'test.send_hci_reset':text = 'sending HCI reset' + (ev.via ? ' via ' + ev.via : '') + ' (send_available=' + ev.available + ')'; break;
+    case 'test.send_returned':  text = 'send returned: ' + ev.returned; break;
+    case 'test.hci_evt':       text = 'hci-evt-' + ev.which + ' len=' + ev.len + ': ' + ev.bytes; break;
+    case 'test.hci_reset':     text = 'hci-reset-' + ev.which + ' ' + (ev.ok ? 'ok' : 'FAIL'); break;
+    case 'test.hci_direct':    text = 'hci-direct ' + (ev.ok ? 'ok' : 'FAIL'); break;
     case 'test.done':          text = 'done'; break;
     case 'test.heartbeat':     text = 'heartbeat loop=' + ev.loop + ' send_available=' + ev.sendAvailable; break;
     case 'test.other':         text = ev.text; break;

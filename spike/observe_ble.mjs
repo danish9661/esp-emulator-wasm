@@ -7,7 +7,12 @@
  * (with --json) a stream of structured events (JSON Lines). The native BLE
  * controller is treated as a black box; we only watch what the firmware reports.
  *
- *   node spike/observe_ble.mjs [Sketch] [--json]
+ * With --hci, the virtual HCI controller's raw command/event byte stream (now
+ * fully observable from JS via BLEController.onHci) is interleaved on the
+ * timeline as [HCI] lines, so init sequences (Reset, Set_Event_Mask, LE ops)
+ * are visible without extra firmware logging.
+ *
+ *   node spike/observe_ble.mjs [Sketch] [--json] [--hci]
  *     Sketch defaults to BLEDemo (also: BLEDetect, BLETest)
  */
 import { readFileSync } from 'node:fs';
@@ -18,6 +23,7 @@ import { buildReport, formatReport } from './ble_report.mjs';
 const args = process.argv.slice(2);
 const json = args.includes('--json');
 const report = args.includes('--report');
+const showHci = args.includes('--hci');
 const SKETCH = args.find(a => !a.startsWith('--')) || 'BLEDemo';
 const DIR = `spike/sketches/${SKETCH}/build/esp32.esp32.esp32c3`;
 
@@ -29,6 +35,24 @@ await mcu.loadFirmware(flash, elf);
 
 const inspector = new BleInspector();
 let lastState = null;
+let hciCount = 0;
+
+function hex(bytes) {
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join(' ');
+}
+
+if (showHci) {
+  mcu.uart0.ble.onHci((msg) => {
+    hciCount++;
+    if (json) {
+      console.log(JSON.stringify({ type: 'hci.' + msg.dir, ...msg }));
+    } else if (msg.dir === 'cmd') {
+      console.log(`[HCI ----] > CMD opcode=0x${msg.opcode.toString(16).padStart(4, '0')} (${msg.name}) ${hex(msg.bytes.slice(1))}`);
+    } else {
+      console.log(`[HCI ----] < EVT ${hex(msg.bytes.slice(1))}`);
+    }
+  });
+}
 
 function renderHuman(ev) {
   const tag = ev.type.split('.')[0].toUpperCase();
@@ -57,7 +81,11 @@ function renderHuman(ev) {
     case 'test.send_available':text = `send_available ${ev.phase}: ${ev.available}`; break;
     case 'test.init':          text = `init returned: ${ev.returned}`; break;
     case 'test.enable':        text = `enable returned: ${ev.returned}`; break;
-    case 'test.send_hci_reset':text = `sending HCI reset (send_available=${ev.available})`; break;
+    case 'test.send_hci_reset':text = `sending HCI reset${ev.via ? ' via ' + ev.via : ''} (send_available=${ev.available})`; break;
+    case 'test.send_returned':  text = `send returned: ${ev.returned}`; break;
+    case 'test.hci_evt':       text = `hci-evt-${ev.which} len=${ev.len}: ${ev.bytes}`; break;
+    case 'test.hci_reset':     text = `hci-reset-${ev.which} ${ev.ok ? 'ok' : 'FAIL'}`; break;
+    case 'test.hci_direct':    text = `hci-direct ${ev.ok ? 'ok' : 'FAIL'}`; break;
     case 'test.done':          text = 'done'; break;
     case 'test.heartbeat':     text = `heartbeat loop=${ev.loop} send_available=${ev.sendAvailable}`; break;
     case 'test.other':         text = ev.text; break;
