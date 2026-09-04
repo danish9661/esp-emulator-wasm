@@ -113,7 +113,7 @@ silicon (no shim needed), not explicitly regression-tested
 | MPU6050 IMU (I2C) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual device `0x68` | 18-verify #2 |
 | SPI (IDF driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `spi_bus_*` noops + `spi_device_transmit`/`polling` full-duplex shims (pointer + `tx_data` paths; cmd/addr phases not modeled) | 27-verify #1 |
 | I2C (IDF v5 driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `i2c_new_master_bus`/`add_device` (handle carries addr) + transmit/receive/transmit_receive/probe | 27-verify #2 |
-| I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops; cmd-link API not emulated) | 27-verify #3 |
+| I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops) and cmd-link `i2c_master_cmd_begin` (in-shim START/WRITE/READ/STOP list walk, W-merge + read-run re-walk) | 27-verify #3 |
 | Touch pad (`touchRead`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-touch API + APC `T` frames | 24-verify #1 (C3; touch spot-checked C6/H2/P4) |
 | DAC output (`dacWrite`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-dac API + APC `D` frames | 24-verify #2 |
 | SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |
@@ -282,4 +282,4 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 | ✅ Implemented & verified | 28 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (C3), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, Timers, WDT, RTC, LittleFS, NVS |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
 | ❌ Native CLI only, no WASM glue | 3 | 802.15.4, Ethernet, USB Serial/JTAG |
-| ❌ Not supported | 2 | P4 hardware DAC, legacy I2C command-link API |
+| ❌ Not supported | 1 | P4 hardware DAC |

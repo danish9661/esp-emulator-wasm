@@ -2,9 +2,10 @@
 // idf-spi (spi_bus_initialize/add_device, spi_device_transmit/polling_transmit
 // with pointer + inline tx_data paths), idf-i2c-v5 (transmit/receive/
 // transmit_receive/probe) and idf-i2c-legacy convenience APIs
-// (write_to/read_from_device). Legacy command-link API
-// (i2c_master_cmd_begin) is intentionally NOT emulated; v5 and legacy live in
-// separate sketches because real IDF aborts when both drivers initialize.
+// (write_to/read_from_device) plus the legacy command-link API
+// (i2c_master_cmd_begin, executed in-shim by walking the START/WRITE/READ/
+// STOP node list). v5 and legacy live in separate sketches because real IDF
+// aborts when both drivers initialize.
 // Run: node spike/27-verify-idf.mjs
 import { readFileSync } from 'node:fs';
 import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from '../elf.mjs';
@@ -148,12 +149,16 @@ await runTest('IDFI2CDemo (idf-i2c-v5)', 'samples/idfi2c_demo.merged.bin', 'samp
     }
 });
 
-// 3. IDF legacy I2C convenience APIs against the virtual 0x68 MPU.
+// 3. IDF legacy I2C convenience APIs + command-link API against the virtual
+// 0x68 MPU (phase0 write_to/read_from_device, phase1 START+WRITE+START+
+// WRITE+READ(n-1)+READ(1)+STOP via i2c_master_cmd_begin).
 await runTest('IDFI2CLegacyDemo (idf-i2c-legacy)', 'samples/idfi2c_legacy_demo.merged.bin', 'samples/idfi2c_legacy_demo.elf', async ({ stepBatches, getConsole }) => {
     stepBatches(1000);
     const cons = getConsole();
     const matched = cons.includes('legacy wr=0 rd=0') &&
         cons.includes('DEADBE') &&
+        cons.includes('cmdlink rc=0 got=DEADBE') &&
+        cons.includes('idf-i2c-cmd-done') &&
         cons.includes('idf-i2c-legacy-done');
     console.log(`IDF legacy I2C: ${matched ? 'PASS' : 'FAIL'}`);
     if (!matched) {

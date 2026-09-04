@@ -199,7 +199,8 @@ export const HOOK_TARGETS = {
     ],
     'idf-i2c-legacy': [
         'i2c_master_write_to_device', 'i2c_master_read_from_device',
-        'i2c_master_cmd_begin', 'i2c_param_config', 'i2c_driver_install',
+        'i2c_master_cmd_begin', 'i2c_master_cmd_begin_static',
+        'i2c_param_config', 'i2c_driver_install',
     ],
     'idf-spi': [
         'spi_device_transmit', 'spi_device_polling_transmit',

@@ -1,7 +1,8 @@
 // Raw ESP-IDF legacy I2C test (NO Arduino Wire.h): i2c_param_config,
 // i2c_driver_install, i2c_master_write_to_device, i2c_master_read_from_device
-// against the virtual 0x68 MPU device.
-// NOTE: the legacy command-link API (i2c_master_cmd_begin) is NOT emulated.
+// and the legacy command-link API (i2c_master_cmd_begin, executed in-shim by
+// walking the START/WRITE/READ/STOP node list) against the virtual 0x68 MPU
+// device.
 // Kept in a separate sketch from IDFI2CDemo: real IDF aborts when the v5 and
 // legacy drivers are both initialized (check_i2c_driver_conflict).
 #include <Arduino.h>
@@ -40,6 +41,27 @@ void loop() {
     phase = ok ? 1 : 99;
     delay(50);
   } else if (phase == 1) {
+    // Legacy command-link API: START + addr + reg, repeated START + addr|R,
+    // multi-byte read, STOP — executed by the loader's cmd_begin shim.
+    uint8_t buf[3] = {0, 0, 0};
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (DEV_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, 0x3B, true);
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (DEV_ADDR << 1) | I2C_MASTER_READ, true);
+    i2c_master_read(cmd, buf, 3, I2C_MASTER_LAST_NACK);
+    i2c_master_stop(cmd);
+    esp_err_t r = i2c_master_cmd_begin(I2C_NUM_0, cmd, 50);
+    i2c_cmd_link_delete(cmd);
+    bool ok = (r == ESP_OK) &&
+              buf[0] == 0xDE && buf[1] == 0xAD && buf[2] == 0xBE;
+    Serial.printf("[IDFI2C] cmdlink rc=%d got=%02X%02X%02X %s\n",
+                  (int)r, buf[0], buf[1], buf[2], ok ? "OK" : "FAIL");
+    if (ok) Serial.println("[IDFI2C] idf-i2c-cmd-done");
+    phase = ok ? 2 : 99;
+    delay(50);
+  } else if (phase == 2) {
     Serial.println("[IDFI2C] idf-i2c-legacy-done");
     delay(500);
   } else {

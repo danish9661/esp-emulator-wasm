@@ -656,6 +656,180 @@ def shim_idf_spi_xfer():
     p += [addi(10, 0, 0), _ret()]                 # return ESP_OK
     return p
 
+def add_r(rd, rs1, rs2):
+    return (rs2 & 0x1F) << 20 | (rs1 & 0x1F) << 15 | 0x0 << 12 | (rd & 0x1F) << 7 | 0x33
+
+def shim_idf_i2c_cmd_begin():
+    # esp_err_t i2c_master_cmd_begin(port, cmd_handle, ticks_to_wait).
+    # a0 = port (ignored: single virtual bus, like the v5 shims),
+    # a1 = cmd handle, a2 = timeout ticks (ignored: executes instantly).
+    # Walks the REAL command list built by i2c_master_{start,write,read,stop}
+    # (20B nodes: 16B desc + next ptr at +16; head at handle+0) and executes
+    # it as standard W/R APC frames — the same wire format as the idf-v5
+    # shims, so every host parser works unchanged. Returns ESP_OK (0);
+    # null handle and unknown node modes return 1.
+    # Node desc (16B), reverse-engineered from the builder disassembly:
+    #   w0: mode tag is (w0>>11): 6=start, 2=stop, 1=write, 3=read
+    #   w1: write: payload byte if w3==1 else data pointer (multi-write with
+    #       len==1 tail-calls write_byte, so multi always has len>=2);
+    #       read: dest pointer always
+    #   w2: 0
+    #   w3: 1 (single) or byte count (multi)
+    # Bus-faithful execution: consecutive WRITE nodes merge into one W frame
+    # (the header goes out at the first payload byte, so addr-only phases
+    # emit nothing; the first write byte after START/STOP is the stripped
+    # address). A consecutive READ run (start remembered in a7) is RE-WALKED
+    # twice at flush: first to sum lengths, then one R frame whose replies
+    # scatter straight back into each node dest. Re-walking keeps all state
+    # in firmware-owned nodes. Run replies are capped at 127B per frame by
+    # the 7-bit length byte (same limit as the v5 R shim).
+    # Regs: t0=UART base; a1=node cursor; a3=addr|0xFF(none); a4=hdr-open;
+    # a7=read-run start|0; a6=saved INT_ENA; rest scratch. Frame: 16B stack
+    # ([ra][single-byte slot]). Call discipline: single jal depth only —
+    # SYNC falls through into FRUN (no link), CLOSEW/FRUN are leaves.
+    p = [lui(5, 0x60000)]
+    p += [lw(16, 5, 0x0C), sw(0, 5, 0x0C)]
+    p += [addi(2, 2, -16), sw(1, 2, 0)]
+    p += [addi(13, 0, 0xFF)]
+    p += [addi(14, 0, 0)]
+    p += [addi(17, 0, 0)]
+    p += [beq(11, 0, 0)];  f_nullh = len(p) - 1
+    p += [lw(11, 11, 0)]
+    loop = len(p)
+    p += [beq(11, 0, 0)];  f_done = len(p) - 1
+    p += [lw(6, 11, 0), srli(6, 6, 11)]
+    p += [addi(7, 0, 6), beq(6, 7, 0)];  f_start = len(p) - 1
+    p += [addi(7, 0, 2), beq(6, 7, 0)];  f_stop = len(p) - 1
+    p += [addi(7, 0, 1), beq(6, 7, 0)];  f_write = len(p) - 1
+    p += [addi(7, 0, 3), beq(6, 7, 0)];  f_read = len(p) - 1
+    p += [0];  j_fail = len(p) - 1
+    p[f_start] = beq(6, 7, 4 * (len(p) - f_start))
+    p += [0];  j_sync_s = len(p) - 1
+    p += [addi(13, 0, 0xFF)]
+    p += [0];  j_next_s = len(p) - 1
+    p[f_stop] = beq(6, 7, 4 * (len(p) - f_stop))
+    p += [0];  j_sync_t = len(p) - 1
+    p += [0];  j_next_t = len(p) - 1
+    p[f_write] = beq(6, 7, 4 * (len(p) - f_write))
+    p += [0];  j_frun_w = len(p) - 1
+    p += [lw(12, 11, 12)]
+    p += [lw(28, 11, 4)]
+    p += [addi(29, 0, 1), bne(12, 29, 0)];  f_multi = len(p) - 1
+    p += [sb(28, 2, 4), addi(28, 2, 4)]
+    p[f_multi] = bne(12, 29, 4 * (len(p) - f_multi))
+    wloop = len(p)
+    p += [beq(12, 0, 0)];  f_wend = len(p) - 1
+    p += [lbu(29, 28, 0)]
+    p += [addi(31, 0, 0xFF), bne(13, 31, 0)];  f_have = len(p) - 1
+    p += [srli(13, 29, 1)]
+    p += [0];  j_emit_end = len(p) - 1
+    p[f_have] = bne(13, 31, 4 * (len(p) - f_have))
+    p += [bne(14, 0, 0)];  f_hdrok = len(p) - 1
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 95), sw(7, 5, 0)]
+    p += [addi(7, 0, 87), sw(7, 5, 0)]
+    p += [andi(7, 13, 0x7F), sw(7, 5, 0)]
+    p += [addi(14, 0, 1)]
+    p[f_hdrok] = bne(14, 0, 4 * (len(p) - f_hdrok))
+    p += [srli(7, 29, 4), andi(7, 7, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    p += [andi(7, 29, 15), addi(7, 7, 97), sw(7, 5, 0)]
+    emit_end = len(p)
+    p[j_emit_end] = jal(0, -4 * (j_emit_end - emit_end))
+    p += [addi(28, 28, 1), addi(12, 12, -1)]
+    p += [bne(12, 0, 0)];  b_wloop = len(p) - 1
+    p[b_wloop] = bne(12, 0, -4 * (b_wloop - wloop))
+    p[f_wend] = beq(12, 0, 4 * (len(p) - f_wend))
+    p += [0];  j_next_w = len(p) - 1
+    p[f_read] = beq(6, 7, 4 * (len(p) - f_read))
+    p += [0];  j_closew_r = len(p) - 1
+    p += [bne(17, 0, 0)];  f_have_run = len(p) - 1
+    p += [addi(17, 11, 0)]
+    p[f_have_run] = bne(17, 0, 4 * (len(p) - f_have_run))
+    p += [0];  j_next_r = len(p) - 1
+    nxt = len(p)
+    p += [lw(11, 11, 16)]
+    p += [0];  b_loop = len(p) - 1
+    p[b_loop] = jal(0, -4 * (b_loop - loop))
+    done = len(p)
+    p[f_done] = beq(11, 0, 4 * (done - f_done))
+    p += [0];  j_sync_d = len(p) - 1
+    p += [lw(1, 2, 0), addi(2, 2, 16)]
+    p += [sw(16, 5, 0x0C)]
+    p += [addi(10, 0, 0), _ret()]
+    fail = len(p)
+    p[j_fail] = jal(0, 4 * (fail - j_fail))
+    p[f_nullh] = beq(11, 0, 4 * (fail - f_nullh))
+    p += [lw(1, 2, 0), addi(2, 2, 16)]
+    p += [sw(16, 5, 0x0C)]
+    p += [addi(10, 0, 1), _ret()]
+    sync = len(p)
+    p[j_sync_s] = jal(1, 4 * (sync - j_sync_s))
+    p[j_sync_t] = jal(1, 4 * (sync - j_sync_t))
+    p[j_sync_d] = jal(1, 4 * (sync - j_sync_d))
+    p += [beq(14, 0, 0)];  c_sync = len(p) - 1
+    p += [addi(7, 0, 27), sw(7, 5, 0), addi(7, 0, 92), sw(7, 5, 0)]
+    p[c_sync] = beq(14, 0, 4 * (len(p) - c_sync))
+    p += [addi(14, 0, 0)]
+    frun = len(p)
+    p[j_frun_w] = jal(1, 4 * (frun - j_frun_w))
+    p += [beq(17, 0, 0)];  f_norun = len(p) - 1
+    p += [addi(28, 17, 0)]
+    p += [addi(30, 17, 0)]
+    p += [addi(17, 0, 0)]
+    p += [addi(15, 0, 0)]
+    fsum = len(p)
+    p += [beq(28, 0, 0)];  f_send = len(p) - 1
+    p += [lw(6, 28, 0), srli(6, 6, 11)]
+    p += [addi(7, 0, 3), bne(6, 7, 0)];  f_send2 = len(p) - 1
+    p += [lw(6, 28, 12)]
+    p += [add_r(15, 15, 6)]
+    p += [lw(28, 28, 16)]
+    p += [0];  b_fsum = len(p) - 1
+    p[b_fsum] = jal(0, -4 * (b_fsum - fsum))
+    p[f_send] = beq(28, 0, 4 * (len(p) - f_send))
+    p[f_send2] = bne(6, 7, 4 * (len(p) - f_send2))
+    p += [beq(15, 0, 0)];  f_empty = len(p) - 1
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 95), sw(7, 5, 0)]
+    p += [addi(7, 0, 82), sw(7, 5, 0)]
+    p += [andi(7, 13, 0x7F), sw(7, 5, 0)]
+    p += [andi(7, 15, 0x7F), sw(7, 5, 0)]
+    p += [addi(7, 0, 27), sw(7, 5, 0), addi(7, 0, 92), sw(7, 5, 0)]
+    p[f_empty] = beq(15, 0, 4 * (len(p) - f_empty))
+    p += [addi(28, 30, 0)]
+    fscat = len(p)
+    p += [beq(15, 0, 0)];  f_scat = len(p) - 1
+    p += [lw(6, 28, 0), srli(6, 6, 11)]
+    p += [addi(7, 0, 3), bne(6, 7, 0)];  f_scat2 = len(p) - 1
+    p += [lw(29, 28, 4), lw(30, 28, 12)]
+    p += [lw(28, 28, 16)]
+    p += [beq(30, 0, 0)];  f_skip0 = len(p) - 1
+    p[f_skip0] = beq(30, 0, 4 * (fscat - f_skip0))
+    fbyte = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, 0)];  b_spoll = len(p) - 1
+    p[b_spoll] = beq(7, 0, -4 * (b_spoll - fbyte))
+    p += [lw(7, 5, 0), sb(7, 29, 0)]
+    p += [addi(29, 29, 1), addi(30, 30, -1), addi(15, 15, -1)]
+    p += [bne(30, 0, 0)];  b_fbyte = len(p) - 1
+    p[b_fbyte] = bne(30, 0, -4 * (b_fbyte - fbyte))
+    p += [0];  b_scat = len(p) - 1
+    p[b_scat] = jal(0, -4 * (b_scat - fscat))
+    p[f_scat] = beq(15, 0, 4 * (len(p) - f_scat))
+    p[f_scat2] = bne(6, 7, 4 * (len(p) - f_scat2))
+    p[f_norun] = beq(17, 0, 4 * (len(p) - f_norun))
+    p += [_ret()]
+    closew = len(p)
+    p[j_closew_r] = jal(1, 4 * (closew - j_closew_r))
+    p += [beq(14, 0, 0)];  c_closew = len(p) - 1
+    p += [addi(7, 0, 27), sw(7, 5, 0), addi(7, 0, 92), sw(7, 5, 0)]
+    p[c_closew] = beq(14, 0, 4 * (len(p) - c_closew))
+    p += [addi(14, 0, 0)]
+    p += [_ret()]
+    for j in (j_next_s, j_next_t, j_next_w, j_next_r):
+        p[j] = jal(0, -4 * (j - nxt))
+    return p
+
 def bltu(rs1, rs2, offset):
     imm12 = (offset >> 12) & 1
     imm10_5 = (offset >> 5) & 0x3F

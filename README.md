@@ -44,7 +44,7 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 | **Camera** | ✅ | Grayscale test-pattern frames with checksum | Virtual camera (`\x1b_F`) |
 | **LCD Panel** | ✅ | RGB565 bitmap blits (240x240) | Virtual LCD panel (`\x1b_L`) |
 | **SPI (IDF driver)** | ✅ | `spi_device_transmit` / polling (pointer + inline data, full duplex) | IDF SPI shims (chunked `\x1b_SX`) |
-| **I2C (IDF v5 + legacy)** | ✅ | `i2c_master_transmit/receive` + `write/read_to_device` (cmd-link API excluded) | IDF I2C shims (`\x1b_W`, `\x1b_R`) |
+| **I2C (IDF v5 + legacy)** | ✅ | `i2c_master_transmit/receive` + `write/read_to_device` + cmd-link `i2c_master_cmd_begin` | IDF I2C shims (`\x1b_W`, `\x1b_R`) |
 | **Timers / WDT / RTC** | ✅ | GPTimer alarms, task watchdog, `esp_timer`/`gettimeofday` | Native silicon model, no shims |
 | **LittleFS / NVS** | ✅ | Flash filesystems + settings storage | Native flash MMIO model |
 | **Networking (WiFi)** | ✅* | Native emulator glue (`set_wifi_config`/`wifi_rx_push`/`wifi_tx_drain`, C3/C6). Ethernet TAP is native-CLI only, no WASM glue | WASM Wi-Fi MAC (no shims by design) |
