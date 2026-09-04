@@ -16,11 +16,16 @@ stacks run on the emulator:
    `core/ble_mirror.mjs`), writes the event bytes, and sets flag=1. UART RX is
    deliberately not involved (pushed bytes are unreliable for the guest to
    poll on this core — measured during development).
-2. **NimBLE host-stack behavior is observed via firmware console.** `BLEDemo`
-   runs healthy through our init shims (no ROM PHY hang) but its transport
-   never transmits in the sim (verified by call-graph + detour analysis), so
-   there are no HCI bytes to show for it — only its own `Serial` log. The
-   tooling below covers both paths.
+2. **The NimBLE host stack is fully live on ESP32-C3.** `BLEDemo` boots the
+   real NimBLE host task in-sim: Reset → version/commands/features →
+   sync → adv setup → `LE_Set_Adv_Enable`, all as observable `B` frames
+   answered by the virtual controller (`--hci` shows the whole timeline).
+   This works after four load-time fixes (see "NimBLE host bring-up" below);
+   before them the stack was host-silent. C6/H2 Arduino builds use a
+   different transport (NimBLE Link Layer `hci_transport_*` + ROM `r_ble_ll_*`
+   — no VHCI symbols at all) that needs radio emulation upstream does not
+   provide, so C6/H2/C5 BLE remains out of scope. The tooling below covers
+   both paths.
 
 ## Components
 
@@ -271,3 +276,36 @@ node spike/ble_inspector.test.mjs   # 53 passed
 ```
 
 Covers every event type, non-tagged-line rejection, and `BleInspector` accumulation.
+
+## NimBLE host bring-up (C3): why the stack transmits
+
+Before these fixes the NimBLE host never sent a byte (`BLEDemo` stayed
+host-silent though "healthy" — every status print is unconditional, and
+`NimBLEDevice::init()`'s bool return is ignored by the sketch). Four
+load-time defects, found by disassembling the Arduino image plus guest-RAM
+reads (`vhci_send_sem`, `ble_hs_sync_state`, `m_synced`, task handles):
+
+1. **`registerCb` must return ESP_OK.** `esp_nimble_hci_init` treats any
+   nonzero return as failure and aborts NimBLE startup silently (before
+   `nimble_port_init`, so no host task, no event queue, no sync). The old
+   stub left A0 holding the callback pointer (nonzero). Now returns 0.
+2. **The send shim must re-give the VHCI semaphore.** On hardware the
+   controller frees a buffer per packet (ISR → `controller_rcv_pkt_ready`
+   gives the sem); with no radio the transport blocks on its *second*
+   command forever. The shim gives after each send (infinite buffers).
+3. **The event callback may be a struct, not a function.** Direct callers
+   (BLETest) register `on_hci_evt(data)`; the stack
+   (`esp_nimble_hci_init`) registers `&vhci_host_cb` =
+   `{notify_send_available, notify_recv}`. The old shim `jalr`ed into the
+   struct as code. Now it sniffs the pointer's top-12 bits (code =
+   `0x400`/`0x420`/`0x403`, else struct) and calls `recv(data, len)`.
+4. **The virtual controller must answer with full-length data.** The host
+   length-checks every Command Complete (`bha_params_len != rsp_len` →
+   "Received status 0" + scheduled reset = infinite Reset loop). Fixed:
+   `0x1002` claims all commands, `0x1003` returns 8 feature bytes,
+   `0xfc01` (ESP vendor random-address) returns a static-random address,
+   `0x2018` (LE_Rand) returns 8 bytes.
+
+Result: ~24 HCI commands from Reset through `LE_Set_Adv_Enable`, zero
+NimBLE errors, `m_synced`/`m_initialized` set, sketch heartbeats.
+`spike/25-verify-hci.mjs` asserts stack Reset + AdvEnable frames headlessly.

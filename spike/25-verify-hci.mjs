@@ -68,25 +68,33 @@ async function runSketch(sketch, batches = 400) {
     }
 }
 
-// 2. BLEDemo: init path live (patched VHCI shims), firmware healthy.
+// 2. BLEDemo: NimBLE host stack fully live in-sim (C3): the host task
+// transmits real HCI (Reset … adv setup) through our VHCI shims, the virtual
+// controller answers, the stack syncs (m_synced/m_initialized), advertising
+// enables, and the sketch heartbeats. Fixed 2026-09: registerCb must return
+// ESP_OK (else esp_nimble_hci_init aborts init silently), the send shim must
+// re-give the VHCI sem (no radio ISR does), the event callback may be a
+// struct (deref recv at +4, needs real len via mirror), and the controller
+// must answer 0x1002/0x1003/0xfc01/0x2018 with full-length data (else the
+// host length-check schedules endless resets).
 // NOTE (esp-emu 0.41): virtual time now flows ~1:1 with cycles (0.39
 // fast-forwarded through FreeRTOS delays ~100x: heartbeat at batch 75).
 // The heartbeat needs 50x delay(100) = ~505M cycles, so BLEDemo runs 6000
 // batches here. Wall cost is seconds (the WASM core is fast).
-//    (NimBLE's own transport never transmits in the sim — its semaphore take
-//    predates our init and the host never starts — so HCI bytes here come only
-//    from direct calls. Firmware-console observation still applies.)
 {
     console.log('\n========================================');
-    console.log('TEST: BLEDemo health via patched init path');
+    console.log('TEST: BLEDemo NimBLE host live (init + HCI + advertise)');
     console.log('========================================');
-    const { patched, consoleText } = await runSketch('BLEDemo', 6000);
+    const { patched, hci, consoleText } = await runSketch('BLEDemo', 6000);
     const blePatched = patched.filter(p => /vhci|bt_controller/i.test(p));
+    const stackResets = hci.filter(m => m.dir === 'cmd' && m.opcode === 0x0c03).length;
+    const advEnable = hci.filter(m => m.dir === 'cmd' && m.opcode === 0x200a).length;
     const ok = blePatched.length >= 5 &&
+        stackResets >= 1 && advEnable >= 1 &&
         consoleText.includes('init done') &&
         consoleText.includes('advertising started') &&
         consoleText.includes('heartbeat');
-    console.log(`VHCI shims (${blePatched.length}) + init/advertise/heartbeat: ${ok ? 'PASS' : 'FAIL'}`);
+    console.log(`VHCI shims (${blePatched.length}) + stack Reset x${stackResets} + AdvEnable x${advEnable} + heartbeat: ${ok ? 'PASS' : 'FAIL'}`);
     if (!ok) {
         console.log('Console tail:', consoleText.slice(-300));
         throw new Error('BLEDemo health test failed');

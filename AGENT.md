@@ -136,7 +136,7 @@ async function testTargetChip(chipName, binPath, elfPath) {
 > - **Mask UART0 RX interrupts across every reply-polling shim** (`lw saved,0x0C(t0)` / `sw x0,0x0C(t0)` at entry, restore before each `ret`). 0.41 delivers UART RX interrupts promptly, so the Arduino Serial RX ISR steals `uart_input` reply bytes mid-poll and the shim spins forever (proven: guest parked in `spiTransferByteNL` poll, alternating with `_global_interrupt_handler`, freed by manual injection). TX-only shims need no mask. Tight funcs (88B `spiTransferByteNL`, 64B `spiWriteByteNL`) are covered by the existing `pair()` JAL-into-roomy-twin mechanism in `elf.mjs`.
 > - **Virtual time is ~1:1 with cycles now.** 0.39 fast-forwarded through FreeRTOS delays ~100x (BLEDemo heartbeat at batch 75); on 0.41 the same heartbeat needs ~5050 batches. Budget batches for multi-second waits (BLEDemo health runs 6000).
 > - **0.41 multi-instance runs flake upstream** (identical patched images boot differently per process; C6 SPI/I2C-heavy demos fail ~1/3 runs, C3/H2/P4/C5 stable). `spike/21/22/23-verify-*.mjs` retry each demo with a fresh instance up to 3x and log retries; a real regression fails 3/3 loudly.
-> - **C5 gaps are silicon**: no TWAI controller (TWAIDemo doesn't link), no VHCI host interface (BLETest doesn't link; BLEDemo/NimBLE crashes without a radio model). C5 runs the other 17 demos.
+> - **C5 gaps are silicon**: no TWAI controller (TWAIDemo doesn't link), no VHCI host interface (BLETest doesn't link; BLEDemo/NimBLE crashes without a radio model). C5 runs the other 17 demos + 5 native (Timer/WDT/RTC/LittleFS/NVS).
 > - **S31 is toolchain-blocked**: no Arduino core and no ESP-IDF here can target S31, so no firmware samples exist. Wired: target acceptance, embedded ROM (`has_default_rom`), chip-ID gate (S31 = `0x20`), UI dropdown + 60-GPIO grid, `spike/29-verify-s31.mjs` ROM-banner smoke via a `mkimg.py`-forged chip-0x20 probe image.
 
 > **Multi-chip SPI bus pointer**: the `spiStartBus` shim returns an opaque DRAM pointer that the app stores SPI state into (fields at +4, +16, etc.). The C3 pointer `0x3FC90000` is **unmapped on C6/H2/P4**, so `relocateShimsForChip` rewrites the shim's `lui` from `SPI_BUS_BASE` (see `shims.mjs`): C3=`0x3fc90000`, C6/H2=`0x40810000`, P4=`0x4ff40000`. Probing an unmapped base makes SPIDemo fault on `sw s2,16(s3)` inside `spiFrequencyToClockDiv`.
@@ -159,7 +159,7 @@ async function testTargetChip(chipName, binPath, elfPath) {
 | **SDMMC host** | ✅ | `emuSdmmcReadSectors`, `emuSdmmcWriteSectors` (sketch API) | APC sector frames (`\x1b_M`) |
 | **Camera** | ✅ | `emuCameraFbGet` (sketch API) | APC frame request (`\x1b_F`) |
 | **LCD panel** | ✅ | `emuLcdDraw` (sketch API) | APC blit frames (`\x1b_L`) |
-| **BLE (Bluetooth LE)** | ✅ direct calls fully observable; NimBLE host-silent (healthy) | `esp_bt_controller_init` (semaphore-creating), `esp/API_vhci_host_send_packet` trampolines, `register_callback`, `check_send_available` | WASM: VHCI shims (`core/ble_shims.mjs` + `core/ble_controller.mjs` + `core/ble_mirror.mjs` shared-memory event channel). Direct transport calls round-trip observably; NimBLE behavior via firmware `Serial` log (see BLE-OBSERVABILITY.md). Native CLI: Rust-core HCI interception + virtual controller / Bumble / physical `hci0`. |
+| **BLE (Bluetooth LE)** | ✅ direct calls + ✅ NimBLE host task (C3) | `esp_bt_controller_init` (semaphore-creating), `esp/API_vhci_host_send_packet` trampolines, `register_callback` (ESP_OK), `check_send_available` | WASM: VHCI shims (`core/ble_shims.mjs` + `core/ble_controller.mjs` + `core/ble_mirror.mjs` shared-memory event channel). Direct transport calls round-trip observably; NimBLE host transmits real HCI, syncs, advertises (see BLE-OBSERVABILITY.md). Native CLI: Rust-core HCI interception + virtual controller / Bumble / physical `hci0`. |
 
 ### 6.1 BLE — VHCI shims with fully observable direct-call path
 
@@ -172,12 +172,15 @@ analysis on real firmware:
   `esp_bt_controller_init` (creates+ gives the VHCI send semaphore via real
   `xQueueGenericCreate/Send`, so the transport's take succeeds, else a success
   stub), `esp_bt_controller_enable` (stub), both `*_check_send_available`
-  (stub 1, incl. the `API_` variant), `esp_vhci_host_register_callback`
-  (stashes the RX callback), and **both** `esp_vhci_host_send_packet` (48B,
-  never executed — proven with an illegal-instruction trap) and
-  `API_vhci_host_send_packet` (210B, the live NimBLE path) with trampolines
-  sharing one out-of-line body parked after the init replacement
-  (`init+96`, guarded against overlap).
+  (stub 1, incl. the `API_` variant),   `esp_vhci_host_register_callback` (stashes the RX callback **and returns
+  ESP_OK** — nonzero aborts `esp_nimble_hci_init` silently), and **both**
+  `esp_vhci_host_send_packet` (48B — the transport `ble_hci_trans_hs_cmd_tx`
+  calls this entry) and `API_vhci_host_send_packet` (210B, used by direct
+  callers) with trampolines sharing one out-of-line body parked after the
+  init replacement (`init+96`, guarded against overlap). The send body also
+  re-gives the VHCI sem per packet (no radio ISR does) and sniffs
+  function-vs-struct event callbacks (struct recv needs the event length,
+  written by the mirror at scratch+4).
 - **`core/ble_controller.mjs`** (`BLEController.handle(msg)` + `onHci`):
   JS virtual controller answering HCI commands; every command/event is
   observable (`spike/observe_ble.mjs --hci`, web UI BLE-HCI tag).
@@ -191,12 +194,19 @@ analysis on real firmware:
 - **`core/esp32c3.mjs`**: `loadFirmware` calls `prepareBleShims`, merges into
   the SPI shim patch set, and writes the out-of-line shim into flash (reseals).
 
-**Known limitation — NimBLE host stack stays silent**: its transport drops
-packets until our init creates the semaphore, and even then the host task
-never invokes the transport in the sim (verified: host task runs, `ble_hs_start`
-/ transport entry never fire), so `BLEDemo` shows no HCI bytes. It still runs
-healthy (init → advertise → heartbeats) — observe it through `Serial`
-(`BLE-OBSERVABILITY.md`). Direct transport calls (extended `BLETest`) round-trip
-fully and observably (`spike/25-verify-hci.mjs`). The native CLI path remains
-fully functional (Rust-core HCI interception + virtual controller / Bumble /
-physical `hci0`).
+**NimBLE host stack is live on C3** (fixed 2026-09; was host-silent): the host
+task transmits real HCI through the transport (`ble_hci_trans_hs_cmd_tx` →
+patched send shims), the virtual controller answers, the stack syncs
+(`m_synced`/`m_initialized`), enables advertising, and the sketch heartbeats
+— ~24 commands, zero NimBLE errors. Four load-time defects were found by
+disassembling the Arduino image plus guest-RAM reads: (1) `registerCb` left
+A0 nonzero → `esp_nimble_hci_init` aborted init silently (now returns ESP_OK);
+(2) nothing re-gives the VHCI sem after the first take (no radio ISR), so the
+send shim gives per send; (3) the registered "callback" may be a
+`esp_vhci_host_callback_t` struct — the shim sniffs code-vs-data pointers and
+calls `recv(data, len)` (len via the mirror at scratch+4); (4) the controller
+length-checks every Command Complete, so `0x1002` claims all commands and
+`0x1003`/`0xfc01`/`0x2018` return full-length data (else endless Reset loop).
+`spike/25-verify-hci.mjs` asserts stack Reset + AdvEnable frames. C6/H2
+Arduino builds use a different transport (NimBLE LL `hci_transport_*` + ROM
+`r_ble_ll_*`, no VHCI symbols) needing radio emulation upstream lacks.

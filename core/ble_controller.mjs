@@ -19,6 +19,7 @@ export const HCI_COMMAND_NAMES = {
     0x0c6d: 'Write_LE_Host_Supported',
     0x1001: 'Read_Local_Version',
     0x1002: 'Read_Supported_Commands',
+    0x1003: 'Read_Local_Supported_Features',
     0x1009: 'Read_BD_ADDR',
     0x2001: 'LE_Set_Event_Mask',
     0x2002: 'LE_Read_Buffer_Size',
@@ -26,6 +27,7 @@ export const HCI_COMMAND_NAMES = {
     0x2005: 'LE_Set_Random_Address',
     0x2006: 'LE_Set_Adv_Params',
     0x2007: 'LE_Read_Adv_Tx_Power',
+    0x2018: 'LE_Rand',
     0x2008: 'LE_Set_Adv_Data',
     0x2009: 'LE_Set_Scan_Rsp_Data',
     0x200a: 'LE_Set_Adv_Enable',
@@ -41,6 +43,7 @@ export const HCI_COMMAND_NAMES = {
     0x2038: 'LE_Set_Ext_Scan_Rsp',
     0x2039: 'LE_Set_Ext_Adv_Enable',
     0x203a: 'LE_Read_Max_Adv_Data_Len',
+    0xfc01: 'ESP_VS_Gen_Random_Addr',
 };
 
 export class BLEController {
@@ -105,10 +108,16 @@ export class BLEController {
                     0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // status + version blobs
                 );
             case 0x1002: { // Read Local Supported Commands (64 bytes)
-                const bits = new Array(64).fill(0);
-                // advertise a reasonable feature set
-                return st(...bits);
+                // Claim everything: every command the host may gate behind
+                // this bitmap is stubbed-success below, so a zero bitmap
+                // would only disable real flows (and break startup checks).
+                return st(...new Array(64).fill(0xff));
             }
+            case 0x1003: // Read Local Supported Features (8 bytes)
+                // ble_hs_startup_go requires feature bits 0x60 and retries
+                // the whole startup (Reset loop) when they are clear, so an
+                // empty stub wedges NimBLE sync forever. Claim them all.
+                return st(0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
             case 0x1009: // Read BD_ADDR
                 return st(0x22, 0x22, 0x22, 0x22, 0x22, 0x22);
 
@@ -132,6 +141,8 @@ export class BLEController {
                 return st(0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
             case 0x2007: // LE Read Advertising Channel Tx Power
                 return st(0xf6); // -10 dBm
+            case 0x2018: // LE Rand (8 random bytes; fixed sim value)
+                return st(0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22);
             case 0x2010: // LE Read White List Size
                 return st(0x08);
             case 0x201c: // LE Read Supported States
@@ -144,6 +155,13 @@ export class BLEController {
                 return st(0xe0, 0x01); // 480
             case 0x2036: // LE Set Extended Advertising Parameters
                 return st(0x00); // adv_handle status
+
+            case 0xfc01: // ESP vendor: generate static random address (6 bytes).
+                // ble_hs_util_ensure_rand_addr falls back to this when no
+                // public address exists; an empty stub trips the response-
+                // length check in ble_hs_hci_cmd_tx, which schedules a host
+                // reset — the infinite Reset loop. Top bits 0b11 = static.
+                return st(0xc4, 0x22, 0x22, 0x22, 0x22, 0x22);
 
             default:
                 // Unknown command: respond SUCCESS so NimBLE does not wedge.

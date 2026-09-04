@@ -86,6 +86,9 @@ export class BLEMirror {
             const evtLin = this.flagLin + (BLE_EVT_OFF - BLE_FLAG_OFF);
             const n = Math.min(bytes.length, EVT_CAP);
             for (let i = 0; i < n; i++) u8[evtLin + i] = bytes[i] & 0xff;
+            // Event length for the struct-callback path (scratch+BLE_LEN_OFF):
+            // the NimBLE stack's notify_recv takes (data, len).
+            new DataView(buf).setUint32((this.flagLin - 4) >>> 0, n, true);
             new Uint32Array(buf)[this.flagLin >>> 2] = 1;
             return true;
         } catch (_) {

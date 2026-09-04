@@ -29,6 +29,20 @@ const DEMOS = [
     { name: 'IDFSPIDemo', markers: ['idf-spi-done'], setup: (m) => m.spi.onTransfer((b) => b ^ 0x55) },
     { name: 'IDFI2CDemo', markers: ['idf-i2c-done'], setup: mpu6050Rig },
     { name: 'IDFI2CLegacyDemo', markers: ['idf-i2c-legacy-done'], setup: mpu6050Rig },
+    // Native silicon (no shims): timers/WDT/RTC + LittleFS/NVS (mirrors 26-verify).
+    { name: 'TimerDemo', markers: ['[TIMER] tick=', 'timer-done'], setup: null,
+      verify: (t) => (t.match(/\[TIMER\] tick=/g) || []).length >= 5 },
+    { name: 'WDTDemo', markers: ['[WDT] fed=', 'wdt-done'], setup: null,
+      verify: (t) => (t.match(/\[WDT\] fed=/g) || []).length >= 5 && !/panic|abort/i.test(t) },
+    { name: 'RTCDemo', markers: ['rtc-done'], setup: null,
+      verify: (t) => {
+          const s = [...t.matchAll(/\[RTC\] sample=(\d+) esp_us=(\d+) tv_us=(\d+) mono=(\d+) skew_us=(\d+)/g)];
+          return s.length >= 4 && s.every((m) => m[4] === '1' && +m[5] < 2000000);
+      } },
+    { name: 'LittleFSDemo', markers: ['littlefs-done'], setup: null,
+      verify: (t) => t.includes('mounted') && t.includes('write OK') && t.includes('readback') && !t.includes('FAIL') },
+    { name: 'NVSDemo', markers: ['nvs-done'], setup: null,
+      verify: (t) => t.includes('namespace open') && t.includes('write OK') && t.includes('counter=424242') && t.includes('nvs-hello') && !t.includes('FAIL') },
 ];
 
 console.log('====================================================');
@@ -59,8 +73,9 @@ for (const demo of DEMOS) {
             if (demo.markers.every((m) => consoleBuffer.includes(m))) break;
         }
 
-        pass = demo.markers.every((m) => consoleBuffer.includes(m)) &&
-                     !consoleBuffer.includes('Guru Meditation');
+        const check = demo.verify ? demo.verify(consoleBuffer)
+            : demo.markers.every((m) => consoleBuffer.includes(m));
+        pass = check && !consoleBuffer.includes('Guru Meditation');
     }
     console.log(`${demo.name}: ${pass ? 'PASS ✅' : 'FAIL ❌'}`);
     results.push(pass);

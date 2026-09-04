@@ -38,6 +38,12 @@ export const BLE_SCRATCH = {
 export const BLE_CB_OFF = 0;
 export const BLE_FLAG_OFF = 8;
 export const BLE_EVT_OFF = 0x100;
+// Host-written event length (u32) at scratch+4, next to the callback pointer.
+// The NimBLE stack registers a STRUCT (esp_vhci_host_callback_t {send_avail,
+// recv}) whose recv takes (data, len); direct callers (BLETest) register a
+// plain fn(data). The send shim sniffs the pointer kind (see below) and the
+// struct path needs the real length here.
+export const BLE_LEN_OFF = 4;
 // Guest->host rendezvous mark (guest writes both words before emitting B;
 // host scans WASM linear memory for the pair once per boot to discover the
 // mirror, writes the event, then sets flag=1).
@@ -55,11 +61,17 @@ function registerCb(scratch) {
     return asm32(assemble([
         ...li(T1, cbAddr),
         { op: 'sw', rs2: A0, rs1: T1, imm: 0 },
+        // MUST return ESP_OK (0): esp_nimble_hci_init treats any nonzero
+        // return as failure and aborts NimBLE startup silently (the sketch
+        // ignores init()'s bool, so the host task is never created and no
+        // HCI byte is ever sent). The pre-0.41 stub left A0 holding the
+        // callback pointer, which is nonzero.
+        { op: 'addi', rd: A0, rs1: 0, imm: 0 },
         { op: 'ret' },
     ]));
 }
 
-function sendPacket(scratch, uartHi) {
+function sendPacket(scratch, uartHi, give) {
     const evtBase = scratch + BLE_EVT_OFF;
     const cbBase = scratch + BLE_CB_OFF;
     const flagBase = scratch + BLE_FLAG_OFF;
@@ -113,13 +125,52 @@ function sendPacket(scratch, uartHi) {
         // call cb(event buffer) — skipped when no callback is registered
         // (firmware calling send_packet before register_callback used to jump
         // to address 0 and hang the emulator).
+        // Two registrations exist: direct callers (BLETest) pass a plain
+        // fn(data); the NimBLE stack (esp_nimble_hci_init) passes a POINTER
+        // to esp_vhci_host_callback_t {notify_send_available, notify_recv},
+        // whose recv takes (data, len). Sniff by top-12 address bits: code
+        // lives at 0x400xxxxx (ROM/IRAM) or 0x420xxxxx (flash text); structs
+        // live in rodata (0x3Cxxxxxx) or DRAM. (Known limit: a callback
+        // placed in C6/H2/C5 SRAM at 0x408xxxxx would misread as a struct;
+        // in practice callbacks are flash functions or rodata structs.)
         ...li(T1, cbBase),
-        { op: 'lw', rd: T1, rs1: T1, imm: 0 },     // t1 = cb pointer
+        { op: 'lw', rd: T1, rs1: T1, imm: 0 },     // t1 = registered pointer
         { op: 'beq', rs1: T1, rs2: 0, label: 'skip_cb' },
+        ...li(T3, evtBase),
+        { op: 'lw', rd: A1, rs1: T3, imm: BLE_LEN_OFF - BLE_EVT_OFF }, // a1 = len (host-written)
+        { op: 'srli', rd: T4, rs1: T1, sh: 20 },   // top-12 bits of pointer
+        { op: 'addi', rd: T5, rs1: T4, imm: -0x400 },
+        { op: 'beq', rs1: T5, rs2: 0, label: 'call_cb' },
+        { op: 'addi', rd: T5, rs1: T4, imm: -0x420 },
+        { op: 'beq', rs1: T5, rs2: 0, label: 'call_cb' },
+        { op: 'addi', rd: T5, rs1: T4, imm: -0x403 },
+        { op: 'beq', rs1: T5, rs2: 0, label: 'call_cb' },
+        { op: 'lw', rd: T1, rs1: T1, imm: 4 },     // struct: recv = *(cb+4)
+        { op: 'beq', rs1: T1, rs2: 0, label: 'skip_cb' },
+        { label: 'call_cb' },
         ...li(A0, evtBase),                        // a0 = event buffer
         { op: 'jalr_ra', rs1: T1 },
         { label: 'after_cb' },
         { label: 'skip_cb' },
+
+        // Re-give the VHCI send semaphore: on real hardware the controller
+        // frees a buffer per packet and notifies (r_vhci_notify_... via ISR),
+        // but there is no radio here — the JS virtual controller answers
+        // instantly, so the transport would block on the second command
+        // forever. Giving here models infinite controller buffers.
+        // (ra was saved in the prologue; a0 is re-zeroed below.)
+        ...(give ? [
+            ...li(T1, give.semAddr),
+            { op: 'lw', rd: T1, rs1: T1, imm: 0 },
+            { op: 'beq', rs1: T1, rs2: 0, label: 'skip_give' },
+            { op: 'addi', rd: A0, rs1: T1, imm: 0 },
+            { op: 'addi', rd: A1, rs1: 0, imm: 0 },
+            { op: 'addi', rd: A2, rs1: 0, imm: 0 },
+            { op: 'addi', rd: A3, rs1: 0, imm: 0 },
+            ...li(T2, give.sendAddr),
+            { op: 'jalr_ra', rs1: T2 },
+            { label: 'skip_give' },
+        ] : []),
 
         // epilogue
         { op: 'lw', rd: 1, rs1: SP, imm: 12 },
@@ -188,9 +239,9 @@ export function prepareBleShims(elf, chip) {
         'esp_bt_controller_init', 'esp_bt_controller_enable',
         'esp_vhci_host_check_send_available', 'esp_vhci_host_register_callback',
         'esp_vhci_host_send_packet',
-        // Live HCI path on ESP32-C3 Arduino/NimBLE: the transport calls the
-        // API_ layer (flash, forwards to ROM r_vhci_*), NOT esp_vhci_host_*
-        // (48B, never executed — verified with an illegal-instruction trap).
+        // The NimBLE transport (ble_hci_trans_hs_cmd_tx) calls the esp_
+        // entry; direct callers (BLETest) use either entry. Both are
+        // patched to share one out-of-line body.
         'API_vhci_host_send_packet', 'API_vhci_host_check_send_available',
         // Created+given by our init replacement so the transport's semaphore
         // take succeeds and packets reach the send_packet shim.
@@ -204,7 +255,9 @@ export function prepareBleShims(elf, chip) {
     if (byName['esp_bt_controller_init']) {
         const initAddr = byName['esp_bt_controller_init'].addr;
         const initSize = byName['esp_bt_controller_init'].size;
-        const big = sendPacket(scratch, uartHi);
+        const give = (byName['xQueueGenericSend'] && byName['vhci_send_sem']) ?
+            { sendAddr: byName['xQueueGenericSend'].addr, semAddr: byName['vhci_send_sem'].addr } : null;
+        const big = sendPacket(scratch, uartHi, give);
         // Park the out-of-line body AFTER the init replacement itself: the
         // init shim (up to 96B) lives at initAddr, so the body must not start
         // at +16 anymore (an 88B init shim would overlap and corrupt both).

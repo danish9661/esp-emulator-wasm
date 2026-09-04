@@ -48,7 +48,7 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 | **Timers / WDT / RTC** | ✅ | GPTimer alarms, task watchdog, `esp_timer`/`gettimeofday` | Native silicon model, no shims |
 | **LittleFS / NVS** | ✅ | Flash filesystems + settings storage | Native flash MMIO model |
 | **Networking (WiFi)** | ✅* | Native emulator glue (`set_wifi_config`/`wifi_rx_push`/`wifi_tx_drain`, C3/C6). Ethernet TAP is native-CLI only, no WASM glue | WASM Wi-Fi MAC (no shims by design) |
-| **Bluetooth (BLE)** | ✅/🟡 | Direct VHCI calls: full HCI round trip via JS shims + virtual controller (observable). NimBLE host stack: runs healthy via init shims, host-silent (observe via firmware console) | VHCI trampoline + shared-memory event channel |
+| **Bluetooth (BLE)** | ✅ | Direct VHCI calls: full HCI round trip via JS shims + virtual controller (observable). NimBLE host stack (C3): task live, syncs, advertises — ~24 HCI commands, zero errors | VHCI trampoline + shared-memory event channel |
 
 ---
 
@@ -61,7 +61,7 @@ All 6 target architectures are binary-compatible with the emulator's universal R
 | **ESP32-C3** | Single-core 32-bit RISC-V (`RV32IMC`) | 160 MHz | Wi-Fi 4, Bluetooth 5 (LE) | ✅ **Full Peripheral Support** |
 | **ESP32-C6** | Single-core 32-bit RISC-V (`RV32IMAC`) | 160 MHz | Wi-Fi 6, BLE 5, 802.15.4 (Thread/Zigbee) | ✅ **ROM & Flash Boot Verified** |
 | **ESP32-H2** | Single-core 32-bit RISC-V (`RV32IMAC`) | 96 MHz | BLE 5, 802.15.4 (Thread/Zigbee) | ✅ **ROM & Flash Boot Verified** |
-| **ESP32-C5** | Single-core 32-bit RISC-V (`RV32IMAC`) | 240 MHz | Wi-Fi 6, BLE 5, 802.15.4 (radios not modeled; no TWAI/VHCI on silicon libs) | ✅ **17 Demos Verified (no TWAI/BLE)** |
+| **ESP32-C5** | Single-core 32-bit RISC-V (`RV32IMAC`) | 240 MHz | Wi-Fi 6, BLE 5, 802.15.4 (radios not modeled; no TWAI/VHCI on silicon libs) | ✅ **22 Demos Verified (no TWAI/BLE)** |
 | **ESP32-P4** | Dual-core 32-bit RISC-V (`RV32IMAFC`) | 400 MHz | High-Performance with Single/Double FPU | ✅ **Core Initialized & Ready** |
 | **ESP32-S31** | Dual-core 32-bit RISC-V | 320 MHz | Wi-Fi 6, BT 5.4+Classic, 802.15.4, EMAC, USB-OTG | 🟡 **Target + ROM smoke only (no toolchain: no firmware samples)** |
 
@@ -267,11 +267,11 @@ esp-rv32-emulator/
 │   └── esp_emu_bg.wasm     # High-performance Rust-compiled RV32 emulator core
 ├── pkg.prev/               # Previous WASM build (v0.39.0) kept for bisection
 ├── samples/                # Pre-compiled .bin and .elf firmware sample binaries
-│   └── c5/ c6/ h2/ p4/     # Per-chip builds (C5: 17 demos, no TWAI/BLE)
+│   └── c5/ c6/ h2/ p4/     # Per-chip builds (C5: 22 demos, no TWAI/BLE)
 └── spike/
     ├── gen_spi_shims.py    # RV32 instruction assembler & shim generator
     ├── 18-verify-all.mjs   # Automated multi-peripheral verification test suite
-    ├── 28-verify-c5.mjs    # ESP32-C5 suite (17 demos)
+    ├── 28-verify-c5.mjs    # ESP32-C5 suite (17 demos + 5 native)
     ├── 29-verify-s31.mjs   # ESP32-S31 target/ROM/chip-ID smoke
     └── sketches/           # Source Arduino sketches (.ino) for all demos
 ```
