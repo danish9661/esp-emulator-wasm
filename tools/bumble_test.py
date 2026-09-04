@@ -47,6 +47,37 @@ async def main():
         link=link,
         public_address="00:11:22:33:44:55",
     )
+    # IDF master's NimBLE sends LL-privacy housekeeping at host sync
+    # (LE Clear/Add/Remove Resolving List, LE Set Privacy Mode). Bumble's
+    # virtual controller doesn't implement these; worse, it parses them as
+    # generic (non-sync) commands, so its unsupported-command fallback sends
+    # NO response at all and NimBLE stalls 20 s waiting for the ack, then
+    # declares the controller unresponsive. Ack them with a success status.
+    from bumble import hci as _hci
+
+    def _ack_ok(self, command):
+        params = _hci.HCI_GenericReturnParameters(data=bytes([0]))  # status: success
+        if isinstance(command, _hci.HCI_SyncCommand):
+            # Dispatch sends the Command Complete from the returned params.
+            return params
+        # Generic (unparsed) command: dispatch would send nothing — ack manually.
+        self.send_hci_packet(
+            _hci.HCI_Command_Complete_Event(
+                num_hci_command_packets=1,
+                command_opcode=command.op_code,
+                return_parameters=params,
+            )
+        )
+        return None
+
+    for _name in (
+        "on_hci_le_set_privacy_mode_command",
+        "on_hci_le_clear_resolving_list_command",
+        "on_hci_le_add_device_to_resolving_list_command",
+        "on_hci_le_remove_device_from_resolving_list_command",
+    ):
+        if not hasattr(Controller, _name):
+            setattr(Controller, _name, _ack_ok)
     # Bumble's LocalLink ACL routing uses sender_controller.random_address as source.
     # Set it to match the public address so the phone-controller can look up the
     # connection by peer address (which was the emu's public address).

@@ -207,17 +207,26 @@ Expected topology:
 
 The device's RLOC16 is `BR_RLOC16 + 1`, confirming the BR is the parent.
 
-### Known limitation — Wi-Fi backbone
+### Wi-Fi backbone and NAT64
 
-`ot_br` calls `example_connect()` before bringing up the border-router
-component, which expects a Wi-Fi STA association with an upstream AP.
-Inside one emulator instance, the BR's STA loops to the same process's
-built-in SoftAP, which is fragile; Thread formation and device
-attachment work regardless because they don't depend on the Wi-Fi path,
-but BR-specific backbone features (NAT64, SRP server, DNS-SD
-advertisement onto Wi-Fi) remain unverified. For a real backbone, run
-the BR with `--net "tap,ifname=tap0"` pointed at a host bridge and keep
-the device on `--net user`.
+The BR's Wi-Fi STA associates with the emulator's own built-in SoftAP,
+whose uplink is the `--net` backend — so with plain `--net user` the BR
+gets a DHCP lease (192.168.4.2) and reaches the real internet through the
+host NAT. That is enough for the full backbone path: **NAT64 + DNS64 is
+verified end-to-end** — a Thread-only `ot_cli` node on ESP32-H2 resolving
+and fetching `https://www.example.com/` through the BR
+(`examples/openthread/pytest_otbr.py::test_https_NAT64_DNS`, adapted to
+BR=C6 native radio because the CI's ESP32-S3 BR is Xtensa). NAT64 on the
+ESP BR is a lwIP netif with its own session tables, so the translated
+IPv4 traffic leaves via the STA netif and needs nothing special from the
+emulator.
+
+Host-side checks in the upstream CI that assume the BR shares an L2
+segment with the test runner (`avahi-browse` for the `_meshcop._udp`
+service, `ip -6 route` RA checks) do not apply to `--net user`, whose NAT
+is internal to the emulator process. For those, run the BR with
+`--net "tap,ifname=tap0"` pointed at a host bridge and keep the device on
+`--net user`.
 
 ## How the bridge works
 
@@ -229,16 +238,39 @@ the device on `--net user`.
   PSDU + FCS.
 - **TX path**: firmware's `esp_ieee802154_transmit()` is EBREAK-patched.
   The stub reads the frame from guest RAM, sends it as UDP, and queues a
-  `esp_ieee802154_transmit_done()` upcall for the next WFI tick.
+  transmit-done upcall for the next WFI tick.
+- **TX security**: `esp_ieee802154_set_transmit_security()` only arms the
+  MAC engine on real silicon — the frame in RAM stays plaintext with the
+  MIC bytes merely reserved, and the radio encrypts as it streams out.
+  OpenThread relies on that (`OT_RADIO_CAPS_TRANSMIT_SEC`) and never
+  encrypts in software, while receivers always validate in software. The
+  emulator therefore does the CCM* pass itself in
+  `periph/ieee802154_sec.rs`. Without it every secured frame — that is,
+  everything from the Child ID Response onward — is dropped by the peer
+  with a MIC failure, and attaching loops forever on
+  `Failed to process Child ID Request - Security`.
 - **RX path**: incoming UDP frames are copied into emulator-private LP
   RAM scratch (`0x50004200+` on C6). When the firmware next issues a WFI
   and has called `esp_ieee802154_enable()`, a trampoline injects
-  `esp_ieee802154_receive_done(frame, frame_info)` on its behalf.
+  receive-done on its behalf. RX decryption needs no emulation — the host
+  stack does it in software.
+- **Upcall symbols**: the driver dispatches events through
+  `ieee802154_inner_*_done()`, which prefers the callback struct
+  registered via `esp_ieee802154_event_callback_list_register()` and only
+  falls back to the legacy weak `esp_ieee802154_*_done` symbols when
+  nothing is registered. OpenThread registers, so the emulator injects the
+  `inner` functions (legacy names remain a fallback for older IDF).
+  Calling the weak symbol instead lands in a no-op and the MAC stalls
+  after its first transmit.
 - **Event gating**: upcalls fire only after `esp_ieee802154_enable()`
-  succeeds. This avoids a race where `receive_done` runs before
+  succeeds. This avoids a race where receive-done runs before
   `esp_openthread_radio_init()` has created the radio `eventfd`, which
   would trip an assertion in `set_event()` inside
   `esp_openthread_radio.c`.
+- **Chip reset**: the bridge socket survives a guest reboot
+  (`Emulator::restart` carries it across the peripheral rebuild). The
+  OpenThread CLI's `factoryreset` reboots the chip, so without that the
+  radio would go silent right at the start of any CI-style test.
 
 ## Troubleshooting
 
