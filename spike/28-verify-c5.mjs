@@ -28,7 +28,7 @@ const DEMOS = [
     { name: 'LCDDemo', markers: ['[LCD] lcd-done'], setup: null },
     { name: 'IDFSPIDemo', markers: ['idf-spi-done'], setup: (m) => m.spi.onTransfer((b) => b ^ 0x55) },
     { name: 'IDFI2CDemo', markers: ['idf-i2c-done'], setup: mpu6050Rig },
-    { name: 'IDFI2CLegacyDemo', markers: ['idf-i2c-legacy-done'], setup: mpu6050Rig },
+    { name: 'IDFI2CLegacyDemo', markers: ['cmdlink rc=0', 'idf-i2c-cmd-done', 'idf-i2c-legacy-done'], setup: mpu6050Rig },
     // Native silicon (no shims): timers/WDT/RTC + LittleFS/NVS (mirrors 26-verify).
     { name: 'TimerDemo', markers: ['[TIMER] tick=', 'timer-done'], setup: null,
       verify: (t) => (t.match(/\[TIMER\] tick=/g) || []).length >= 5 },

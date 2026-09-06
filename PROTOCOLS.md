@@ -113,7 +113,7 @@ silicon (no shim needed), not explicitly regression-tested
 | MPU6050 IMU (I2C) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual device `0x68` | 18-verify #2 |
 | SPI (IDF driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `spi_bus_*` noops + `spi_device_transmit`/`polling` full-duplex shims (pointer + `tx_data` paths; cmd/addr phases not modeled) | 27-verify #1 |
 | I2C (IDF v5 driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `i2c_new_master_bus`/`add_device` (handle carries addr) + transmit/receive/transmit_receive/probe | 27-verify #2 |
-| I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops) and cmd-link `i2c_master_cmd_begin` (in-shim START/WRITE/READ/STOP list walk, W-merge + read-run re-walk) | 27-verify #3 |
+| I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops) and cmd-link `i2c_master_cmd_begin` (in-shim START/WRITE/READ/STOP list walk, W-merge + read-run re-walk; cmdlink phase1 verified per chip) | 27-verify #3, 21/22/23/28 |
 | Touch pad (`touchRead`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-touch API + APC `T` frames | 24-verify #1 (C3; touch spot-checked C6/H2/P4) |
 | DAC output (`dacWrite`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-dac API + APC `D` frames | 24-verify #2 |
 | SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |
