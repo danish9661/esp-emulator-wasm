@@ -246,6 +246,9 @@ export function prepareBleShims(elf, chip) {
         // Created+given by our init replacement so the transport's semaphore
         // take succeeds and packets reach the send_packet shim.
         'xQueueGenericCreate', 'xQueueGenericSend', 'vhci_send_sem',
+        // ESP-NimBLE-controller scan-dup-filter config (C6/H2 LL images only).
+        'ble_vhci_disc_duplicate_mode_disable', 'ble_vhci_disc_duplicate_mode_enable',
+        'ble_vhci_disc_duplicate_set_max_cache_size', 'ble_vhci_disc_duplicate_set_period_refresh_time',
     ];
     const { found } = elf.resolve(names);
     const byName = Object.fromEntries(found.map(s => [s.name, s]));
@@ -292,6 +295,17 @@ export function prepareBleShims(elf, chip) {
         shims['esp_bt_controller_enable'] = stubReturn(0);
         shims['esp_vhci_host_check_send_available'] = stubReturn(1);
         shims['esp_vhci_host_register_callback'] = registerCb(scratch);
+        // ESP-NimBLE-controller images (C6/H2: LL transport, no VHCI send
+        // symbols): stub the scan-duplicate-filter config calls. The real
+        // ones dereference LL env structs that only exist after radio init
+        // (which we skip), faulting in r_filter_duplicate_mode_disable.
+        // Filter config is irrelevant to a virtual controller. Scoped to
+        // non-VHCI images so C3 keeps its real functions.
+        if (!byName['esp_vhci_host_send_packet'] && !byName['API_vhci_host_send_packet']) {
+            for (const n of ['ble_vhci_disc_duplicate_mode_disable', 'ble_vhci_disc_duplicate_mode_enable', 'ble_vhci_disc_duplicate_set_max_cache_size', 'ble_vhci_disc_duplicate_set_period_refresh_time']) {
+                if (byName[n]) shims[n] = stubReturn(0);
+            }
+        }
         if (byName['API_vhci_host_check_send_available']) {
             shims['API_vhci_host_check_send_available'] = stubReturn(1);
         }

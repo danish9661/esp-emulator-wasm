@@ -203,7 +203,9 @@ cannot reach them:
   Arduino API on our targets): covered instead by the virtualized
   sector-level SDMMC host, test-pattern camera, and RGB565 LCD panel above
   (virtual peripherals, not silicon models).
-- P4 hardware DAC: no Arduino API and no virtual device yet.
+- P4 DAC: no silicon DAC on P4 (`SOC_DAC_SUPPORTED` is S2/Classic-only, so no
+  Arduino API exists); covered instead by the virtual-DAC device above
+  (`DACDemo` passes on P4 via 23-verify).
 
 ### Transport notes (measured, ESP32-C3 WASM build)
 
@@ -282,4 +284,4 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 | ✅ Implemented & verified | 28 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (C3), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, Timers, WDT, RTC, LittleFS, NVS |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
 | ❌ Native CLI only, no WASM glue | 3 | 802.15.4, Ethernet, USB Serial/JTAG |
-| ❌ Not supported | 1 | P4 hardware DAC |
+| ❌ Not supported | 0 | — (all previously open items are covered or upstream-blocked; see `issue.md`) |
