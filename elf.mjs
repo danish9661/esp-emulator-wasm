@@ -196,6 +196,7 @@ export const HOOK_TARGETS = {
     'idf-i2c-v5': [
         'i2c_master_transmit', 'i2c_master_receive', 'i2c_master_transmit_receive',
         'i2c_master_probe', 'i2c_master_bus_add_device', 'i2c_new_master_bus',
+        'i2c_master_device_change_address', 'i2c_master_bus_rm_device', 'i2c_del_master_bus',
     ],
     'idf-i2c-legacy': [
         'i2c_master_write_to_device', 'i2c_master_read_from_device',

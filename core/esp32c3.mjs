@@ -173,8 +173,15 @@ export class ESP32C3 {
                 const img = new EspImage(flashBuf);
                 for (const [fn, shim] of Object.entries(effectiveShims)) {
                     if (hooks[fn] && shim.length <= hooks[fn].size) {
-                        img.writeAtVaddr(hooks[fn].addr, shim);
-                        this._patchedHooks.push(fn);
+                        try {
+                            img.writeAtVaddr(hooks[fn].addr, shim);
+                            this._patchedHooks.push(fn);
+                        } catch (e) {
+                            // One unlocatable hook (ROM-absolute symbol, or
+                            // XIP code missing from a partial flash image)
+                            // must not nuke the rest of the patch set.
+                            console.warn(`[ESP32C3] skip ${fn}: ${e.message}`);
+                        }
                     } else if (hooks[fn] && shim.length > hooks[fn].size) {
                         console.warn(`[ESP32C3] skip ${fn}: shim ${shim.length}B > func ${hooks[fn].size}B`);
                     }

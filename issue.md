@@ -94,3 +94,32 @@ dual RV32, 60 GPIOs, chip ID `0x20`.
 **Expected:** S31 chip support in ESP-IDF plus `esp32s31` board definitions
 in arduino-esp32, so firmware builds and peripheral-base validation become
 possible.
+
+---
+
+## Issue 5 → `espressif/esp-emulator`: P4/C5 ROM model rejects valid MicroPython images (invalid-header loop)
+
+**Observed:** Prebuilt MicroPython v1.29.0 (`ESP32_GENERIC_P4`, `ESP32_GENERIC_C5`,
+full 7-segment `.app-bin` incl. XIP code) never boots in the WASM build: the
+P4 ROM (`ESP-ROM:esp32p4-20230811`) and C5 ROM (`ESP-ROM:esp32c5-eco2-20250121`)
+loop `invalid header: 0xffffffff` forever. The
+same images in every hardware-plausible layout fail identically: bare file as
+whole flash, app@0x10000 ± Arduino partition table, app@0x100000 (the
+partition-declared P4/C5 app offset), 4MB and 16MB flash sizes, header bytes
+8–23 spoofed to a booting Arduino image's values + resealed checksum/SHA.
+Notably, even a 100%-Arduino layout (Arduino bootloader + partitions + app at
+the partition offset) fails the same way, while Arduino images with the app at
+0x10000 boot fine — i.e. the ROM model only accepts the Arduino-shaped image
+and the 2nd-stage-bootloader path appears unsupported on these targets.
+
+**Control cases that work:** the same MicroPython release boots to a live REPL
+over UART0 on C3/C6/H2 (bare `.bin` as flash), with `machine.I2C`/`machine.SPI`
+fully working through the loader's IDF shims (`spike/30-verify-mpy.mjs`).
+
+**Impact:** P4/C5 MicroPython (REPL, peripherals) is unreachable despite
+complete firmware being available; the IDF driver functions also live in XIP
+flash on these builds, so this blocks all P4/C5 MP verification.
+
+**Expected:** ROM-model boot accepts standard multi-segment app images on P4/C5
+(partition-declared app offset, XIP segments), as it does for Arduino-shaped
+images — or documentation of the exact image constraints the model enforces.

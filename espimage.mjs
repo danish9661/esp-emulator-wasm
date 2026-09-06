@@ -15,7 +15,7 @@ const SEG_HDR_LEN = 8;
 const CHECKSUM_SEED = 0xef;
 
 /** Offsets where an app image may start in a merged flash image. */
-const APP_OFFSET_CANDIDATES = [0x10000, 0x20000, 0x8000, 0x1000, 0x0];
+const APP_OFFSET_CANDIDATES = [0x10000, 0x100000, 0x20000, 0x8000, 0x1000, 0x0];
 
 export class EspImage {
     /**

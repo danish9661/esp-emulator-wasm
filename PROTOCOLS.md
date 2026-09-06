@@ -114,6 +114,7 @@ silicon (no shim needed), not explicitly regression-tested
 | SPI (IDF driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `spi_bus_*` noops + `spi_device_transmit`/`polling` full-duplex shims (pointer + `tx_data` paths; cmd/addr phases not modeled) | 27-verify #1 |
 | I2C (IDF v5 driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `i2c_new_master_bus`/`add_device` (handle carries addr) + transmit/receive/transmit_receive/probe | 27-verify #2 |
 | I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops) and cmd-link `i2c_master_cmd_begin` (in-shim START/WRITE/READ/STOP list walk, W-merge + read-run re-walk; cmdlink phase1 verified per chip) | 27-verify #3, 21/22/23/28 |
+| MicroPython v1.29.0 (REPL + machine.I2C/SPI) | ✅ | ✅ | ✅ | ❌ | ❌ | prebuilt `ESP32_GENERIC_*` firmware (`samples/mpy/`); REPL over UART0 via `spike/mpy_repl.mjs`; `machine.I2C` works through the IDF-v5 shims + new `i2c_master_device_change_address` cell shim (MP adds with addr 0, re-addresses per transfer); `machine.SPI` through the IDF-SPI shims. P4/C5 images stored but their ROMs reject downloadable layouts (invalid-header loop) — see `issue.md` #5 | 30-verify-mpy |
 | Touch pad (`touchRead`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-touch API + APC `T` frames | 24-verify #1 (C3; touch spot-checked C6/H2/P4) |
 | DAC output (`dacWrite`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-dac API + APC `D` frames | 24-verify #2 |
 | SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |
@@ -146,8 +147,9 @@ silicon (no shim needed), not explicitly regression-tested
   `spike/26-verify-native.mjs` (C3, Timer/WDT/RTC/LittleFS/NVS — no shims),
   `spike/27-verify-idf.mjs` (C3, IDF SPI + I2C-v5 + I2C-legacy),
   `spike/21/22/23-verify-*.mjs` (C6/H2/P4, 18 demos each),
-  `spike/28-verify-c5.mjs` (C5, 17 demos + 5 native — no TWAI on the silicon) and
-  `spike/29-verify-s31.mjs` (S31 target/ROM/chip-ID smoke, no firmware) — all green.
+  `spike/28-verify-c5.mjs` (C5, 17 demos + 5 native — no TWAI on the silicon),
+  `spike/29-verify-s31.mjs` (S31 target/ROM/chip-ID smoke, no firmware) and
+  `spike/30-verify-mpy.mjs` (MicroPython REPL + machine.I2C/SPI on C3/C6/H2) — all green.
 - Virtual devices (interactive in the web UI): SSD1306, ST7789, NeoPixel strip,
   VirtualSDCard (FAT16/32), MPU6050, ADC/PWM/I2S/TWAI controllers, plus
   VirtualTouch, VirtualDAC, VirtualSDMMC, VirtualCamera, VirtualLcdPanel.
@@ -270,6 +272,7 @@ node spike/22-verify-h2.mjs       # H2 — 18 demos
 node spike/23-verify-p4.mjs       # P4 — 18 demos
 node spike/28-verify-c5.mjs       # C5 — 17 demos + 5 native (no TWAI on silicon)
 node spike/29-verify-s31.mjs      # S31 — target/ROM/chip-ID smoke (no firmware)
+node spike/30-verify-mpy.mjs      # MicroPython v1.29.0 — REPL + machine.I2C/SPI on C3/C6/H2
 ```
 
 All suites must run with `mcu.step(100000)` (see AGENT.md — the WASM engine can drop
@@ -281,7 +284,7 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 
 | Status | Count | Protocols |
 |---|:---:|---|
-| ✅ Implemented & verified | 28 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (C3), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, Timers, WDT, RTC, LittleFS, NVS |
+| ✅ Implemented & verified | 29 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (C3), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, Timers, WDT, RTC, LittleFS, NVS, MicroPython (REPL + machine.I2C/SPI on C3/C6/H2) |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
 | ❌ Native CLI only, no WASM glue | 3 | 802.15.4, Ethernet, USB Serial/JTAG |
 | ❌ Not supported | 0 | — (all previously open items are covered or upstream-blocked; see `issue.md`) |

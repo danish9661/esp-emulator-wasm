@@ -20,6 +20,25 @@ def sub_r(rd, rs1, rs2):
 
 def shim_noop(): return [addi(10, 0, 0), _ret()]
 
+# I2C current-address cell (upper-20 of its DRAM address, for lui). Our
+# add_device scheme stores the address AS the device handle, but MicroPython
+# adds with address 0 ("Will be replaced") and calls
+# i2c_master_device_change_address before EVERY transfer. The change_address
+# shim stashes the address here; transmit/receive prefer the cell when
+# nonzero. Arduino never calls change_address and new_bus zeroes the cell,
+# so the Arduino path is bit-for-bit behavior-identical. Relocated per chip
+# (see I2C_CELL_BASE in shims.mjs); C3 default below.
+I2C_CELL = 0x3FC91
+
+def _i2c_cell_prefer(A0):
+    # If the I2C addr cell is nonzero, A0 = cell (MP path), else keep A0
+    # (Arduino handle==address path). x7 scratch, 4 words.
+    return [lui(7, I2C_CELL), lw(7, 7, 0), beq(7, 0, 8), addi(A0, 7, 0)]
+
+def _i2c_cell_init():
+    # Zero the I2C addr cell (bus setup; runs first in both stacks).
+    return [lui(7, I2C_CELL), sw(0, 7, 0)]
+
 def shim_spi_start_bus():
     # Return non-null dummy pointer 0x3FC90000 in a0
     return [lui(10, 0x3FC90), addi(10, 10, 0), _ret()]
@@ -481,15 +500,20 @@ def shim_lcd_draw():
     p += [_ret()]
     return p
 
-def shim_idf_i2c_write(a0=10):
+def shim_idf_i2c_write(a0=10, cell=True):
     # esp_err_t i2c_master_transmit(handle, wbuf, wsize, timeout), or legacy
     # i2c_master_write_to_device(port, addr, wbuf, wsize, timeout) with a0=11.
     # The v5 handle IS the 7-bit address (our add_device shim stores dev_addr
     # as the handle). Same wire format as Arduino i2cWrite so all host
     # parsers work unchanged. Timeout ignored.
+    # cell=True (v5 only): prefer the MP change_address cell when nonzero.
+    # The legacy flow has no bus setup and never inits the cell, so the
+    # legacy variant (a0=11) skips the prefix and uses the addr arg directly.
     # regs: addr=a0, buf=a0+1, size=a0+2.
     A0, A1, A2 = a0, a0 + 1, a0 + 2
     p = [lui(5, 0x60000)]
+    if cell:
+        p += _i2c_cell_prefer(A0)                # MP change_address cell wins
     for ch in (27, ord('_'), ord('W')): p += _emit_const(ch)
     p += _emit_reg_low7(A0)                       # device address
     tx_head = len(p)
@@ -502,13 +526,16 @@ def shim_idf_i2c_write(a0=10):
     p += [addi(10, 0, 0), _ret()]
     return p
 
-def shim_idf_i2c_read(a0=10):
+def shim_idf_i2c_read(a0=10, cell=True):
     # esp_err_t i2c_master_receive(handle, rbuf, rsize, timeout), or legacy
     # i2c_master_read_from_device(port, addr, rbuf, rsize, timeout) with a0=11.
+    # cell=True (v5 only): see write above; the legacy variant skips it.
     # regs: addr=a0, buf=a0+1, size=a0+2.
     A0, A1, A2 = a0, a0 + 1, a0 + 2
     p = [lui(5, 0x60000)]
     p += _mask_uart(6)                            # t1 = saved INT_ENA (t1 free)
+    if cell:
+        p += _i2c_cell_prefer(A0)                # MP change_address cell wins
     for ch in (27, ord('_'), ord('R')): p += _emit_const(ch)
     p += _emit_reg_low7(A0)                       # device address
     p += _emit_reg_low7(A2)                       # requested length
@@ -531,6 +558,7 @@ def shim_idf_i2c_write_read():
     # Emits a W frame then an R frame back-to-back; host answers the R part.
     p = [lui(5, 0x60000)]
     p += _mask_uart(6)                            # t1 = saved INT_ENA (t1 free)
+    p += _i2c_cell_prefer(10)                    # MP change_address cell wins
     for ch in (27, ord('_'), ord('W')): p += _emit_const(ch)
     p += _emit_reg_low7(10)
     tx_head = len(p)
@@ -573,8 +601,16 @@ def shim_idf_i2c_new_bus():
     # esp_err_t i2c_new_master_bus(bus_config, ret_handle): dummy handle 1.
     p = [lui(5, 0x60000)]
     p += [addi(7, 0, 1), sw(7, 11, 0)]            # *ret_handle = 1
+    p += _i2c_cell_init()                         # clear MP addr-override cell
     p += [addi(10, 0, 0), _ret()]
     return p
+
+def shim_idf_i2c_change_address():
+    # esp_err_t i2c_master_device_change_address(dev, addr, timeout_ms).
+    # MicroPython adds with address 0 and calls this before EVERY transfer;
+    # Arduino never calls it. Stash addr in the I2C cell for the next
+    # transmit/receive (which prefer the cell when nonzero). Returns ESP_OK.
+    return [lui(7, I2C_CELL), sw(11, 7, 0), addi(10, 0, 0), _ret()]
 
 def shim_idf_spi_add_device():
     # esp_err_t spi_bus_add_device(host, dev_config, handle*).
@@ -993,6 +1029,8 @@ if __name__ == '__main__':
         'analogReadMilliVolts': shim_analog_read(True),
         '__analogReadMilliVolts': shim_analog_read(True),
         '__analogInit': shim_noop(),
+        'read_cal_channel': shim_noop(),
+        'read_cal_channel_done': shim_noop(),
         'analogWrite': shim_analog_write(),
         'ledcWrite': shim_analog_write(),
         'ledcAttach': shim_noop(),
@@ -1035,14 +1073,19 @@ if __name__ == '__main__':
         'spi_device_polling_transmit': shim_idf_spi_xfer(),
         'i2c_new_master_bus': shim_idf_i2c_new_bus(),
         'i2c_master_bus_add_device': shim_idf_i2c_add_device(),
+        'i2c_master_device_change_address': shim_idf_i2c_change_address(),
+        'i2c_master_bus_rm_device': shim_noop(),
+        'i2c_del_master_bus': shim_noop(),
         'i2c_master_transmit': shim_idf_i2c_write(),
         'i2c_master_receive': shim_idf_i2c_read(),
         'i2c_master_transmit_receive': shim_idf_i2c_write_read(),
         'i2c_master_probe': shim_noop(),
         'i2c_param_config': shim_noop(),
         'i2c_driver_install': shim_noop(),
-        'i2c_master_write_to_device': shim_idf_i2c_write(11),
-        'i2c_master_read_from_device': shim_idf_i2c_read(11),
+        'i2c_master_write_to_device': shim_idf_i2c_write(11, cell=False),
+        'i2c_master_read_from_device': shim_idf_i2c_read(11, cell=False),
+        'i2c_master_cmd_begin': shim_idf_i2c_cmd_begin(),
+        'i2c_master_cmd_begin_static': shim_idf_i2c_cmd_begin(),
         'touchRead': shim_touch_read(),
         'touchAttachInterrupt': shim_noop(),
         'touchDetachInterrupt': shim_noop(),
@@ -1053,7 +1096,8 @@ if __name__ == '__main__':
         'emuCameraReadBand': shim_camera_read_band(),
         'emuLcdDraw': shim_lcd_draw(),
     }
-    out_lines = ['// Auto-generated RISC-V shims for esp-emu (I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI)', 'export const SHIMS = {']
+    out_head = open('shims.mjs').read().split('export const SHIMS = {')[0]
+    out_lines = [out_head + 'export const SHIMS = {']
     for name, words in all_shims.items():
         blob = b''.join(struct.pack('<I', w) for w in words)
         b_arr = ', '.join(str(b) for b in blob)
@@ -1061,5 +1105,5 @@ if __name__ == '__main__':
         print(f'{name:24s}: {len(blob):3d} bytes')
     out_lines.append('};\n')
     open('shims.mjs', 'w').write('\n'.join(out_lines))
-    print('shims.mjs generated!')
+    print('shims.mjs regenerated (header preserved)!')
 
