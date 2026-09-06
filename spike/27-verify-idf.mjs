@@ -176,8 +176,11 @@ await runTest('IDFI2CLegacyDemo (idf-i2c-legacy)', 'samples/idfi2c_legacy_demo.m
 // 4. IDF USB-Serial/JTAG driver: install + write greeting (raw console
 // text) + read 3 host bytes (pushed up front; the shim polls the RX FIFO).
 await runTest('USBSerialJTAGDemo (idf-usb)', 'samples/usbserialjtag_demo.merged.bin', 'samples/usbserialjtag_demo.elf', async ({ stepBatches, getConsole, inject }) => {
+    // Let setup run to the read poll, then deliver the reply bytes (pushing
+    // before first step loses them — the RX FIFO doesn't exist yet).
+    stepBatches(300);
     inject([0xDE, 0xAD, 0xBE]);
-    stepBatches(1000);
+    stepBatches(700);
     const cons = getConsole();
     const matched = cons.includes('install rc=0 connected=1') &&
         cons.includes('usb-jtag-hello') &&

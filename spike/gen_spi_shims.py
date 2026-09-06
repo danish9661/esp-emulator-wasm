@@ -374,40 +374,41 @@ def shim_mp_ledc_get_freq():
         _unmask_uart(16) + [addi(10, 0, 0), _ret()]
 
 def shim_usj_write():
-    # int usb_serial_jtag_write_bytes(src, size, ticks): raw byte-copy loop
-    # src -> UART0 TX (appears as clean console text, like ROM printf).
-    # Returns size. Masked (t0 live across the loop).
+    # int usb_serial_jtag_write_bytes(src=a0, size=a1, ticks=a2): raw
+    # byte-copy loop src -> UART0 TX (appears as clean console text, like ROM
+    # printf). Returns size. Masked (t0 live across the loop).
     p = [lui(5, 0x60000)]
     p += _mask_uart(16)
-    p += [addi(29, 12, 0)]
+    p += [addi(29, 11, 0)]
     wloop = len(p)
-    p += [beq(12, 0, 0)];  f_wend = len(p) - 1
-    p += [lbu(7, 11, 0), sw(7, 5, 0)]
-    p += [addi(11, 11, 1), addi(12, 12, -1)]
+    p += [beq(11, 0, 0)];  f_wend = len(p) - 1
+    p += [lbu(7, 10, 0), sw(7, 5, 0)]
+    p += [addi(10, 10, 1), addi(11, 11, -1)]
     p += [jal(0, 0)];  b_wloop = len(p) - 1
     p[b_wloop] = jal(0, -4 * (b_wloop - wloop))
-    p[f_wend] = beq(12, 0, 4 * (len(p) - f_wend))
+    p[f_wend] = beq(11, 0, 4 * (len(p) - f_wend))
     p += _unmask_uart(16)
     p += [addi(10, 29, 0), _ret()]
     return p
 
 def shim_usj_read():
-    # int usb_serial_jtag_read_bytes(buf, length, ticks): poll RX FIFO exactly
-    # `length` bytes into buf (host pushes the reply), return length. Masked.
+    # int usb_serial_jtag_read_bytes(buf=a0, length=a1, ticks=a2): poll RX
+    # FIFO exactly `length` bytes into buf (host pushes the reply), return
+    # length. Masked.
     p = [lui(5, 0x60000)]
     p += _mask_uart(16)
-    p += [addi(29, 12, 0)]
+    p += [addi(29, 11, 0)]
     rloop = len(p)
-    p += [beq(12, 0, 0)];  f_rend = len(p) - 1
+    p += [beq(11, 0, 0)];  f_rend = len(p) - 1
     poll = len(p)
     p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
     p += [beq(7, 0, 0)];  b_spoll = len(p) - 1
     p[b_spoll] = beq(7, 0, -4 * (b_spoll - poll))
-    p += [lw(7, 5, 0), sb(7, 11, 0)]
-    p += [addi(11, 11, 1), addi(12, 12, -1)]
+    p += [lw(7, 5, 0), sb(7, 10, 0)]
+    p += [addi(10, 10, 1), addi(11, 11, -1)]
     p += [jal(0, 0)];  b_rloop = len(p) - 1
     p[b_rloop] = jal(0, -4 * (b_rloop - rloop))
-    p[f_rend] = beq(12, 0, 4 * (len(p) - f_rend))
+    p[f_rend] = beq(11, 0, 4 * (len(p) - f_rend))
     p += _unmask_uart(16)
     p += [addi(10, 29, 0), _ret()]
     return p

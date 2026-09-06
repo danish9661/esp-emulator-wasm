@@ -1,9 +1,11 @@
-# Upstream issue packet (esp-emu 0.41.0)
+# Upstream issue packet (esp-emu 0.42.0)
 
-Four ready-to-paste issues. Issues 1–3 go to `espressif/esp-emulator`;
-issue 4 goes to `arduino-esp32` (with an `esp-idf` counterpart for the
-toolchain half). Environment: `pkg/` esp-emu 0.41.0, `esp32:esp32`
-Arduino core 3.3.10, no `idf.py` toolchain installed.
+Five ready-to-paste issues (was four at 0.41.0). Issues 1–3 and 5 go to
+`espressif/esp-emulator`; issue 4 goes to `arduino-esp32` (with an
+`esp-idf` counterpart for the toolchain half). Environment: `pkg/`
+esp-emu 0.42.0 (JS API byte-identical to 0.41.0 — all changes are inside
+the `.wasm`), `esp32:esp32` Arduino core 3.3.10, no `idf.py` toolchain
+installed.
 
 ---
 
@@ -32,6 +34,13 @@ only: `constructor`, `run_batch`, `pc`/`cycles`/`get_reg`,
 protocol; WiFi works end-to-end through this exact glue, the other three
 are unreachable from the browser build.
 
+**Local workaround (done, C3 only):** the IDF `usb_serial_jtag_*` driver
+API is shimmed at load time (write→console text, read→RX-FIFO poll,
+`is_connected`→true), verified by `spike/27-verify-idf.mjs` TEST 4. This
+covers driver-level firmware; USB-CDC/TinyUSB and true USB visibility
+still need the WASM exports above. Ethernet and 802.15.4 have no local
+workaround.
+
 ---
 
 ## Issue 2 → `espressif/esp-emulator`: no BLE radio model for C6/H2 (and C5) LL-transport images
@@ -52,7 +61,10 @@ Advertising-only loopback would already unblock verification.
 **Evidence:** Symbol comparison of C3 vs C6/H2 BLE sketches (VHCI set
 present vs absent, `hci_transport_*`/`r_ble_ll_*` present);
 `BLE-OBSERVABILITY.md` § "NimBLE host bring-up" documents the four C3
-load-time fixes and the C6/H2 dead end.
+load-time fixes and the C6/H2 dead end. Retested on 0.42.0: C5 `BLEDemo`
+still Gurus (Store fault) at radio bring-up with no VHCI symbols patched —
+even though 0.42.0 models C5 BLE advertising natively, the WASM build
+exposes no radio bridge for it.
 
 ---
 
@@ -75,6 +87,18 @@ regression fails 3/3 loudly, flakes pass on retry.
 
 **Expected:** Deterministic boot per image on C6 as on the other targets
 (or a documented seed/pinning knob if the nondeterminism is intentional).
+
+**New 0.42.0 data point (H2, deterministic):** `spike/22-verify-h2.mjs`
+crashes 4/4 runs at the 3rd demo with a host-side Rust panic
+(`dlmalloc-0.2.11: assertion failed: psize >= size + min_overhead` →
+`RuntimeError: unreachable`), while 0.41.0 passes the same suite.
+Bisected further: single demos pass alone (even 8000 batches), pairs pass,
+fixed-count triplets pass — only the suite's early-marker-break pattern
+(fewer prior batches) crashes, pointing at WASM memory growth/fragmentation
+across instances (0.42.0's "keep internal memory across every reset" is the
+prime suspect). Minimal repro: boot Blink → I2CRead → SPIDemo H2 images in
+fresh `WasmEmulator('esp32h2')` instances with early marker break; the 3rd
+`load_firmware`/early steps abort the process (no retry possible).
 
 ---
 
@@ -106,11 +130,13 @@ loop `invalid header: 0xffffffff` forever. The
 same images in every hardware-plausible layout fail identically: bare file as
 whole flash, app@0x10000 ± Arduino partition table, app@0x100000 (the
 partition-declared P4/C5 app offset), 4MB and 16MB flash sizes, header bytes
-8–23 spoofed to a booting Arduino image's values + resealed checksum/SHA.
-Notably, even a 100%-Arduino layout (Arduino bootloader + partitions + app at
-the partition offset) fails the same way, while Arduino images with the app at
-0x10000 boot fine — i.e. the ROM model only accepts the Arduino-shaped image
-and the 2nd-stage-bootloader path appears unsupported on these targets.
+8–23 spoofed to a booting Arduino image's values + resealed checksum/SHA,
+segment count 7→6, and `bootFromRom=false` (whose ROM-less loader rejects ESP
+app images outright: `Invalid image magic`). Notably, even a 100%-Arduino
+layout (Arduino bootloader + partitions + app at the partition offset) fails
+the same way, while Arduino images with the app at 0x10000 boot fine — i.e.
+the ROM model only accepts the Arduino-shaped image and the
+2nd-stage-bootloader path appears unsupported on these targets.
 
 **Control cases that work:** the same MicroPython release boots to a live REPL
 over UART0 on C3/C6/H2 (bare `.bin` as flash), with `machine.I2C`/`machine.SPI`

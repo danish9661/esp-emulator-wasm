@@ -126,7 +126,7 @@ silicon (no shim needed), not explicitly regression-tested
 | BLE via NimBLE host stack | ✅ | ❌ | ❌ | — | ❌ | C3 host task live: Reset…adv setup answered, syncs, advertises; C6/H2 need radio emulation | 25-verify (C3), observe_ble.mjs |
 | 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only) | none |
 | Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | — | native CLI only (`--net tap/user`) | none |
-| USB (Serial/JTAG; OTG on P4) | ❌† | ❌† | ❌† | ❌† | ❌† | native peripheral in core (CLI), no WASM glue | none |
+| USB (Serial/JTAG driver; OTG on P4) | ✅ | ❌ | ❌ | ❌ | ❌ | `usb_serial_jtag_*` shims route bytes to/from the UART console (no WASM glue needed); C3 verified | 27-verify #4 |
 | Timers / watchdog / RTC | ✅ | ✅ | ✅ | ✅ | ✅ | native silicon model (GPTimer IRQ, TWDT, esp_timer) | 26-verify (C3), 28-verify (C5) |
 | Flash filesystems (LittleFS / NVS) | ✅ | ✅ | ✅ | ✅ | ✅ | native flash MMIO model | 26-verify (C3), 28-verify (C5) |
 
@@ -146,7 +146,7 @@ silicon (no shim needed), not explicitly regression-tested
   `spike/24-verify-new.mjs` (C3, 5 virtualized peripherals),
   `spike/25-verify-hci.mjs` (HCI unit + direct round trip + BLEDemo health),
   `spike/26-verify-native.mjs` (C3, Timer/WDT/RTC/LittleFS/NVS — no shims),
-  `spike/27-verify-idf.mjs` (C3, IDF SPI + I2C-v5 + I2C-legacy),
+  `spike/27-verify-idf.mjs` (C3, IDF SPI + I2C-v5 + I2C-legacy + USB),
   `spike/21/22/23-verify-*.mjs` (C6/H2/P4, 18 demos each),
   `spike/28-verify-c5.mjs` (C5, 17 demos + 5 native — no TWAI on the silicon),
   `spike/29-verify-s31.mjs` (S31 target/ROM/chip-ID smoke, no firmware) and
@@ -198,7 +198,8 @@ cannot reach them:
 - **Ethernet**: OpenCores OpenETH (QEMU-compatible firmware) on all chips plus the
   P4's built-in Synopsys GMAC — bridged to real networking via `--net tap/user`.
 - **USB Serial/JTAG**: emulated as a core peripheral (used by esptool flows), not
-  exposed through the wasm API.
+  exposed through the wasm API — but the IDF `usb_serial_jtag_*` driver API is
+  shimmed (write→console, read→RX poll), so driver-level firmware works (C3).
 
 ### Not supported (❌)
 
@@ -244,8 +245,9 @@ cannot reach them:
   `UART0_BASE`/`SPI_BUS_BASE`/`BLE_SCRATCH` = `0x60000000`/`0x40810000`/
   `0x40810000`, `samples/c5/` (22 demos), `spike/28-verify-c5.mjs` (22/22).
   Silicon gaps: **no TWAI** (TWAIDemo doesn't link), **no VHCI host interface**
-  (BLETest doesn't link; BLEDemo/NimBLE crashes with no radio model), C5
-  radios (Wi-Fi/BLE/15.4) not modeled by the core.
+  (BLETest doesn't link; BLEDemo/NimBLE still Gurus at radio bring-up on
+  0.42.0 — the native CLI models C5 BLE advertising, the WASM build does not
+  expose it), C5 15.4 not modeled by the core.
 - **S31** (dual RV32, 60 GPIOs, chip ID `0x20`, ROM `ESP-ROM:esp32s31-20251218`):
   target accepted, embedded ROM live, chip-ID gate verified
   (`spike/29-verify-s31.mjs` ROM-banner smoke via a `mkimg.py`-forged probe
@@ -267,7 +269,7 @@ node spike/20-test-mcu-core.mjs   # modular SDK unit tests (I2C/SPI/ADC/PWM/TWAI
 node spike/24-verify-new.mjs      # C3 — Touch/DAC/SDMMC/Camera/LCD firmware tests
 node spike/25-verify-hci.mjs      # C3 — HCI unit + direct round trip + BLEDemo health
 node spike/26-verify-native.mjs   # C3 — Timer/WDT/RTC/LittleFS/NVS (no shims)
-node spike/27-verify-idf.mjs      # C3 — IDF SPI + I2C-v5 + I2C-legacy drivers
+node spike/27-verify-idf.mjs      # C3 — IDF SPI + I2C-v5 + I2C-legacy + USB drivers
 node spike/21-verify-c6.mjs       # C6 — 18 demos
 node spike/22-verify-h2.mjs       # H2 — 18 demos
 node spike/23-verify-p4.mjs       # P4 — 18 demos
@@ -285,7 +287,7 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 
 | Status | Count | Protocols |
 |---|:---:|---|
-| ✅ Implemented & verified | 29 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (C3), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, Timers, WDT, RTC, LittleFS, NVS, MicroPython (REPL + machine.I2C/SPI on C3/C6/H2) |
+| ✅ Implemented & verified | 30 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (C3), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, IDF-USB-serial, Timers, WDT, RTC, LittleFS, NVS, MicroPython (REPL + machine.I2C/SPI on C3/C6/H2) |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
-| ❌ Native CLI only, no WASM glue | 3 | 802.15.4, Ethernet, USB Serial/JTAG |
+| ❌ Native CLI only, no WASM glue | 2 | 802.15.4, Ethernet |
 | ❌ Not supported | 0 | — (all previously open items are covered or upstream-blocked; see `issue.md`) |
