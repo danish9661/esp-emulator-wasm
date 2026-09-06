@@ -144,6 +144,13 @@ export class UARTController {
                 this.write(new Uint8Array(data));
                 break;
             }
+            case 'Q': { // I2C Probe (scan): 1 byte back, 1 = device ACKed
+                if (!i2c) break;
+                const addr = body.charCodeAt(0) & 0x7f;
+                const present = (i2c.devices && i2c.devices.has(addr)) ? 1 : 0;
+                this.write(new Uint8Array([present]));
+                break;
+            }
             case 'S': { // SPI Transfer
                 if (!spi) break;
                 if (body[0] === 'W') {

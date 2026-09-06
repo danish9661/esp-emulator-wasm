@@ -133,6 +133,21 @@ export class GPIOController {
     }
 
     /**
+     * Seed register addresses from an out-of-band probe (see
+     * spike/gpio_probe.mjs). Overrides the zero-pattern heuristic: required
+     * for firmwares that keep UART0 TX output-enabled (the ENABLE word is
+     * then never all-zero, so the heuristic can never match the true base
+     * and latches onto garbage). Arduino suites keep the heuristic path.
+     */
+    setBaseAddrs({ out, enable, input }) {
+        this._gpioOutAddr = out;
+        this._gpioEnableAddr = enable;
+        this._gpioInAddr = input;
+        this._lastOutMask = -1;
+        this._lastEnableMask = -1;
+    }
+
+    /**
      * Synchronize and auto-calibrate GPIO register states from WASM linear memory.
      */
     sync() {

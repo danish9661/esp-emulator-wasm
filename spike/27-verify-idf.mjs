@@ -76,6 +76,9 @@ async function runTest(testName, binPath, elfPath, customVerify) {
                     const len = body.charCodeAt(1);
                     const data = i2cBus.read(addr, len);
                     emu.uart_input(new Uint8Array(data));
+                } else if (kind === 'Q') {
+                    const present = i2cBus.devices.has(body.charCodeAt(0) & 0x7f) ? 1 : 0;
+                    emu.uart_input(new Uint8Array([present]));
                 } else if (kind === 'S') {
                     if (body[0] === 'W') {
                         spiBus.write([]);

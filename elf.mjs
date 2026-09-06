@@ -164,6 +164,15 @@ export const HOOK_TARGETS = {
     'arduino-pwm': [
         'analogWrite', 'ledcWrite', 'ledcAttach', 'ledcAttachChannel', 'ledcDetachBus',
     ],
+    'mp-adc': [
+        'adc_oneshot_new_unit', 'adc_oneshot_config_channel',
+        'adc_oneshot_read', 'adc_oneshot_del_unit',
+    ],
+    'mp-pwm': [
+        'ledc_timer_config', 'ledc_channel_config', 'ledc_set_duty',
+        'ledc_update_duty', 'ledc_stop', 'ledc_timer_pause', 'ledc_timer_resume',
+        'ledc_set_freq', 'ledc_timer_rst', 'esp_clk_tree_src_get_freq_hz',
+    ],
     'idf-i2s': [
         'i2s_driver_install', 'i2s_set_pin', 'i2s_start', 'i2s_stop',
         'i2s_driver_uninstall', 'i2s_write',
@@ -197,6 +206,7 @@ export const HOOK_TARGETS = {
         'i2c_master_transmit', 'i2c_master_receive', 'i2c_master_transmit_receive',
         'i2c_master_probe', 'i2c_master_bus_add_device', 'i2c_new_master_bus',
         'i2c_master_device_change_address', 'i2c_master_bus_rm_device', 'i2c_del_master_bus',
+        'i2c_master_execute_defined_operations',
     ],
     'idf-i2c-legacy': [
         'i2c_master_write_to_device', 'i2c_master_read_from_device',
@@ -321,8 +331,8 @@ export function planHooks(elf) {
         i2c: pick(['arduino-i2c', 'idf-i2c-v5', 'idf-i2c-legacy']),
         spi: pick(['arduino-spi', 'idf-spi']),
         neopixel: pick(['arduino-neopixel']),
-        adc: pick(['arduino-adc']),
-        pwm: pick(['arduino-pwm']),
+        adc: pick(['arduino-adc', 'mp-adc']),
+        pwm: pick(['arduino-pwm', 'mp-pwm']),
         i2s: pick(['idf-i2s']),
         twai: pick(['idf-twai']),
         touch: pick(['virtual-touch']),

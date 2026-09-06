@@ -37,6 +37,7 @@ Virtual devices live in `peripherals.mjs` and can be interactive in the web UI
 | Kind | Protocol | Direction | Payload |
 |---|---|---|---|
 | `W` / `R` | I2C | write / read | addr + data (nibbles a-p) |
+| `Q` | I2C probe | query | addr -> 1 byte (1 = device ACKed, for `scan()`) |
 | `S` | SPI | duplex | chunked byte streams, len-prefixed |
 | `N` | NeoPixel (RMT) | write | pin + GRB bytes |
 | `A` / `V` | ADC | read | raw / millivolts |
@@ -114,7 +115,7 @@ silicon (no shim needed), not explicitly regression-tested
 | SPI (IDF driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `spi_bus_*` noops + `spi_device_transmit`/`polling` full-duplex shims (pointer + `tx_data` paths; cmd/addr phases not modeled) | 27-verify #1 |
 | I2C (IDF v5 driver) | ✅ | ✅ | ✅ | ✅ | ✅ | `i2c_new_master_bus`/`add_device` (handle carries addr) + transmit/receive/transmit_receive/probe | 27-verify #2 |
 | I2C (IDF legacy convenience) | ✅ | ✅ | ✅ | ✅ | ✅ | `write_to_device`/`read_from_device` (+ config/install noops) and cmd-link `i2c_master_cmd_begin` (in-shim START/WRITE/READ/STOP list walk, W-merge + read-run re-walk; cmdlink phase1 verified per chip) | 27-verify #3, 21/22/23/28 |
-| MicroPython v1.29.0 (REPL + machine.I2C/SPI) | ✅ | ✅ | ✅ | ❌ | ❌ | prebuilt `ESP32_GENERIC_*` firmware (`samples/mpy/`); REPL over UART0 via `spike/mpy_repl.mjs`; `machine.I2C` works through the IDF-v5 shims + new `i2c_master_device_change_address` cell shim (MP adds with addr 0, re-addresses per transfer); `machine.SPI` through the IDF-SPI shims. P4/C5 images stored but their ROMs reject downloadable layouts (invalid-header loop) — see `issue.md` #5 | 30-verify-mpy |
+| MicroPython v1.29.0 (REPL + machine.*) | ✅ | ✅ | ✅ | ❌ | ❌ | prebuilt `ESP32_GENERIC_*` firmware (`samples/mpy/`); REPL over UART0 via `spike/mpy_repl.mjs`; `machine.I2C` (incl. `scan()` via `Q` probe frame + `change_address` cell shim), `machine.SPI`, `machine.Pin` (native, live-discovered GPIO bases), `machine.ADC` (`A` frame), `machine.PWM` (`P` frame, 14-bit saturating). P4/C5 images stored but their ROMs reject downloadable layouts (invalid-header loop) — see `issue.md` #5 | 30-verify-mpy |
 | Touch pad (`touchRead`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-touch API + APC `T` frames | 24-verify #1 (C3; touch spot-checked C6/H2/P4) |
 | DAC output (`dacWrite`) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-dac API + APC `D` frames | 24-verify #2 |
 | SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |

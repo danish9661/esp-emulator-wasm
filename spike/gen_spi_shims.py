@@ -246,30 +246,33 @@ def shim_neopixelwrite():
     p += [_ret()]
     return p
 
-def shim_analog_read(is_mv=False):
+def shim_analog_read(is_mv=False, pin=10, out=10, mask=11, store=None):
     p = []
     p += [lui(5, 0x60000)]                      # 0
-    p += _mask_uart(11)                           # a1 = saved INT_ENA (a1 free)
+    p += _mask_uart(mask)                       # saved INT_ENA (mask reg free)
     p += [addi(7, 0, 27), sw(7, 5, 0)]          # 2
     p += [addi(7, 0, 95), sw(7, 5, 0)]          # 4
     ch = ord('V') if is_mv else ord('A')
     p += [addi(7, 0, ch), sw(7, 5, 0)]          # 6
-    p += [andi(7, 10, 0x7F), sw(7, 5, 0)]       # 8: pin
+    p += [andi(7, pin, 0x7F), sw(7, 5, 0)]      # 8: pin
     p += [addi(7, 0, 27), sw(7, 5, 0)]          # 10
     p += [addi(7, 0, 92), sw(7, 5, 0)]          # 12
 
     # Read 2 bytes (hi, lo)
-    p += [addi(10, 0, 0)]                       # 13: a0 = 0
+    p += [addi(out, 0, 0)]                      # 13: out = 0
     p += [addi(6, 0, 2)]                        # 14: t1 = 2
     loop_start = len(p)                         # 15
     poll_start = len(p)                         # 15
     p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]     # 15, 16
     p += [beq(7, 0, -4 * (len(p) - poll_start))]# 17
     p += [lw(28, 5, 0), andi(28, 28, 0xFF)]     # 18, 19
-    p += [slli(10, 10, 8), or_r(10, 10, 28)]    # 20, 21: a0 = (a0 << 8) | byte
+    p += [slli(out, out, 8), or_r(out, out, 28)]# 20, 21: out = (out << 8) | byte
     p += [addi(6, 6, -1)]                       # 22
     p += [bne(6, 0, -4 * (len(p) - loop_start))]# 23
-    p += _unmask_uart(11)
+    if store is not None:
+        p += [sw(out, store, 0)]                # *out_raw (IDF API shape)
+        p += [addi(10, 0, 0)]                   # return ESP_OK
+    p += _unmask_uart(mask)
     p += [_ret()]                               # 24
     return p
 
@@ -286,6 +289,89 @@ def shim_analog_write():
     p += [addi(7, 0, 92), sw(7, 5, 0)]          # 17
     p += [_ret()]                               # 18
     return p
+
+# PWM channel->pin table: 8 words at I2C_CELL+0x40 (LEDC channels 0-7).
+PWM_TAB = 0x40
+
+def shim_mp_adc_new_unit():
+    # esp_err_t adc_oneshot_new_unit(cfg, ret_handle): dummy handle 1.
+    return [addi(10, 0, 1), sw(10, 11, 0), addi(10, 0, 0), _ret()]
+
+def shim_mp_adc_read():
+    # esp_err_t adc_oneshot_read(handle, chan, out_raw): same wire format as
+    # Arduino analogRead ('A' frame, BE u16 reply). Channel doubles as the pin
+    # key (callers set both sides consistently). a1=chan, a2=out, a3=mask.
+    # Unlike Arduino (value returned in a0), IDF stores to *out_raw (a2) and
+    # returns ESP_OK in a0. Accumulator MUST be a0 (a2 holds the live
+    # pointer); a1=chan, a3=mask.
+    return shim_analog_read(False, pin=11, out=10, mask=13, store=12)
+
+def shim_mp_ledc_timer_config():
+    # esp_err_t ledc_timer_config(cfg): zero the PWM chan->pin table, ESP_OK.
+    # Masked: the table address in t2 must survive until the last store.
+    p = [lui(5, 0x60000)]
+    p += _mask_uart(16)
+    p += [lui(7, I2C_CELL)]
+    for i in range(8):
+        p += [sw(0, 7, PWM_TAB + i * 4)]
+    p += _unmask_uart(16)
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_mp_ledc_channel_config():
+    # esp_err_t ledc_channel_config(cfg): gpio_num@0 (i32), channel@8 (i32).
+    # Records table[channel] = gpio for set_duty. Returns ESP_OK.
+    # Masked: t0/t2 are live across the whole body (an ISR clobbering t0 was
+    # caught live as a store fault).
+    p = [lui(5, 0x60000)]
+    p += _mask_uart(16)
+    p += [lui(7, I2C_CELL)]
+    p += [lw(6, 10, 0), lw(28, 10, 8)]
+    p += [slli(28, 28, 2), addi(29, 7, PWM_TAB), add_r(29, 29, 28)]
+    p += [sw(6, 29, 0)]
+    p += _unmask_uart(16)
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_mp_ledc_set_duty():
+    # esp_err_t ledc_set_duty(mode, channel, duty): pin = table[channel];
+    # emits the Arduino-compatible P frame (pin, duty>>7, duty&0x7F, 14-bit).
+    # MP duty can exceed 14 bits (16-bit resolution on C6/H2); saturate at
+    # 0x3FFF instead of wrapping (100% must never read back as 0%).
+    # ESP_OK. Masked like channel_config (t0 live across the body).
+    p = [lui(5, 0x60000)]
+    p += _mask_uart(16)
+    p += [lui(7, I2C_CELL)]
+    p += [slli(28, 11, 2), addi(29, 7, PWM_TAB), add_r(29, 29, 28)]
+    p += [lw(29, 29, 0)]
+    p += [srli(7, 12, 14), beq(7, 0, 0)];  f_sat = len(p) - 1
+    p += [addi(12, 0, 0x3FFF)]
+    p[f_sat] = beq(7, 0, 4 * (len(p) - f_sat))
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 95), sw(7, 5, 0)]
+    p += [addi(7, 0, ord('P')), sw(7, 5, 0)]
+    p += [andi(7, 29, 0x7F), sw(7, 5, 0)]
+    p += [srli(7, 12, 7), andi(7, 7, 0x7F), sw(7, 5, 0)]
+    p += [andi(7, 12, 0x7F), sw(7, 5, 0)]
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 92), sw(7, 5, 0)]
+    p += _unmask_uart(16)
+    p += [addi(10, 0, 0), _ret()]
+    return p
+
+def shim_mp_ledc_clock_helpers():
+    # MicroPython timer setup calls these before anything is configured; the
+    # WASM LEDC/clock-tree state makes the real ones fail. Plain ESP_OK noops
+    # (shared body for ledc_set_freq + ledc_timer_rst).
+    return [addi(10, 0, 0), _ret()]
+
+def shim_mp_ledc_get_freq():
+    # esp_err_t esp_clk_tree_src_get_freq_hz(cfg, precision, freq_hz):
+    # *freq_hz = 80MHz, ESP_OK. (0x04C4B400 = lui 0x04C4B + addi 0x400.)
+    # Masked so the reported clock is deterministic.
+    return [lui(5, 0x60000)] + _mask_uart(16) + \
+        [lui(7, 0x04C4B), addi(7, 7, 0x400), sw(7, 12, 0)] + \
+        _unmask_uart(16) + [addi(10, 0, 0), _ret()]
 
 def shim_touch_read():
     # uint16_t touchRead(uint8_t pin) — same wire shape as analogRead ('A'),
@@ -611,6 +697,49 @@ def shim_idf_i2c_change_address():
     # Arduino never calls it. Stash addr in the I2C cell for the next
     # transmit/receive (which prefer the cell when nonzero). Returns ESP_OK.
     return [lui(7, I2C_CELL), sw(11, 7, 0), addi(10, 0, 0), _ret()]
+
+def shim_idf_i2c_probe_ops():
+    # esp_err_t i2c_master_execute_defined_operations(dev, ops, count, t/o).
+    # MicroPython scan shape ONLY: 3 jobs x 16B [START, WRITE, STOP]
+    # (command u32 @+0: 0=start,1=write,2=read,3=stop; payload ignored).
+    # Address comes from the I2C cell (MP change_addresses each probe);
+    # cell==0, wrong count, or wrong shape all return ESP_FAIL (absent).
+    # Emits a Q (query/probe) frame `ESC _ Q addr ESC \` and returns ESP_OK iff
+    # the host replies nonzero (device ACKed). UART ints masked across poll.
+    # Regs: t0=base, t1=saved mask, t2=scratch, t4=consts, a1=ops (kept),
+    # a2=count (checked first), a3=addr cursor.
+    p = [lui(5, 0x60000)]
+    p += _mask_uart(6)
+    p += [lui(7, I2C_CELL), lw(7, 7, 0)]
+    p += [beq(7, 0, 0)];  f_fail0 = len(p) - 1
+    p += [addi(29, 0, 3), bne(12, 29, 0)];  f_fail1 = len(p) - 1
+    p += [addi(13, 7, 0)]
+    p += [lw(7, 11, 0), bne(7, 0, 0)];  f_fail2 = len(p) - 1
+    p += [lw(7, 11, 16), addi(29, 0, 1), bne(7, 29, 0)];  f_fail3 = len(p) - 1
+    p += [lw(7, 11, 32), addi(29, 0, 3), bne(7, 29, 0)];  f_fail4 = len(p) - 1
+    p += [addi(7, 0, 27), sw(7, 5, 0)]
+    p += [addi(7, 0, 95), sw(7, 5, 0)]
+    p += [addi(7, 0, 81), sw(7, 5, 0)]
+    p += [andi(7, 13, 0x7F), sw(7, 5, 0)]
+    p += [addi(7, 0, 27), sw(7, 5, 0), addi(7, 0, 92), sw(7, 5, 0)]
+    poll = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, 0)];  b_spoll = len(p) - 1
+    p[b_spoll] = beq(7, 0, -4 * (b_spoll - poll))
+    p += [lw(7, 5, 0)]
+    p += _unmask_uart(6)
+    p += [beq(7, 0, 0)];  f_nak = len(p) - 1
+    p += [addi(10, 0, 0), _ret()]
+    fail = len(p)
+    p[f_fail0] = beq(7, 0, 4 * (fail - f_fail0))
+    p[f_fail1] = bne(12, 29, 4 * (fail - f_fail1))
+    p[f_fail2] = bne(7, 0, 4 * (fail - f_fail2))
+    p[f_fail3] = bne(7, 29, 4 * (fail - f_fail3))
+    p[f_fail4] = bne(7, 29, 4 * (fail - f_fail4))
+    p[f_nak] = beq(7, 0, 4 * (fail - f_nak))
+    p += _unmask_uart(6)
+    p += [addi(10, 0, 1), _ret()]
+    return p
 
 def shim_idf_spi_add_device():
     # esp_err_t spi_bus_add_device(host, dev_config, handle*).
@@ -1041,6 +1170,20 @@ if __name__ == '__main__':
         'analogSetAttenuation': shim_noop(),
         '__analogSetAttenuation': shim_noop(),
         'analogSetPinAttenuation': shim_noop(),
+        'adc_oneshot_new_unit': shim_mp_adc_new_unit(),
+        'adc_oneshot_config_channel': shim_noop(),
+        'adc_oneshot_read': shim_mp_adc_read(),
+        'adc_oneshot_del_unit': shim_noop(),
+        'ledc_timer_config': shim_mp_ledc_timer_config(),
+        'ledc_channel_config': shim_mp_ledc_channel_config(),
+        'ledc_set_freq': shim_mp_ledc_clock_helpers(),
+        'ledc_timer_rst': shim_mp_ledc_clock_helpers(),
+        'esp_clk_tree_src_get_freq_hz': shim_mp_ledc_get_freq(),
+        'ledc_set_duty': shim_mp_ledc_set_duty(),
+        'ledc_update_duty': shim_noop(),
+        'ledc_stop': shim_noop(),
+        'ledc_timer_pause': shim_noop(),
+        'ledc_timer_resume': shim_noop(),
         '__analogSetPinAttenuation': shim_noop(),
         'i2s_driver_install': shim_noop(),
         'i2s_set_pin': shim_noop(),
@@ -1074,6 +1217,7 @@ if __name__ == '__main__':
         'i2c_new_master_bus': shim_idf_i2c_new_bus(),
         'i2c_master_bus_add_device': shim_idf_i2c_add_device(),
         'i2c_master_device_change_address': shim_idf_i2c_change_address(),
+        'i2c_master_execute_defined_operations': shim_idf_i2c_probe_ops(),
         'i2c_master_bus_rm_device': shim_noop(),
         'i2c_del_master_bus': shim_noop(),
         'i2c_master_transmit': shim_idf_i2c_write(),
