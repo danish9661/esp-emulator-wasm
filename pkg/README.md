@@ -13,7 +13,7 @@ A Rust-based RISC-V emulator for ESP32-C3, ESP32-C5, ESP32-C6, ESP32-H2, and ESP
 - **Crypto**: AES (ECB/CBC/OFB/CTR/CFB), SHA (1/224/256), RSA, ECC, HMAC-SHA256, Digital Signature, XTS-AES flash encryption, ECDSA (P-256/P-384 on P4 and C5; P-256 on H2), Key Manager + HUK Generator (P4, C5) — drives flash / HMAC / DS / ECDSA key sourcing for `CONFIG_SECURE_FLASH_ENCRYPTION_KEY_SOURCE_KEY_MGR`
 - **Peripherals**: UART, USB Serial JTAG, GPIO, system timer, timer groups, interrupt controllers (PLIC for C3/C6/H2, CLIC for C5/P4), eFuse, SPI flash, GDMA
 - **esptool / espefuse over `socket://`**: a `--uart-tcp HOST:PORT` bridge plus `--strap-mode 0x02` (UART download) lets esptool, espefuse, and `idf.py flash` drive the running emulator over TCP, matching the QEMU-Espressif workflow. See [esptool / espefuse](#esptool--espefuse-over-socket).
-- **Chips**: ESP32-C3, ESP32-C5, ESP32-C6, ESP32-H2, and ESP32-P4 with per-chip memory maps and interrupt controllers. C5 is a hybrid: a C6-shaped peripheral map driven by a P4-style CLIC on a single core (its radios are not yet modelled)
+- **Chips**: ESP32-C3, ESP32-C5, ESP32-C6, ESP32-H2, and ESP32-P4 with per-chip memory maps and interrupt controllers. C5 is a hybrid: a C6-shaped peripheral map driven by a P4-style CLIC on a single core (2.4 GHz WiFi and BLE both work; 5 GHz and 802.15.4 are not modelled)
 - **WASM**: Browser-based emulation via WebAssembly with JavaScript API
 - **ROM stubs**: Intercepts key ROM functions (printf, UART, delay, WiFi TX) instead of emulating full ROM
 
@@ -105,6 +105,43 @@ RUST_LOG=info  ./esp-emu ...   # Default, boot messages
 RUST_LOG=debug ./esp-emu ...   # Peripheral access details
 RUST_LOG=trace ./esp-emu ...   # Every bus read/write
 ```
+
+### Flash Size
+
+The emulated flash device is sized from the **image header**, not the length of
+the file you pass to `--firmware` (a merged image is padded to wherever the last
+segment lands, which says nothing about the part on the board). The size lives
+in the upper nibble of byte 3 of the header — at flash offset `0x3` on C3/C6/H2
+and `0x2003` on C5/P4/S31 — and is whatever `CONFIG_ESPTOOLPY_FLASHSIZE` you
+built with. Every size esptool defines is honoured, 1 MB through 128 MB.
+
+`RUST_LOG=debug` prints the size that was picked (`Flash resized to N KB`).
+
+Past 16 MB a 24-bit address can no longer name every byte, so ESP-IDF sets
+`CONFIG_BOOTLOADER_FLASH_32BIT_ADDR` and the `spi_flash` driver switches to the
+4-byte-address opcodes (`0x13` read, `0x12` page-program, `0x21` / `0xDC`
+erase, and the dual/quad read variants). Those are modelled, so a data
+partition above the 16 MB line reads and writes normally.
+
+Two limits are the silicon's, and the emulator reproduces both:
+
+- **C6 and H2 refuse flash over 16 MB.** ESP-IDF's own
+  `esp_mspi_32bit_address_flash_feature_check()` returns `ESP_ERR_NOT_SUPPORTED`
+  there ("32bit address (flash over 16MB) has high risk on this chip"), and the
+  app-init assert aborts the boot. Use C3, C5, P4 or S31.
+- **Cache-mapped access stays under 16 MB** on quad flash unless the
+  experimental `CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH` is on. App and
+  OTA partitions execute through the cache, so keep them below the line; data
+  partitions (FAT, LittleFS, NVS, SPIFFS) reached through `esp_partition_read`
+  / `esp_flash_read` go anywhere. ESP-IDF enforces this itself — without the
+  option `spi_flash_mmap()` rejects a `src_addr` at or above 16 MB with
+  `ESP_ERR_INVALID_ARG` and an error naming the config — so the emulator needs
+  no check of its own. With the option on, mapping above the line works here
+  too. The one thing not modelled is the cache's own read command: the MMU
+  resolves an entry by reading the flash array rather than replaying the SPI
+  read the cache would issue, so firmware that programs MMU registers directly
+  (rather than going through `esp_mmu_map`) can map past 16 MB here in a
+  configuration where hardware would return aliased data.
 
 ## WiFi Emulation
 

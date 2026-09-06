@@ -373,6 +373,49 @@ def shim_mp_ledc_get_freq():
         [lui(7, 0x04C4B), addi(7, 7, 0x400), sw(7, 12, 0)] + \
         _unmask_uart(16) + [addi(10, 0, 0), _ret()]
 
+def shim_usj_write():
+    # int usb_serial_jtag_write_bytes(src, size, ticks): raw byte-copy loop
+    # src -> UART0 TX (appears as clean console text, like ROM printf).
+    # Returns size. Masked (t0 live across the loop).
+    p = [lui(5, 0x60000)]
+    p += _mask_uart(16)
+    p += [addi(29, 12, 0)]
+    wloop = len(p)
+    p += [beq(12, 0, 0)];  f_wend = len(p) - 1
+    p += [lbu(7, 11, 0), sw(7, 5, 0)]
+    p += [addi(11, 11, 1), addi(12, 12, -1)]
+    p += [jal(0, 0)];  b_wloop = len(p) - 1
+    p[b_wloop] = jal(0, -4 * (b_wloop - wloop))
+    p[f_wend] = beq(12, 0, 4 * (len(p) - f_wend))
+    p += _unmask_uart(16)
+    p += [addi(10, 29, 0), _ret()]
+    return p
+
+def shim_usj_read():
+    # int usb_serial_jtag_read_bytes(buf, length, ticks): poll RX FIFO exactly
+    # `length` bytes into buf (host pushes the reply), return length. Masked.
+    p = [lui(5, 0x60000)]
+    p += _mask_uart(16)
+    p += [addi(29, 12, 0)]
+    rloop = len(p)
+    p += [beq(12, 0, 0)];  f_rend = len(p) - 1
+    poll = len(p)
+    p += [lw(7, 5, 0x1C), andi(7, 7, 0xFF)]
+    p += [beq(7, 0, 0)];  b_spoll = len(p) - 1
+    p[b_spoll] = beq(7, 0, -4 * (b_spoll - poll))
+    p += [lw(7, 5, 0), sb(7, 11, 0)]
+    p += [addi(11, 11, 1), addi(12, 12, -1)]
+    p += [jal(0, 0)];  b_rloop = len(p) - 1
+    p[b_rloop] = jal(0, -4 * (b_rloop - rloop))
+    p[f_rend] = beq(12, 0, 4 * (len(p) - f_rend))
+    p += _unmask_uart(16)
+    p += [addi(10, 29, 0), _ret()]
+    return p
+
+def shim_usj_connected():
+    # bool usb_serial_jtag_is_connected(void): always true (host present).
+    return [addi(10, 0, 1), _ret()]
+
 def shim_touch_read():
     # uint16_t touchRead(uint8_t pin) — same wire shape as analogRead ('A'),
     # distinct kind 'T' so the host routes to the virtual touch pad model.
@@ -1184,6 +1227,12 @@ if __name__ == '__main__':
         'ledc_stop': shim_noop(),
         'ledc_timer_pause': shim_noop(),
         'ledc_timer_resume': shim_noop(),
+        'usb_serial_jtag_driver_install': shim_noop(),
+        'usb_serial_jtag_write_bytes': shim_usj_write(),
+        'usb_serial_jtag_read_bytes': shim_usj_read(),
+        'usb_serial_jtag_wait_tx_done': shim_noop(),
+        'usb_serial_jtag_driver_uninstall': shim_noop(),
+        'usb_serial_jtag_is_connected': shim_usj_connected(),
         '__analogSetPinAttenuation': shim_noop(),
         'i2s_driver_install': shim_noop(),
         'i2s_set_pin': shim_noop(),

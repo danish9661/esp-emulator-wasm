@@ -4,8 +4,9 @@
 // transmit_receive/probe) and idf-i2c-legacy convenience APIs
 // (write_to/read_from_device) plus the legacy command-link API
 // (i2c_master_cmd_begin, executed in-shim by walking the START/WRITE/READ/
-// STOP node list). v5 and legacy live in separate sketches because real IDF
-// aborts when both drivers initialize.
+// STOP node list) and the USB-Serial/JTAG driver (write/read routed to the
+// UART console, no WASM USB glue needed). v5 and legacy live in separate
+// sketches because real IDF aborts when both drivers initialize.
 // Run: node spike/27-verify-idf.mjs
 import { readFileSync } from 'node:fs';
 import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from '../elf.mjs';
@@ -26,7 +27,8 @@ async function runTest(testName, binPath, elfPath, customVerify) {
     const hookPlan = planHooks(elf);
     const allHooks = []
         .concat(hookPlan?.i2c?.hooks || [])
-        .concat(hookPlan?.spi?.hooks || []);
+        .concat(hookPlan?.spi?.hooks || [])
+        .concat(hookPlan?.usb?.hooks || []);
 
     const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
     const effectiveShims = prepareSpiShims(elf, SHIMS);
@@ -119,6 +121,7 @@ async function runTest(testName, binPath, elfPath, customVerify) {
             return cleanConsole;
         },
         getConsole: () => cleanConsole,
+        inject: (bytes) => emu.uart_input(new Uint8Array(bytes)),
     });
 }
 
@@ -170,6 +173,23 @@ await runTest('IDFI2CLegacyDemo (idf-i2c-legacy)', 'samples/idfi2c_legacy_demo.m
     }
 });
 
+// 4. IDF USB-Serial/JTAG driver: install + write greeting (raw console
+// text) + read 3 host bytes (pushed up front; the shim polls the RX FIFO).
+await runTest('USBSerialJTAGDemo (idf-usb)', 'samples/usbserialjtag_demo.merged.bin', 'samples/usbserialjtag_demo.elf', async ({ stepBatches, getConsole, inject }) => {
+    inject([0xDE, 0xAD, 0xBE]);
+    stepBatches(1000);
+    const cons = getConsole();
+    const matched = cons.includes('install rc=0 connected=1') &&
+        cons.includes('usb-jtag-hello') &&
+        cons.includes('read 3 got=DEADBE') &&
+        cons.includes('usb-jtag-done');
+    console.log(`IDF USB-Serial/JTAG: ${matched ? 'PASS' : 'FAIL'}`);
+    if (!matched) {
+        console.log('Console snippet:', cons.slice(-600));
+        throw new Error('USBSerialJTAGDemo test failed');
+    }
+});
+
 console.log('\n================================================================================');
-console.log('ALL IDF DRIVER TESTS PASSED (SPI + I2C-v5 + I2C-legacy)! ✅');
+console.log('ALL IDF DRIVER TESTS PASSED (SPI + I2C-v5 + I2C-legacy + USB)! ✅');
 console.log('================================================================================\n');

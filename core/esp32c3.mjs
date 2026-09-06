@@ -140,7 +140,8 @@ export class ESP32C3 {
                     .concat(hookPlan?.dac?.hooks || [])
                     .concat(hookPlan?.sdmmc?.hooks || [])
                     .concat(hookPlan?.camera?.hooks || [])
-                    .concat(hookPlan?.lcd?.hooks || []);
+                    .concat(hookPlan?.lcd?.hooks || [])
+                    .concat(hookPlan?.usb?.hooks || []);
 
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
                 const effectiveShims = prepareSpiShims(elf, relocateShimsForChip(SHIMS, this.chip));

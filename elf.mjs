@@ -173,6 +173,11 @@ export const HOOK_TARGETS = {
         'ledc_update_duty', 'ledc_stop', 'ledc_timer_pause', 'ledc_timer_resume',
         'ledc_set_freq', 'ledc_timer_rst', 'esp_clk_tree_src_get_freq_hz',
     ],
+    'idf-usb': [
+        'usb_serial_jtag_driver_install', 'usb_serial_jtag_write_bytes',
+        'usb_serial_jtag_read_bytes', 'usb_serial_jtag_wait_tx_done',
+        'usb_serial_jtag_driver_uninstall', 'usb_serial_jtag_is_connected',
+    ],
     'idf-i2s': [
         'i2s_driver_install', 'i2s_set_pin', 'i2s_start', 'i2s_stop',
         'i2s_driver_uninstall', 'i2s_write',
@@ -340,6 +345,7 @@ export function planHooks(elf) {
         sdmmc: pick(['virtual-sdmmc']),
         camera: pick(['virtual-camera']),
         lcd: pick(['virtual-lcd']),
+        usb: pick(['idf-usb']),
     };
 }
 
