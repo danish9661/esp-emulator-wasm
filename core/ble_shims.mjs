@@ -336,7 +336,9 @@ export function prepareBleShims(elf, chip) {
         'r_ble_controller_init',
         'esp_ble_register_bb_funcs', 'r_ble_controller_init',
         'r_sdkconfig_get_opts', 'r_esp_ble_msys_init', 'ble_transport_alloc_cmd',
-        'r_ble_ll_set_public_addr',
+        'r_ble_ll_set_public_addr', 'ble_transport_to_ll_acl_impl',
+        'ble_console_inject',
+        'ble_emu_scratch', 'r_os_mbuf_free_chain',
         'ble_hs_hci_ack',
     ];
     const { found } = elf.resolve(names);
@@ -464,7 +466,18 @@ export function prepareBleShims(elf, chip) {
             ];
             const cellBase = I2C_CELL_BASE[chip] ?? I2C_CELL_BASE.esp32c3;
             const uartFull = (UART_HI[chip] ?? UART_HI.esp32c3) << 12;
-            const body = llCmdPark({ cellBase, uartFull, recvAddr: byName['ble_transport_host_recv_cb'].addr });
+            // Prefer the sketch-provided scratch (linker-placed, heap-safe)
+            // over the fixed legacy base: fixed RAM collides with the
+            // firmware heap once .bss grows (observed: +192B .bss stalled
+            // init after AdvEnable #1). Layout from bleBase mirrors the
+            // legacy one (mirror +0x400, fake config +0x600, cmd slot +0x800
+            // .. +0x908), so bleBase = scratch - 0x400. Soft: fall back.
+            let bleBase = cellBase;
+            const emuScratch = byName['ble_emu_scratch'];
+            if (emuScratch && emuScratch.size >= 0x508) {
+                bleBase = (emuScratch.addr - 0x400) >>> 0;
+            }
+            const body = llCmdPark({ cellBase: bleBase, uartFull, recvAddr: byName['ble_transport_host_recv_cb'].addr });
             const jalOff = parkBase - redirect.addr;
             const cjOk = takes.every((t) => {
                 const d = t.target - t.at;
@@ -482,7 +495,7 @@ export function prepareBleShims(elf, chip) {
                 // with a warning if the shape differs.
                 if (byName['r_sdkconfig_get_opts'] && byName['r_sdkconfig_get_opts'].size >= 10) {
                     const go = byName['r_sdkconfig_get_opts'];
-                    const fake = (cellBase + 0x600) >>> 0;
+                    const fake = (bleBase + 0x600) >>> 0;
                     const hi = ((fake + 0x800) >> 12) & 0xfffff;
                     const lo = fake - (hi << 12);
                     if (lo >= -2048 && lo < 2048) {
@@ -499,6 +512,9 @@ export function prepareBleShims(elf, chip) {
                 }
                 // r_esp_ble_msys_init sets up ROM mbuf pools (radio-side
                 // state); with no radio it can only fault -> success stub.
+                // (Verified: it faults in r_ble_ll_mem_low_prio_src_set on
+                // the never-allocated LL env. Inbound mbufs are handled by
+                // initializing just the host pool; see msysPoolInit below.)
                 // The HCI command buffer comes from our static slot below.
                 if (byName['r_esp_ble_msys_init'] && byName['r_esp_ble_msys_init'].size >= 8) {
                     shims['r_esp_ble_msys_init'] = makeRet0();
@@ -510,7 +526,7 @@ export function prepareBleShims(elf, chip) {
                 const allocFn = byName['ble_transport_alloc_cmd'];
                 const allocOff = elf.vaddrToFileOffset(allocFn.addr);
                 const allocIsTramp = allocOff !== null && allocFn.size >= 6;
-                const staticBody = allocCmdStatic(cellBase + 0x800);
+                const staticBody = allocCmdStatic(bleBase + 0x800);
                 const staticAt = parkBase + body.length;
                 const allocJal = staticAt - allocFn.addr;
                 if (byName['ble_transport_alloc_cmd'] && allocIsTramp &&
@@ -523,6 +539,53 @@ export function prepareBleShims(elf, chip) {
                     aj[4] = 0x01; aj[5] = 0x00; // c.nop
                     extra.push({ addr: allocFn.addr, bytes: aj });
                     extra.push({ addr: staticAt, bytes: staticBody });
+                }
+                // Host->controller ACL (notifications): redirect
+                // ble_transport_to_ll_acl_impl (same 6B li+j shape) into a
+                // parked hex printer (console text for tests) that releases
+                // the chain afterwards. Soft: skip if any symbol or the
+                // shape differs.
+                const aclFn = byName['ble_transport_to_ll_acl_impl'];
+                const freeFn = byName['r_os_mbuf_free_chain'];
+                if (aclFn && freeFn) {
+                    const aclOff = elf.vaddrToFileOffset(aclFn.addr);
+                    const aclShape = aclOff !== null && aclFn.size >= 6 &&
+                        dv.getUint16(aclOff, true) === 0x4581;
+                    const aclBody = llAclPrint({ uartFull, freeAddr: freeFn.addr });
+                    const aclAt = staticAt + staticBody.length;
+                    const aclJal = aclAt - aclFn.addr;
+                    if (aclShape && aclAt + aclBody.length <=
+                        byName['r_ble_ll_init'].addr + byName['r_ble_ll_init'].size &&
+                        aclJal >= -(1 << 20) && aclJal < (1 << 20)) {
+                        const aqw = ((((aclJal >> 20) & 1) << 31) | (((aclJal >> 1) & 0x3ff) << 21) |
+                            (((aclJal >> 11) & 1) << 20) | (((aclJal >> 12) & 0xff) << 12)) | 0x6f;
+                        const aq = new Uint8Array(6);
+                        new DataView(aq.buffer).setUint32(0, aqw >>> 0, true);
+                        aq[4] = 0x01; aq[5] = 0x00; // c.nop
+                        extra.push({ addr: aclFn.addr, bytes: aq });
+                        extra.push({ addr: aclAt, bytes: aclBody });
+                    } else {
+                        console.warn('[ble] LL ACL redirect skipped (shape/fit)');
+                    }
+                }
+                // Test-only inbound injection: patch the sketch's global
+                // ble_console_inject stub (4B+) into `j recv_cb`, tail-calling
+                // the NimBLE host receive path (a local symbol the sketch
+                // cannot reference). Soft: skip if either end is missing or
+                // out of j range.
+                const recvFn = byName['ble_transport_host_recv_cb'];
+                const injFn = byName['ble_console_inject'];
+                if (recvFn && injFn) {
+                    const jOff = recvFn.addr - injFn.addr;
+                    if (injFn.size >= 4 && jOff >= -(1 << 20) && jOff < (1 << 20)) {
+                        const ijw = ((((jOff >> 20) & 1) << 31) | (((jOff >> 1) & 0x3ff) << 21) |
+                            (((jOff >> 11) & 1) << 20) | (((jOff >> 12) & 0xff) << 12)) | 0x6f;
+                        const ij = new Uint8Array(4);
+                        new DataView(ij.buffer).setUint32(0, ijw >>> 0, true);
+                        extra.push({ addr: injFn.addr, bytes: ij });
+                    } else {
+                        console.warn('[ble] console-inject redirect skipped (size/range)');
+                    }
                 }
                 const jw = ((((jalOff >> 20) & 1) << 31) | (((jalOff >> 1) & 0x3ff) << 21) |
                     (((jalOff >> 11) & 1) << 20) | (((jalOff >> 12) & 0xff) << 12)) | 0x6f;
@@ -576,6 +639,77 @@ function makeRetNop() {
 }
 
 /**
+ * Parked host->controller ACL printer (a0 = os_mbuf chain, possibly
+ * multi-block: the ATT/L2CAP response builder prepends headers as separate
+ * mbufs, so a flat read prints adjacent-heap garbage). Walks om_data/om_len
+ * via om_next, emitting `acl-tx <hex, capped at 64 bytes>\n` to the UART
+ * console for tests. Uses t0-t4/a0-a2 only (caller-saved); preserves ra+sp.
+ * mbuf layout: om_data@0, om_len@6 (u16 LE), om_next@12.
+ *
+ * After printing, the chain is released via r_os_mbuf_free_chain (the real
+ * controller consumes+frees TX buffers; without this each ATT response
+ * leaks pool blocks until injection allocs start failing).
+ */
+function llAclPrint({ uartFull, freeAddr }) {
+    const p = [
+        { op: 'addi', rd: SP, rs1: SP, imm: -16 },
+        { op: 'sw', rs2: 1, rs1: SP, imm: 12 },
+        { op: 'lui', rd: T0, imm: uartFull },
+        { op: 'addi', rd: T2, rs1: 0, imm: 97 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 99 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 108 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 45 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 116 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 120 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 32 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        // T1 = mbuf budget (4 blocks max, guards against corrupt chains);
+        // T4 = per-block byte cap (64). A1 = current mbuf (a0).
+        { op: 'addi', rd: T1, rs1: 0, imm: 4 },
+        { op: 'addi', rd: T4, rs1: 0, imm: 64 },
+        { op: 'addi', rd: A1, rs1: A0, imm: 0 },
+        { label: 'acl_mbuf' },
+        { op: 'beq', rs1: A1, rs2: 0, label: 'acl_done' },
+        { op: 'beq', rs1: T1, rs2: 0, label: 'acl_done' },
+        { op: 'addi', rd: T1, rs1: T1, imm: -1 },
+        // A2 = cursor = lw[A1+0]; T3 = min(len, 64).
+        { op: 'lw', rd: A2, rs1: A1, imm: 0 },
+        { op: 'lbu', rd: T3, rs1: A1, imm: 6 },
+        { op: 'lbu', rd: T2, rs1: A1, imm: 7 },
+        { op: 'slli', rd: T2, rs1: T2, sh: 8 },
+        { op: 'or', rd: T3, rs1: T3, rs2: T2 },
+        { op: 'bge', rs1: T3, rs2: T4, label: 'acl_capblk' },
+        { op: 'jal', rd: 0, label: 'acl_nocapblk' },
+        { label: 'acl_capblk' },
+        { op: 'addi', rd: T3, rs1: T4, imm: 0 },
+        { label: 'acl_nocapblk' },
+        { label: 'acl_loop' },
+        { op: 'beq', rs1: T3, rs2: 0, label: 'acl_next' },
+        { op: 'lbu', rd: T2, rs1: A2, imm: 0 },
+        { op: 'srli', rd: T2, rs1: T2, sh: 4 }, { op: 'addi', rd: T2, rs1: T2, imm: 97 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'lbu', rd: T2, rs1: A2, imm: 0 },
+        { op: 'andi', rd: T2, rs1: T2, imm: 15 }, { op: 'addi', rd: T2, rs1: T2, imm: 97 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 32 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: A2, rs1: A2, imm: 1 },
+        { op: 'addi', rd: T3, rs1: T3, imm: -1 },
+        { op: 'jal', rd: 0, label: 'acl_loop' },
+        { label: 'acl_next' },
+        { op: 'lw', rd: A1, rs1: A1, imm: 12 },
+        { op: 'jal', rd: 0, label: 'acl_mbuf' },
+        { label: 'acl_done' },
+        { op: 'addi', rd: T2, rs1: 0, imm: 10 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        // Release the chain (a0 still holds the head: only A1/A2/T1-T4
+        // were clobbered above).
+        ...li(T2, freeAddr),
+        { op: 'jalr_ra', rs1: T2 },
+        { op: 'lw', rd: 1, rs1: SP, imm: 12 },
+        { op: 'addi', rd: SP, rs1: SP, imm: 16 },
+        { op: 'addi', rd: A0, rs1: 0, imm: 0 },
+        { op: 'ret' },
+    ];
+    return asm32(assemble(p));
+}
+
+/**
  * Find `take(sem)` call sites to neuter: scan a function body for a C.JALR
  * preceded (within 14B) by `addi r,r,LOW12(semAddr)`, with a C.BEQZ/C.BNEZ
  * on a0 right after. Returns [{at, target}] where target is the branch
@@ -598,10 +732,9 @@ function findSemTakes(elf, fnAddr, fnSize, semAddr) {
         if ((hw & 0xf07f) !== 0x9002) continue; // C.JALR
         let anchored = false;
         for (let back = 2; back <= 14 && o - back >= 0; back += 2) {
-            // I-type addi with imm12 == LOW (any regs: cmd builds the sem
-            // addr as addi a0,a0,LOW, rx_evt as addi a0,s1,LOW).
+            // I-type addi with imm12 == LOW (any regs AND any halfword
+            // alignment: the addi may sit at 2-mod-4, read as two halves).
             const woff = fnAddr + o - back;
-            if (woff & 2) continue;
             const w = at(woff);
             if (w === null) continue;
             const word = w | (at(woff + 2) << 16);

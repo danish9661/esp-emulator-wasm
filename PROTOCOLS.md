@@ -123,7 +123,7 @@ silicon (no shim needed), not explicitly regression-tested
 | LCD panel (RGB565 blits) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-lcd API + APC `L` frames | 24-verify #5 |
 | Wi-Fi (STA/AP) | ✅* | ✅* | — | — | ❌ | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
 | BLE HCI (direct transport calls) | ✅ | — | — | — | ❌ | JS VHCI shims + virtual controller, fully observable (C3 VHCI; C6/H2/C5 routed around ROM LL, same controller) | 25-verify |
-| BLE via NimBLE host stack | ✅ | ✅ | ✅ | — | ✅ | host task live on all chips: Reset…adv setup answered, syncs, advertises (C3 via VHCI; C6/H2/C5 via LL-transport HCI routing — no radio needed) | 25-verify, observe_ble.mjs |
+| BLE via NimBLE host stack | ✅ | ✅ | ✅ | — | ✅ | host task live on all chips: Reset…adv setup answered, syncs, advertises (C3 via VHCI; C6/H2/C5 via LL-transport HCI routing — no radio needed). Fabricated peer on LL chips: console-driven connect + ATT discovery + CCCD subscribe + notifications | 25-verify, observe_ble.mjs |
 | 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only) | none |
 | Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | — | native CLI only (`--net tap/user`) | none |
 | USB (Serial/JTAG driver; OTG on P4) | ✅ | ❌ | ❌ | ❌ | ❌ | `usb_serial_jtag_*` shims route bytes to/from the UART console (no WASM glue needed); C3 verified | 27-verify #4 |
@@ -194,6 +194,24 @@ cannot reach them:
   directly, ROM mbuf/substrate gaps covered by tiny shims (see
   `BLE-OBSERVABILITY.md` § "LL-transport bring-up (C6/H2/C5)"). No radio
   emulation needed: the virtual controller answers everything in-sim.
+
+  **Fabricated peer (LL chips, no radio):** console lines drive a live
+  connection through the real GAP/GATT/L2CAP/ATT layers —
+  `!conn` (LE Connection Complete) + `!advterm` (Adv Set Terminated unparks the
+  slave conn) + `!rver`/`!feat` (version/features completes for the 0x041D/
+  0x2016 async acks; controller answers Command Status) → `onConnect` fires,
+  `ble_hs_conn` exists. Then `!disc`/`!find` (ATT discovery),
+  `!wr <h> <hex>` (CCCD subscribe; first WRITE response after connect is
+  intermittently lost under sim scheduling — resend, it's idempotent), and
+  console text notifies as ATT Handle-Value Notifications. Outgoing ATT
+  prints as nibble-encoded `acl-tx <hex>` (mbuf-chain walk, chain freed
+  afterwards); inbound uses flat buffers (EVT) / pool mbufs via
+  `ble_hs_mbuf_from_flat` (ACL) with a sketch-registered msys pool
+  (`bleNetPoolInit`, `mp_flags|=0x02` for pkthdr match) since the stubbed
+  controller init never builds one. LL scratch prefers the linker-placed
+  `ble_emu_scratch` over fixed RAM (fixed bases collide with the heap once
+  .bss grows). Verified by `25-verify-hci.mjs` §5 (connect + disc 0x11 +
+  write-rsp 0x13 + notify 0x1B + payload on C6; connect on H2/C5).
   Enrich sketches to log
   MAC, service/characteristic UUIDs, advertising config, and connection/GATT
   callbacks (see `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest`).

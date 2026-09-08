@@ -41,6 +41,8 @@ function parseBle(msg) {
                                            return { type: 'ble.heartbeat', uptimeMs: +mm[1], connections: +mm[2] };
   if ((mm = msg.match(/^gatt-notify uuid=(\S+) value='([^']*)'$/)))
                                            return { type: 'ble.gatt_notify', uuid: mm[1], value: mm[2] };
+  if ((mm = msg.match(/^console-notify value='([^']*)'$/)))
+                                           return { type: 'ble.console_notify', value: mm[1] };
   if ((mm = msg.match(/^connect peer=(\S+) handle=(\d+)$/)))
                                            return { type: 'ble.connect', peer: mm[1], handle: +mm[2] };
   if ((mm = msg.match(/^disconnect peer=(\S+) reason=(0x[0-9a-fA-F]+)$/)))

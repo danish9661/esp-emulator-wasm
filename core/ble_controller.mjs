@@ -147,7 +147,12 @@ export class BLEController {
                 return st(0x08);
             case 0x201c: // LE Read Supported States
                 return st(0xff, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x00, 0x00);
-            case 0x2022: // LE Read Maximum Data Length
+            case 0x2022: // LE Set Data Length
+                // CC echoes conn_handle (checked against the request; a
+                // short stub trips ECONTROLLER -> host reset). Single
+                // fabricated connection always uses handle 1.
+                return st(0x01, 0x00);
+            case 0x202f: // LE Read Maximum Data Length
                 return st(0xfb, 0x00, 0x48, 0x08, 0xfb, 0x00, 0x48, 0x08);
             case 0x2033: // LE Read Number of Supported Advertising Sets
                 return st(0x08);
@@ -162,6 +167,13 @@ export class BLEController {
                 // length check in ble_hs_hci_cmd_tx, which schedules a host
                 // reset — the infinite Reset loop. Top bits 0b11 = static.
                 return st(0xc4, 0x22, 0x22, 0x22, 0x22, 0x22);
+
+            case 0x041d: // Read Remote Version Information (async: the
+            case 0x2016: // LE Read Remote Features (async) completion event
+                // is fabricated by the test (!rver/!feat), so answer Command
+                // Status (pending) here — a Command Complete would leave the
+                // host waiting for a completion that never comes.
+                return [EVT_CMD_STATUS, 0x04, 0x00, 0x01, opLo, opHi];
 
             default:
                 // Unknown command: respond SUCCESS so NimBLE does not wedge.

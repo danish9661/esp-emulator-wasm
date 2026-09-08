@@ -1,0 +1,61 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ble:
+    name: BLE suites (build + verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - name: Install ESP32 core and libs
+        run: |
+          export PATH="$GITHUB_WORKSPACE/bin:$PATH"
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.10
+          arduino-cli lib install "NimBLE-Arduino@2.5.1"
+
+      - name: Build BLE sketches
+        run: |
+          export PATH="$GITHUB_WORKSPACE/bin:$PATH"
+          export TMPDIR=/tmp/isolated_path
+          mkdir -p /tmp/isolated_path
+          arduino-cli compile --fqbn esp32:esp32:esp32c3 --build-path "$GITHUB_WORKSPACE/spike/sketches/BLETest/build/esp32.esp32.esp32c3" "$GITHUB_WORKSPACE/spike/sketches/BLETest/BLETest.ino"
+          for chip in esp32c3 esp32c6 esp32h2 esp32c5; do
+            short=${chip#esp32}
+            arduino-cli compile --fqbn esp32:esp32:$chip --build-path /tmp/blebuild_$chip "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/BLEDemo.ino"
+            cp /tmp/blebuild_$chip/BLEDemo.ino.{elf,merged.bin,bin,bootloader.bin,partitions.bin,map} "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build/esp32.esp32.$chip/"
+            if [ "$chip" != "esp32c3" ]; then
+              cp /tmp/blebuild_$chip/BLEDemo.ino.{elf,merged.bin,bin,bootloader.bin,partitions.bin,map} "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build_esp32$short/"
+            fi
+          done
+
+      - name: Run BLE verification (25-verify-hci)
+        run: node spike/25-verify-hci.mjs
+
+  regression:
+    name: Peripheral regression (tracked samples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run IDF verification (27-verify-idf)
+        run: node spike/27-verify-idf.mjs
