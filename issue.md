@@ -45,6 +45,20 @@ workaround.
 
 ## Issue 2 → `espressif/esp-emulator`: no BLE radio model for C6/H2 (and C5) LL-transport images
 
+**STATUS: RESOLVED LOCALLY — no upstream action needed for host verification.**
+C6/H2/C5 NimBLE is fully live in-sim (BLEDemo: ~19 HCI commands
+Reset→`LE_Set_Adv_Enable`, syncs, advertises, heartbeats; asserted by
+`25-verify-hci.mjs` §3 on all three chips). Technique: route HCI around the
+ROM link layer instead of emulating RF — transport-init barrier stubbed,
+sem takes neutered to their success paths, commands redirected into a parked
+body that emits `B` frames / polls the shared mirror / calls the host recv
+callback directly, ROM mbuf/substrate gaps covered by tiny shims (full
+write-up: `BLE-OBSERVABILITY.md` § "LL-transport bring-up"). The virtual
+controller answers everything, so no radio is needed. (Genuine over-the-air
+RF remains unmodeled — out of scope for verification.)
+
+Original report preserved below.
+
 **Observed:** C3 NimBLE works because images expose VHCI symbols
 (`esp_vhci_host_send_packet`, `esp_vhci_host_register_callback`, …) that a
 JS virtual controller can answer. C6/H2 Arduino BLE builds contain **no

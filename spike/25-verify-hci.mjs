@@ -29,11 +29,11 @@ import { BLEController } from '../core/ble_controller.mjs';
     if (!ok) throw new Error('BLEController unit test failed');
 }
 
-async function runSketch(sketch, batches = 400) {
-    const dir = `spike/sketches/${sketch}/build/esp32.esp32.esp32c3`;
+async function runSketch(sketch, batches = 400, chip = 'esp32c3', dir = null) {
+    dir = dir || `spike/sketches/${sketch}/build/esp32.esp32.esp32c3`;
     const flash = new Uint8Array(readFileSync(`${dir}/${sketch}.ino.merged.bin`));
     const elf = new Uint8Array(readFileSync(`${dir}/${sketch}.ino.elf`));
-    const mcu = await ESP32C3.create({ chip: 'esp32c3' });
+    const mcu = await ESP32C3.create({ chip });
     const { patched } = await mcu.loadFirmware(flash, elf);
     const hci = [];
     mcu.uart0.ble.onHci((msg) => hci.push(msg));
@@ -101,6 +101,32 @@ async function runSketch(sketch, batches = 400) {
     }
 }
 
+// 3. BLEDemo on LL-transport chips (C6/H2/C5 Arduino BLE: NimBLE LINK LAYER
+// transport, no VHCI symbols). HCI is routed around the ROM link layer:
+// transport-init barrier stubbed, sem takes neutered, commands redirected
+// into a parked body that emits B frames / polls the shared mirror / calls
+// the host recv_cb directly; ROM mbuf/substrate gaps covered by tiny shims
+// (see core/ble_shims.mjs llCmdPark). Same virtual controller answers.
+for (const [chip, dir] of [['esp32c6', 'build_esp32c6'], ['esp32h2', 'build_esp32h2'], ['esp32c5', 'build_esp32c5']]) {
+    console.log('\n========================================');
+    console.log(`TEST: BLEDemo NimBLE host live on ${chip} (LL transport)`);
+    console.log('========================================');
+    const { patched, hci, consoleText } = await runSketch('BLEDemo', 6000, chip, `spike/sketches/BLEDemo/${dir}`);
+    const cmds = hci.filter(m => m.dir === 'cmd');
+    const opcodes = new Set(cmds.map(c => c.opcode));
+    const advEnable = cmds.filter(c => c.opcode === 0x200a).length;
+    const llOn = patched.some(p => /^ble:420/.test(p));
+    const ok = llOn && opcodes.size >= 15 && advEnable >= 1 &&
+        consoleText.includes('init done') &&
+        consoleText.includes('advertising started') &&
+        consoleText.includes('ble-done');
+    console.log(`LL redirect (${llOn ? 'on' : 'OFF'}) + ${opcodes.size} opcodes + AdvEnable x${advEnable}: ${ok ? 'PASS' : 'FAIL'}`);
+    if (!ok) {
+        console.log('Console tail:', consoleText.slice(-300));
+        throw new Error(`BLEDemo LL health test failed on ${chip}`);
+    }
+}
+
 console.log('\n================================================================================');
-console.log('HCI TESTS PASSED (controller unit + direct round trip x2 + BLEDemo health)! ✅');
+console.log('HCI TESTS PASSED (controller unit + direct round trip x2 + BLEDemo health C3 + LL C6/H2/C5)! ✅');
 console.log('================================================================================\n');

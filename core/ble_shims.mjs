@@ -18,7 +18,8 @@
 //                     UART0 RX; the shim decodes it and calls cb())
 // Hex encoding matches the SPI convention: nibble n -> 'a' + n (decoded -97).
 
-import { assemble, asm32, li, jalr, A0, A1, A2, A3, T0, T1, T2, T3, T4, T5, SP } from './rvasm.mjs';
+import { assemble, asm32, li, jal, jalr, A0, A1, A2, A3, T0, T1, T2, T3, T4, T5, SP } from './rvasm.mjs';
+import { I2C_CELL_BASE } from '../shims.mjs';
 
 // Per-chip DRAM scratch for runtime data (callback ptr + event buffer). Lives in the
 // firmware's RAM; .bss is zeroed at boot but that is fine — the firmware writes cb
@@ -181,8 +182,81 @@ function sendPacket(scratch, uartHi, give) {
     return asm32(assemble(p));
 }
 
+/**
+ * Parked LL-transport command body (C6/H2/C5 Arduino BLE: NimBLE LINK LAYER
+ * transport, no VHCI symbols). Entered via a JAL redirect from
+ * ble_transport_to_ll_cmd_impl with a0 = flat HCI cmd buffer
+ * ([opcode u16 LE][param_len u8][params...], built by ble_hs_hci_cmd_send_buf).
+ * Forwards the command as a B frame, polls the shared-memory mirror for the
+ * virtual controller's answer, copies it (minus the 0x04 indicator) to the
+ * stack and delivers it by calling ble_transport_host_recv_cb(4, buf), then
+ * re-gives ble_hs_hci_sem (infinite virtual buffers, same rationale as the
+ * VHCI send shim) and returns 0.
+ * Uses t0-t6/a0-a7/sp only (caller-saved); preserves ra + s-regs + sp.
+ * Mirror rendezvous reuses the C3 relative layout at cellBase+0x400, so the
+ * host mirror/controller code works unchanged.
+ */
+function llCmdPark({ cellBase, uartFull, recvAddr }) {
+    const mirror = cellBase + 0x400;
+    const p = [
+        { op: 'addi', rd: SP, rs1: SP, imm: -16 },
+        { op: 'sw', rs2: 1, rs1: SP, imm: 12 },
+        { op: 'lui', rd: T0, imm: uartFull },
+        // mirror rendezvous (host scans for the magic pair, writes evt+len, sets flag=1)
+        ...li(T1, mirror),
+        ...li(T2, BLE_MAGIC1),
+        { op: 'sw', rs2: T2, rs1: T1, imm: 8 },
+        ...li(T2, BLE_MAGIC2),
+        { op: 'sw', rs2: T2, rs1: T1, imm: 12 },
+        // ---- transmit ESC _ B ----
+        { op: 'addi', rd: T2, rs1: 0, imm: 27 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 95 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 66 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        // VHCI packet-type byte 0x01 -> 'a','b'
+        { op: 'addi', rd: T2, rs1: 0, imm: 97 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 98 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        // ---- hex-encode flat buffer (total = buf[2] + 3) ----
+        { op: 'lbu', rd: T3, rs1: A0, imm: 2 },
+        { op: 'addi', rd: T4, rs1: T3, imm: 3 },
+        { op: 'addi', rd: T5, rs1: A0, imm: 0 },
+        { label: 'll_tx_loop' },
+        { op: 'beq', rs1: T4, rs2: 0, label: 'll_tx_done' },
+        { op: 'lbu', rd: T3, rs1: T5, imm: 0 },
+        { op: 'srli', rd: T2, rs1: T3, sh: 4 }, { op: 'addi', rd: T2, rs1: T2, imm: 97 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'andi', rd: T2, rs1: T3, imm: 15 }, { op: 'addi', rd: T2, rs1: T2, imm: 97 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T5, rs1: T5, imm: 1 },
+        { op: 'addi', rd: T4, rs1: T4, imm: -1 },
+        { op: 'jal', rd: 0, label: 'll_tx_loop' },
+        { label: 'll_tx_done' },
+        { op: 'addi', rd: T2, rs1: 0, imm: 27 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T2, rs1: 0, imm: 92 }, { op: 'sw', rs2: T2, rs1: T0, imm: 0 },
+        // ---- wait for the host's shared-memory event (flag==1) ----
+        ...li(T1, mirror),
+        { label: 'll_rx_wait' },
+        { op: 'lw', rd: T2, rs1: T1, imm: 8 },
+        { op: 'addi', rd: T2, rs1: T2, imm: -1 },
+        { op: 'bne', rs1: T2, rs2: 0, label: 'll_rx_wait' },
+        // ---- deliver: recv_cb(4, evt+1). The event buffer stays in the
+        // mirror (persistent until the next command), NOT on the stack:
+        // ble_hs_hci_ack keeps pointing at it through wait_for_ack and
+        // process_ack, long after we return (stack would be garbage).
+        { op: 'addi', rd: A0, rs1: 0, imm: 4 },
+        { op: 'addi', rd: A1, rs1: T1, imm: 0x101 },
+        ...li(T2, recvAddr),
+        { op: 'jalr_ra', rs1: T2 },
+        // No semaphore re-give: the only takes are wait_for_ack (satisfied by
+        // rx_evt's real give) — the pre-send and rx_evt takes are neutered
+        // below, so takes={wait} and gives={rx_evt} balance from zero.
+        // epilogue
+        { op: 'lw', rd: 1, rs1: SP, imm: 12 },
+        { op: 'addi', rd: SP, rs1: SP, imm: 16 },
+        { op: 'addi', rd: A0, rs1: 0, imm: 0 },
+        { op: 'ret' },
+    ];
+    return asm32(assemble(p));
+}
+
 function makeTrampoline(targetAddr) {
-    // lui T0, hi ; addi T0, T0, lo ; jalr x0, T0, 0
     return asm32(assemble([...li(T0, targetAddr), { op: 'jalr', rd: 0, rs1: T0, imm: 0 }]));
 }
 
@@ -249,6 +323,21 @@ export function prepareBleShims(elf, chip) {
         // ESP-NimBLE-controller scan-dup-filter config (C6/H2 LL images only).
         'ble_vhci_disc_duplicate_mode_disable', 'ble_vhci_disc_duplicate_mode_enable',
         'ble_vhci_disc_duplicate_set_max_cache_size', 'ble_vhci_disc_duplicate_set_period_refresh_time',
+        'r_scan_duplicate_cache_refresh_cb', 'r_scan_duplicate_cache_refresh_timer_stop',
+        'r_scan_duplicate_cache_refresh_timer_start', 'r_scan_duplicate_cache_refresh_set_time',
+        'r_filter_duplicate_mode_enable', 'r_filter_duplicate_mode_config',
+        'r_filter_duplicate_mode_disable', 'r_filter_duplicate_set_ring_list_max_num',
+        'r_filter_duplicate_ad_type_config', 'r_filter_duplicate_data_base_init',
+        // LL-transport images (C6/H2/C5 Arduino BLE): route HCI around the
+        // ROM link layer (see llCmdPark).
+        'r_ble_hci_trans_cfg_hs', 'ble_transport_to_ll_cmd_impl',
+        'ble_transport_free', 'r_ble_ll_init', 'ble_transport_host_recv_cb',
+        'ble_hs_hci_cmd_tx', 'ble_hs_hci_rx_evt', 'ble_hs_hci_sem',
+        'r_ble_controller_init',
+        'esp_ble_register_bb_funcs', 'r_ble_controller_init',
+        'r_sdkconfig_get_opts', 'r_esp_ble_msys_init', 'ble_transport_alloc_cmd',
+        'r_ble_ll_set_public_addr',
+        'ble_hs_hci_ack',
     ];
     const { found } = elf.resolve(names);
     const byName = Object.fromEntries(found.map(s => [s.name, s]));
@@ -300,15 +389,237 @@ export function prepareBleShims(elf, chip) {
         // ones dereference LL env structs that only exist after radio init
         // (which we skip), faulting in r_filter_duplicate_mode_disable.
         // Filter config is irrelevant to a virtual controller. Scoped to
-        // non-VHCI images so C3 keeps its real functions.
+        // non-VHCI images so C3 keeps its real functions. The r_ ROM family
+        // (same story, reached via ble_controller_scan_duplicate_config)
+        // is stubbed too.
         if (!byName['esp_vhci_host_send_packet'] && !byName['API_vhci_host_send_packet']) {
-            for (const n of ['ble_vhci_disc_duplicate_mode_disable', 'ble_vhci_disc_duplicate_mode_enable', 'ble_vhci_disc_duplicate_set_max_cache_size', 'ble_vhci_disc_duplicate_set_period_refresh_time']) {
+            for (const n of ['ble_vhci_disc_duplicate_mode_disable', 'ble_vhci_disc_duplicate_mode_enable', 'ble_vhci_disc_duplicate_set_max_cache_size', 'ble_vhci_disc_duplicate_set_period_refresh_time', 'r_scan_duplicate_cache_refresh_cb', 'r_scan_duplicate_cache_refresh_timer_stop', 'r_scan_duplicate_cache_refresh_timer_start', 'r_scan_duplicate_cache_refresh_set_time', 'r_filter_duplicate_mode_enable', 'r_filter_duplicate_mode_config', 'r_filter_duplicate_mode_disable', 'r_filter_duplicate_set_ring_list_max_num', 'r_filter_duplicate_ad_type_config', 'r_filter_duplicate_data_base_init']) {
                 if (byName[n]) shims[n] = stubReturn(0);
             }
         }
         if (byName['API_vhci_host_check_send_available']) {
             shims['API_vhci_host_check_send_available'] = stubReturn(1);
         }
+
+        // LL-transport images (no VHCI symbols at all): route HCI around the
+        // ROM link layer. r_ble_hci_trans_cfg_hs only stores callbacks into
+        // the (radio-less, NULL) LL env struct -> pure success stub.
+        // Radio-touching inits are stubbed whole (their exact register
+        // pokes are unknowable; host-side init runs REAL): modem clocks,
+        // PHY modem, coex, baseband funcs, and the ROM controller init.
+        // ble_transport_to_ll_cmd_impl (li a1,0 + j na_...) -> JAL into the
+        // parked llCmdPark body (flat cmd in a0). ble_transport_free -> ret
+        // (protects our stack event buffer from the ROM mbuf free at the end
+        // of ble_hs_hci_cmd_tx). The body parks in dead r_ble_ll_init space
+        // (its only caller is the skipped controller init, so it never runs).
+        const llNames = ['r_ble_hci_trans_cfg_hs', 'ble_transport_to_ll_cmd_impl',
+            'ble_transport_free', 'r_ble_ll_init', 'ble_transport_host_recv_cb',
+            'ble_hs_hci_cmd_tx', 'ble_hs_hci_rx_evt', 'ble_hs_hci_sem',
+            'esp_bt_controller_init',
+            'esp_ble_register_bb_funcs', 'r_ble_controller_init',
+            'r_sdkconfig_get_opts', 'r_esp_ble_msys_init', 'ble_transport_alloc_cmd'];
+        // Radio-touching callees stubbed whole (esp_phy_modem_init and
+        // coex_core_init are already ret/li-a0-0 stubs in these builds).
+        const radioSkips = ['esp_ble_register_bb_funcs', 'r_ble_controller_init',
+            'r_ble_ll_set_public_addr'];
+        const hasVhci = byName['esp_vhci_host_send_packet'] || byName['API_vhci_host_send_packet'];
+        if (!hasVhci && llNames.every((n) => byName[n])) {
+            // Drop the blanket controller-init stub: host-side init runs
+            // REAL here; radio callees are stubbed individually below.
+            delete shims['esp_bt_controller_init'];
+            const cfg = byName['r_ble_hci_trans_cfg_hs'];
+            const redirect = byName['ble_transport_to_ll_cmd_impl'];
+            const freeFn = byName['ble_transport_free'];
+            const semAddr = byName['ble_hs_hci_sem'].addr;
+            const parkBase = byName['r_ble_ll_init'].addr + 16;
+            // Verify the redirect site still has the expected shape
+            // (li a1,0 (0x4581) + j (opcode 0x6f)) before overwriting, and
+            // that ble_transport_free starts with a jump we can ret over.
+            const dv = new DataView(elf.buf.buffer, elf.buf.byteOffset);
+            const at = (vaddr) => {
+                const off = elf.vaddrToFileOffset(vaddr);
+                return off === null ? null : dv.getUint32(off, true);
+            };
+            const shapeOk = ((at(redirect.addr) >>> 0) & 0xffff) === 0x4581 &&
+                ((at(freeFn.addr) >>> 0) & 0x7f) === 0x6f;
+            // Radio-touching callees are stubbed whole (li a0,0 + ret needs
+            // 8B; every call site feeds a bnez-a0 error check, and skipping
+            // at the callee covers all callers on every chip build).
+            const radioSkipped = [];
+            for (const n of radioSkips) {
+                if (byName[n].size >= 8) {
+                    shims[n] = makeRet0();
+                    radioSkipped.push(n);
+                }
+            }
+            // Neuter the two ble_hs_hci_sem takes (pre-send in cmd_tx,
+            // ack-side in rx_evt): these are NPL sem_pend calls returning an
+            // error code (0 = success), and with no radio nothing ever gives
+            // the sem, so the first takes would fail/timeout. Patched to
+            // li a0,0 (fabricated success); the ack-wait take stays real and
+            // is satisfied by rx_evt's genuine give on each delivered event.
+            const takes = [
+                ...findSemTakes(elf, byName['ble_hs_hci_cmd_tx'].addr, byName['ble_hs_hci_cmd_tx'].size, semAddr),
+                ...findSemTakes(elf, byName['ble_hs_hci_rx_evt'].addr, byName['ble_hs_hci_rx_evt'].size, semAddr),
+            ];
+            const cellBase = I2C_CELL_BASE[chip] ?? I2C_CELL_BASE.esp32c3;
+            const uartFull = (UART_HI[chip] ?? UART_HI.esp32c3) << 12;
+            const body = llCmdPark({ cellBase, uartFull, recvAddr: byName['ble_transport_host_recv_cb'].addr });
+            const jalOff = parkBase - redirect.addr;
+            const cjOk = takes.every((t) => {
+                const d = t.target - t.at;
+                return d >= -2048 && d <= 2046 && (d & 1) === 0;
+            });
+            if (shapeOk && takes.length === 2 && cjOk && radioSkipped.length === radioSkips.length &&
+                cfg.size >= 8 && redirect.size >= 6 && freeFn.size >= 4 &&
+                parkBase + body.length <= byName['r_ble_ll_init'].addr + byName['r_ble_ll_init'].size &&
+                jalOff >= -(1 << 20) && jalOff < (1 << 20)) {
+                shims['r_ble_hci_trans_cfg_hs'] = makeRet0();
+                shims['ble_transport_free'] = makeRetNop();
+                // r_sdkconfig_get_opts reads the config struct out of the
+                // (never allocated, radio-side) LL env -> point it at 256
+                // pristine-zero bytes instead (feature defaults). Soft: skip
+                // with a warning if the shape differs.
+                if (byName['r_sdkconfig_get_opts'] && byName['r_sdkconfig_get_opts'].size >= 10) {
+                    const go = byName['r_sdkconfig_get_opts'];
+                    const fake = (cellBase + 0x600) >>> 0;
+                    const hi = ((fake + 0x800) >> 12) & 0xfffff;
+                    const lo = fake - (hi << 12);
+                    if (lo >= -2048 && lo < 2048) {
+                        // lui a0,HI; addi a0,a0,LO; c.ret (10B exact fit).
+                        const blob = new Uint8Array(10);
+                        const bdv = new DataView(blob.buffer);
+                        bdv.setUint32(0, (((hi << 12) | (10 << 7) | 0x37) >>> 0), true);
+                        bdv.setUint32(4, ((((lo & 0xfff) << 20) | (10 << 15) | (10 << 7) | 0x13) >>> 0), true);
+                        bdv.setUint16(8, 0x8082, true); // c.ret
+                        extra.push({ addr: go.addr, bytes: blob });
+                    } else {
+                        console.warn('[ble] fake config addr not lui+addi-able, skipping');
+                    }
+                }
+                // r_esp_ble_msys_init sets up ROM mbuf pools (radio-side
+                // state); with no radio it can only fault -> success stub.
+                // The HCI command buffer comes from our static slot below.
+                if (byName['r_esp_ble_msys_init'] && byName['r_esp_ble_msys_init'].size >= 8) {
+                    shims['r_esp_ble_msys_init'] = makeRet0();
+                }
+                // ble_transport_alloc_cmd (ROM mbuf alloc) -> static 264B
+                // slot via a parked body (the 6B trampoline fits jal+nop).
+                // The host sends one command at a time and rewrites it fully
+                // before use. Soft: skip if shapes differ.
+                const allocFn = byName['ble_transport_alloc_cmd'];
+                const allocOff = elf.vaddrToFileOffset(allocFn.addr);
+                const allocIsTramp = allocOff !== null && allocFn.size >= 6;
+                const staticBody = allocCmdStatic(cellBase + 0x800);
+                const staticAt = parkBase + body.length;
+                const allocJal = staticAt - allocFn.addr;
+                if (byName['ble_transport_alloc_cmd'] && allocIsTramp &&
+                    staticAt + staticBody.length <= byName['r_ble_ll_init'].addr + byName['r_ble_ll_init'].size &&
+                    allocJal >= -(1 << 20) && allocJal < (1 << 20)) {
+                    const ajw = ((((allocJal >> 20) & 1) << 31) | (((allocJal >> 1) & 0x3ff) << 21) |
+                        (((allocJal >> 11) & 1) << 20) | (((allocJal >> 12) & 0xff) << 12)) | 0x6f;
+                    const aj = new Uint8Array(6);
+                    new DataView(aj.buffer).setUint32(0, ajw >>> 0, true);
+                    aj[4] = 0x01; aj[5] = 0x00; // c.nop
+                    extra.push({ addr: allocFn.addr, bytes: aj });
+                    extra.push({ addr: staticAt, bytes: staticBody });
+                }
+                const jw = ((((jalOff >> 20) & 1) << 31) | (((jalOff >> 1) & 0x3ff) << 21) |
+                    (((jalOff >> 11) & 1) << 20) | (((jalOff >> 12) & 0xff) << 12)) | 0x6f;
+                const redir = new Uint8Array(6);
+                new DataView(redir.buffer).setUint32(0, jw >>> 0, true);
+                redir[4] = 0x01; redir[5] = 0x00; // c.nop
+                extra.push({ addr: redirect.addr, bytes: redir });
+                extra.push({ addr: parkBase, bytes: body });
+                // C.J straight to each take's success path (+ c.nop pad).
+                for (const t of takes) {
+                    const off = t.target - t.at;
+                    const cj = (0xa000 | 0x1 |
+                        (((off >> 11) & 1) << 12) | (((off >> 4) & 1) << 11) |
+                        (((off >> 8) & 3) << 9) | (((off >> 10) & 1) << 8) |
+                        (((off >> 6) & 1) << 7) | (((off >> 7) & 1) << 6) |
+                        (((off >> 1) & 7) << 3) | (((off >> 5) & 1) << 2)) >>> 0;
+                    const patch = new Uint8Array(4);
+                    new DataView(patch.buffer).setUint16(0, cj & 0xffff, true);
+                    patch[2] = 0x01; patch[3] = 0x00; // c.nop
+                    extra.push({ addr: t.at, bytes: patch });
+                }
+            } else {
+                console.warn(`[ble] LL redirect skipped (shape=${shapeOk} takes=${takes.length} radio=${radioSkipped.length}), BLE will be silent`);
+            }
+        }
     }
     return { shims, extra, hooks: found };
+}
+
+/**
+ * Static-buffer replacement for ble_transport_alloc_cmd (ROM mbuf alloc
+ * needs ROM pools that only exist after radio init). The NimBLE host sends
+ * one command at a time and always rewrites the buffer fully before use,
+ * so a single static 264B slot (max HCI cmd: 3+255) is safe. Returns the
+ * slot address in a0.
+ */
+function allocCmdStatic(scratch) {
+    return asm32(assemble([
+        ...li(A0, scratch),
+        { op: 'ret' },
+    ]));
+}
+
+function makeRet0() {
+    return asm32(assemble([{ op: 'addi', rd: A0, rs1: 0, imm: 0 }, { op: 'ret' }]));
+}
+
+function makeRetNop() {
+    // c.ret (2B) + c.nop (2B): 4B total for tiny trampoline bodies.
+    return new Uint8Array([0x82, 0x80, 0x01, 0x00]);
+}
+
+/**
+ * Find `take(sem)` call sites to neuter: scan a function body for a C.JALR
+ * preceded (within 14B) by `addi r,r,LOW12(semAddr)`, with a C.BEQZ/C.BNEZ
+ * on a0 right after. Returns [{at, target}] where target is the branch
+ * destination (the success path: takes return an NPL error code with
+ * 0 == success). Patches replace [jalr+branch] (4B) with C.J to target —
+ * a plain li-a0-0 would WRONGLY fall into the fail block (learned the hard
+ * way: every command failed).
+ */
+function findSemTakes(elf, fnAddr, fnSize, semAddr) {
+    const dv = new DataView(elf.buf.buffer, elf.buf.byteOffset);
+    const at = (vaddr) => {
+        const off = elf.vaddrToFileOffset(vaddr);
+        return off === null ? null : dv.getUint16(off, true);
+    };
+    const LOW = semAddr & 0xfff;
+    const hits = [];
+    for (let o = 0; o + 2 <= fnSize; o += 2) {
+        const hw = at(fnAddr + o);
+        if (hw === null) break;
+        if ((hw & 0xf07f) !== 0x9002) continue; // C.JALR
+        let anchored = false;
+        for (let back = 2; back <= 14 && o - back >= 0; back += 2) {
+            // I-type addi with imm12 == LOW (any regs: cmd builds the sem
+            // addr as addi a0,a0,LOW, rx_evt as addi a0,s1,LOW).
+            const woff = fnAddr + o - back;
+            if (woff & 2) continue;
+            const w = at(woff);
+            if (w === null) continue;
+            const word = w | (at(woff + 2) << 16);
+            if ((word & 0x7f) === 0x13 && ((word >>> 20) & 0xfff) === LOW) { anchored = true; break; }
+        }
+        if (!anchored) continue;
+        const after = at(fnAddr + o + 2);
+        // C.BEQZ/C.BNEZ on a0 (funct3 110/111, op 01, rs1' == 010 for a0,
+        // since compressed regs map 000->s0 ... 010->a0 ... 111->a5).
+        // Decode its destination: C.B off[8|4:3] from bits[12:10],
+        // off[7:6|2:1|5] from bits[6:2].
+        const br = after === null ? -1 : (after & 0xe003);
+        if ((br === 0xc001 || br === 0xe003) && ((after >>> 7) & 0x7) === 2) {
+            let off = (((after >> 12) & 1) << 8) | (((after >> 10) & 3) << 3) |
+                (((after >> 5) & 3) << 6) | (((after >> 3) & 3) << 1) | (((after >> 2) & 1) << 5);
+            if (off & 0x100) off -= 0x200;
+            hits.push({ at: fnAddr + o, target: (fnAddr + o + 2 + off) >>> 0 });
+        }
+    }
+    return hits;
 }

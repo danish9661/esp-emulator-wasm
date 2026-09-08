@@ -122,8 +122,8 @@ silicon (no shim needed), not explicitly regression-tested
 | Camera (grayscale test pattern) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-camera API + APC `F` frames | 24-verify #4 |
 | LCD panel (RGB565 blits) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-lcd API + APC `L` frames | 24-verify #5 |
 | Wi-Fi (STA/AP) | ✅* | ✅* | — | — | ❌ | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
-| BLE HCI (direct transport calls) | ✅ | — | — | — | ❌ | JS VHCI shims + virtual controller, fully observable (C3 only; C6/H2 use LL transport, C5 has no VHCI) | 25-verify |
-| BLE via NimBLE host stack | ✅ | ❌ | ❌ | — | ❌ | C3 host task live: Reset…adv setup answered, syncs, advertises; C6/H2 need radio emulation | 25-verify (C3), observe_ble.mjs |
+| BLE HCI (direct transport calls) | ✅ | — | — | — | ❌ | JS VHCI shims + virtual controller, fully observable (C3 VHCI; C6/H2/C5 routed around ROM LL, same controller) | 25-verify |
+| BLE via NimBLE host stack | ✅ | ✅ | ✅ | — | ✅ | host task live on all chips: Reset…adv setup answered, syncs, advertises (C3 via VHCI; C6/H2/C5 via LL-transport HCI routing — no radio needed) | 25-verify, observe_ble.mjs |
 | 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only) | none |
 | Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | — | native CLI only (`--net tap/user`) | none |
 | USB (Serial/JTAG driver; OTG on P4) | ✅ | ❌ | ❌ | ❌ | ❌ | `usb_serial_jtag_*` shims route bytes to/from the UART console (no WASM glue needed); C3 verified | 27-verify #4 |
@@ -179,16 +179,22 @@ cannot reach them:
   polls a flag word; the host writes event bytes to the WASM linear-memory
   mirror — UART RX is not involved). Verified by `spike/25-verify-hci.mjs`.
 
-  **NimBLE host stack (C3) is fully live:** the host task transmits real HCI
+  **NimBLE host stack is fully live on all chips:** the host task transmits real HCI
   (Reset → version/commands/features → sync → adv setup → `LE_Set_Adv_Enable`,
-  ~24 commands, zero NimBLE errors), syncs, and advertises — all observable
-  (`observe_ble.mjs BLEDemo --hci`). Required four load-time fixes beyond the
+  ~19-24 commands, zero NimBLE errors), syncs, and advertises — all observable
+  (`observe_ble.mjs BLEDemo --hci`). C3 required four load-time fixes beyond the
   init shims (see `BLE-OBSERVABILITY.md` § "NimBLE host bring-up"): registerCb
   returns ESP_OK, send shim re-gives the VHCI sem, struct-vs-function event
   callback sniffing, and full-length `0x1002/0x1003/0xfc01/0x2018` answers.
-  C6/H2 Arduino builds use a different transport (NimBLE Link Layer
-  `hci_transport_*` + ROM `r_ble_ll_*`, no VHCI symbols) that needs radio
-  emulation upstream does not provide — out of scope. Enrich sketches to log
+  C6/H2/C5 Arduino builds use a different transport (NimBLE Link Layer
+  `hci_transport_*` + ROM `r_ble_ll_*`, no VHCI symbols): HCI is routed around
+  the ROM link layer instead — transport-init barrier stubbed, sem takes
+  neutered to their success paths, commands redirected into a parked body that
+  emits `B` frames / polls the shared mirror / calls the host recv callback
+  directly, ROM mbuf/substrate gaps covered by tiny shims (see
+  `BLE-OBSERVABILITY.md` § "LL-transport bring-up (C6/H2/C5)"). No radio
+  emulation needed: the virtual controller answers everything in-sim.
+  Enrich sketches to log
   MAC, service/characteristic UUIDs, advertising config, and connection/GATT
   callbacks (see `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest`).
   Full how-to (CLI, `BleInspector` API, web UI panel, event reference, sketch
@@ -244,10 +250,8 @@ cannot reach them:
 - **C5** (RV32IMAC, C6-shaped map, P4-style CLIC, 29 GPIOs): full bring-up —
   `UART0_BASE`/`SPI_BUS_BASE`/`BLE_SCRATCH` = `0x60000000`/`0x40810000`/
   `0x40810000`, `samples/c5/` (22 demos), `spike/28-verify-c5.mjs` (22/22).
-  Silicon gaps: **no TWAI** (TWAIDemo doesn't link), **no VHCI host interface**
-  (BLETest doesn't link; BLEDemo/NimBLE still Gurus at radio bring-up on
-  0.42.0 — the native CLI models C5 BLE advertising, the WASM build does not
-  expose it), C5 15.4 not modeled by the core.
+  Silicon gaps: **no TWAI** (TWAIDemo doesn't link); BLE works via LL-transport
+  HCI routing (see above), C5 15.4 not modeled by the core.
 - **S31** (dual RV32, 60 GPIOs, chip ID `0x20`, ROM `ESP-ROM:esp32s31-20251218`):
   target accepted, embedded ROM live, chip-ID gate verified
   (`spike/29-verify-s31.mjs` ROM-banner smoke via a `mkimg.py`-forged probe
@@ -287,7 +291,7 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 
 | Status | Count | Protocols |
 |---|:---:|---|
-| ✅ Implemented & verified | 30 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (C3), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, IDF-USB-serial, Timers, WDT, RTC, LittleFS, NVS, MicroPython (REPL + machine.I2C/SPI on C3/C6/H2) |
+| ✅ Implemented & verified | 30 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (all chips), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, IDF-USB-serial, Timers, WDT, RTC, LittleFS, NVS, MicroPython (REPL + machine.I2C/SPI on C3/C6/H2) |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
 | ❌ Native CLI only, no WASM glue | 2 | 802.15.4, Ethernet |
 | ❌ Not supported | 0 | — (all previously open items are covered or upstream-blocked; see `issue.md`) |

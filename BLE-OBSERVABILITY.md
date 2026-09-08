@@ -23,8 +23,8 @@ stacks run on the emulator:
    This works after four load-time fixes (see "NimBLE host bring-up" below);
    before them the stack was host-silent. C6/H2 Arduino builds use a
    different transport (NimBLE Link Layer `hci_transport_*` + ROM `r_ble_ll_*`
-   — no VHCI symbols at all) that needs radio emulation upstream does not
-   provide, so C6/H2/C5 BLE remains out of scope. The tooling below covers
+   — no VHCI symbols at all), routed around the ROM link layer instead (see
+   "LL-transport bring-up" below). The tooling below covers
    both paths.
 
 ## Components
@@ -309,3 +309,57 @@ reads (`vhci_send_sem`, `ble_hs_sync_state`, `m_synced`, task handles):
 Result: ~24 HCI commands from Reset through `LE_Set_Adv_Enable`, zero
 NimBLE errors, `m_synced`/`m_initialized` set, sketch heartbeats.
 `spike/25-verify-hci.mjs` asserts stack Reset + AdvEnable frames headlessly.
+
+## LL-transport bring-up (C6/H2/C5): HCI without VHCI or radio
+
+C6/H2/C5 Arduino BLE builds contain no VHCI symbols: NimBLE talks through
+Arduino's `na_hci_transport_*` glue into ROM `r_ble_ll_*` (Link Layer), which
+needs a radio. Instead of emulating RF, the loader routes HCI around the ROM
+LL entirely — same virtual controller answers, no radio involved. Verified
+by `25-verify-hci.mjs` §3 (19 opcodes, AdvEnable x3, `ble-done` on all three
+chips). How, layer by layer (all found by objdump + Guru-MEPC symbolizing):
+
+1. **Transport-init barrier**: `esp_nimble_init` calls
+   `r_ble_hci_trans_cfg_hs`, which stores callbacks into the NULL LL env
+   (`ble_hci_trans_env_p`) → Store fault. Hooked to `ret 0`; nothing ever
+   reads that struct (all readers are dead ROM).
+2. **Controller init runs REAL (selectively)**: the old blanket
+   `esp_bt_controller_init` stub also killed host-side init living inside it
+   (`npl_funcs` table → every NPL call faults). Now only radio callees are
+   stubbed whole (`esp_ble_register_bb_funcs`, `r_ble_controller_init`;
+   `esp_phy_modem_init`/`coex_core_init` turned out to be ret stubs already):
+   npl table, mempools, eventqs, msys, transport all initialize for real.
+3. **ROM substrate gaps, filled minimally**: `r_sdkconfig_get_opts` reads
+   config out of the never-allocated LL env → pointed at 256 pristine-zero
+   bytes (feature defaults); `r_esp_ble_msys_init` (ROM mbuf pools) →
+   success stub; `ble_transport_alloc_cmd` (ROM mbuf alloc) → static 264B
+   slot (one outstanding command by host design); scan/duplicate-filter
+   family → success stubs (filtering never engages without a radio).
+4. **Command redirect**: `ble_transport_to_ll_cmd_impl` (`li a1,0` + `j`,
+   shape-asserted) → JAL into a parked body in dead `r_ble_ll_init` space.
+   The body emits the flat `[opcode u16][len][params]` buffer as a `B` frame
+   (with the `0x01` packet-type byte the controller expects), polls the
+   shared-memory mirror, then calls the host's real
+   `ble_transport_host_recv_cb(4, evtbuf)` directly — no callback sniffing
+   needed (single LL registration style, unlike VHCI's two).
+5. **Event lifetime**: the buffer handed to recv_cb lives in the mirror, NOT
+   on the stack — `ble_hs_hci_ack` keeps pointing at it through wait_for_ack
+   and process_ack. (A stack copy passed all unit checks yet looped Reset
+   forever: use-after-return corrupted the ack.)
+6. **Semaphore takes neutered, not faked**: `ble_hs_hci_sem` takes in cmd_tx
+   and rx_evt are NPL error-code takes (0 == success, not FreeRTOS boolean).
+   With no radio nothing ever gives, so both are overwritten with C.J
+   straight to their success paths (found per image by scanning for the
+   sem-addr-anchored `jalr` + following branch — never by offset). The
+   ack-wait take stays real and is satisfied by rx_evt's genuine give, so
+   takes={wait} and gives={rx_evt} balance from zero. (An earlier `li a0,1`
+   version deleted the branch and fell into the fail logger on every
+   command — E-log forensics (`s1=11` vs `12/17`) told which path ran.)
+
+Debugging playbook that earned all of the above: Guru MEPC + nearest-symbol
+lookup → objdump the fault site → classify (NULL-env store? radio MMIO?
+substrate alloc?) → smallest possible stub/redirect → re-run. The
+`rvasm.mjs` DSL plus per-image symbol resolution keeps every patch
+position-independent across C6/H2/C5 builds; every site is shape-asserted
+and the whole branch degrades to loud-skip (`BLE will be silent`) instead
+of a bad patch.

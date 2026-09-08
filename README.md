@@ -50,7 +50,7 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 | **Timers / WDT / RTC** | ✅ | GPTimer alarms, task watchdog, `esp_timer`/`gettimeofday` | Native silicon model, no shims |
 | **LittleFS / NVS** | ✅ | Flash filesystems + settings storage | Native flash MMIO model |
 | **Networking (WiFi)** | ✅* | Native emulator glue (`set_wifi_config`/`wifi_rx_push`/`wifi_tx_drain`, C3/C6). Ethernet TAP is native-CLI only, no WASM glue | WASM Wi-Fi MAC (no shims by design) |
-| **Bluetooth (BLE)** | ✅ | Direct VHCI calls: full HCI round trip via JS shims + virtual controller (observable). NimBLE host stack (C3): task live, syncs, advertises — ~24 HCI commands, zero errors | VHCI trampoline + shared-memory event channel |
+| **Bluetooth (BLE)** | ✅ | Direct VHCI calls: full HCI round trip via JS shims + virtual controller (observable). NimBLE host stack live on C3/C6/H2/C5: task live, syncs, advertises — ~19-24 HCI commands, zero errors (C6/H2/C5 via LL-transport HCI routing, no radio needed) | VHCI trampoline + shared-memory event channel |
 
 ---
 
