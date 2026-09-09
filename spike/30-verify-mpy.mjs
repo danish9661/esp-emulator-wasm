@@ -1,7 +1,7 @@
 // MicroPython v1.29.0 verification: REPL + machine.I2C/SPI/GPIO/ADC/PWM against the
-// virtual MPU6050 (0x68) and XOR SPI bus, on C3/C6/H2. P4/C5 firmware is
-// stored under samples/mpy but blocked: the WASM ROM model rejects their
-// downloadable images (invalid-header loop) — see issue.md #5.
+// virtual MPU6050 (0x68) and XOR SPI bus, on C3/C6/H2/C5/P4. P4/C5 boot from
+// composed flash images (bootloader @0x2000 + enlarged factory partition;
+// see spike/mk_mpy_p4c5.py). P4 GPIO is unmodeled in the WASM core, skipped.
 // Run: node spike/30-verify-mpy.mjs
 import { bootMpy, replExec } from './mpy_repl.mjs';
 import { MPU6050Device } from '../peripherals.mjs';
@@ -15,10 +15,17 @@ const CHIPS = [
     { chip: 'esp32c6', tag: 'c6', spiPins: [6, 7, 2], pwmMax: 16383, adcPin: 3, adcChan: 3 },
     // H2: GPIO6/7 are USB-reserved (MP rejects Pin(6)/Pin(7)), use 3/4/5.
     { chip: 'esp32h2', tag: 'h2', spiPins: [3, 4, 5], pwmMax: 16383, adcPin: 3, adcChan: 2 },
+    // C5: like H2 (Pin(3) reads ADC channel 2, 16-bit PWM saturates); the
+    // composed flash image carries bootloader + enlarged factory partition.
+    { chip: 'esp32c5', tag: 'c5', flash: 'mpy_c5_flash.bin', spiPins: [6, 7, 2], pwmMax: 16383, adcPin: 3, adcChan: 2 },
+    // P4: ADC lives on GPIO16+ (Pin(16) reads channel 0); GPIO is NOT
+    // modeled in the WASM core (no co-moving word in linear memory), so the
+    // GPIO block is skipped — REPL + I2C + SPI + ADC + PWM verified.
+    { chip: 'esp32p4', tag: 'p4', flash: 'mpy_p4_flash.bin', spiPins: [6, 7, 2], pwmMax: 16383, adcPin: 16, adcChan: 0, gpio: false },
 ];
 
 const results = [];
-for (const { chip, tag, spiPins, pwmMax, adcPin, adcChan } of CHIPS) {
+for (const { chip, tag, flash, spiPins, pwmMax, adcPin, adcChan, gpio } of CHIPS) {
     console.log(`\n========================================`);
     console.log(`TEST: MicroPython (machine.I2C/SPI/GPIO/ADC/PWM) on ${chip}`);
     console.log(`========================================`);
@@ -26,9 +33,9 @@ for (const { chip, tag, spiPins, pwmMax, adcPin, adcChan } of CHIPS) {
         const dev = new MPU6050Device();
         const { mcu, getConsole } = await bootMpy({
             chip,
-            binPath: `samples/mpy/mpy_${tag}.bin`,
+            binPath: `samples/mpy/${flash ?? `mpy_${tag}.bin`}`,
             elfPath: `samples/mpy/mpy_${tag}.elf`,
-            gpioProbe: true,
+            gpioProbe: gpio !== false,
             setup: (m) => {
                 m.i2c.register(0x68, { i2cWrite: (x) => dev.onWrite(x), i2cRead: (l) => dev.onRead(l) });
                 m.spi.onTransfer((b) => b ^ 0x55);
@@ -67,10 +74,12 @@ for (const { chip, tag, spiPins, pwmMax, adcPin, adcChan } of CHIPS) {
         checks.push(mcu.pwm.getDuty(8) === pwmMax);
         console.log(`${mcu.pwm.getDuty(8) === pwmMax ? 'PASS' : 'FAIL'}  pwm dutymax == ${pwmMax}`);
         // GPIO via live discovery (see calibrateGpioLive in mpy_repl.mjs).
+        // Skipped where the WASM core models no GPIO (P4).
         const c = (name, cond) => {
             console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
             checks.push(cond);
         };
+        if (gpio !== false) {
         await t('p2 = Pin(2, Pin.OUT)', '>>> ');
         await t('p2.on()', '>>> ');
         c('gpio2 out+high', mcu.gpio.pin(2).isOutput && mcu.gpio.pin(2).value === true);
@@ -80,6 +89,9 @@ for (const { chip, tag, spiPins, pwmMax, adcPin, adcChan } of CHIPS) {
         await t('print(Pin(4, Pin.IN).value())', '\r\n0\r\n');
         mcu.gpio.pin(4).setInput(true);
         await t('print(Pin(4, Pin.IN).value())', '\r\n1\r\n');
+        } else {
+            console.log('gpio SKIPPED (unmodeled in WASM core)');
+        }
         const pass = checks.every(Boolean);
         console.log(`MicroPython/${tag}: ${pass ? 'PASS ✅' : 'FAIL ❌'}`);
         results.push(pass);
@@ -91,7 +103,7 @@ for (const { chip, tag, spiPins, pwmMax, adcPin, adcChan } of CHIPS) {
 
 console.log('\n================================================================================');
 if (results.every(Boolean)) {
-    console.log('ALL MICROPYTHON FIRMWARE TESTS PASSED (REPL + I2C + SPI + GPIO + ADC + PWM on C3/C6/H2)! ✅');
+    console.log('ALL MICROPYTHON FIRMWARE TESTS PASSED (REPL + I2C + SPI + GPIO + ADC + PWM on C3/C6/H2/C5; P4 without GPIO)! ✅');
 } else {
     console.log('MICROPYTHON FAILURES PRESENT ❌');
     process.exit(1);

@@ -160,9 +160,28 @@ the ROM model only accepts the Arduino-shaped image and the
 over UART0 on C3/C6/H2 (bare `.bin` as flash), with `machine.I2C`/`machine.SPI`
 fully working through the loader's IDF shims (`spike/30-verify-mpy.mjs`).
 
-**Impact:** P4/C5 MicroPython (REPL, peripherals) is unreachable despite
-complete firmware being available; the IDF driver functions also live in XIP
-flash on these builds, so this blocks all P4/C5 MP verification.
+**RESOLVED locally (Sep 2026) — no emulator bug; the downloadable MP bins are
+APP-ONLY images and need the Arduino layout around them.** Working recipe
+(`spike/mk_mpy_p4c5.py`, outputs checked into `samples/mpy/`):
+bootloader @0x2000 (copied from the Arduino build — NOT 0x1000/0x0 as on C3),
+partition table @0x8000, app @0x10000 (NOT 0x100000 — the model only accepts
+the Arduino shape), plus two fixes: (1) factory partition enlarged to
+0x1F0000 (stock 0x140000 cannot hold the 1.6–1.9MB apps; OTA app1 slot
+dropped; partition-MD5 row recomputed — layout `eb eb` + 14x `ff` + digest,
+verified against the Arduino table); (2) P4 only: the MP app header caps
+max_chip_rev_full at v1.99 (0xC7) while the emulated silicon reports v3.1, so
+the bootloader refuses it — the two bytes are raised to 0xFFFF (as Arduino
+builds) and the appended SHA256 recomputed (header bytes are outside the XOR
+checksum, which covers segments only; esptool confirms checksum+hash valid).
+Result: REPL + I2C + SPI + ADC + PWM verified on P4 and C5, GPIO too on C5
+(`spike/30-verify-mpy.mjs` extended; C5 prints benign `mmap: no such vaddr
+range` lines during partition load). Remaining upstream-adjacent gap: P4 GPIO
+is unmodeled in the WASM core (0x820000 alias region stays zero; nothing
+co-moves in linear memory), so MP GPIO on P4 is untestable from JS.
+
+**Impact (remaining):** P4 GPIO is unmodeled in the WASM core, so MP GPIO on
+P4 is untestable from JS; everything else on P4/C5 MP is now verified.
+No upstream change needed for boot — keeping this record for the recipe.
 
 **Expected:** ROM-model boot accepts standard multi-segment app images on P4/C5
 (partition-declared app offset, XIP segments), as it does for Arduino-shaped
