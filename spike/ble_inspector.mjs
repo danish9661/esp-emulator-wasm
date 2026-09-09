@@ -12,13 +12,45 @@ const HEX = /0x[0-9a-fA-F]+/;
 
 export function parseLine(line) {
   const m = line.match(/\[([A-Za-z]+)\]\s*(.*)/);
-  if (!m) return null;
+  if (!m) {
+    // Untagged emulator-shim lines: parked ACL printer output.
+    const t = line.trim().match(/^acl-tx\s+(.*)$/);
+    if (t) return parseAclTx(t[1]);
+    return null;
+  }
   const tag = m[1].toUpperCase();
   const msg = m[2].trim();
   if (tag === 'BLE')    return parseBle(msg);
   if (tag === 'DETECT') return parseDetect(msg);
   if (tag === 'TEST')   return parseTest(msg);
   return null;
+}
+
+// Outgoing ATT opcodes (host -> controller responses/notifications).
+const ATT_OP_NAMES = {
+  0x01: 'error-rsp', 0x05: 'find-info-rsp', 0x11: 'read-by-group-rsp',
+  0x13: 'write-rsp', 0x1b: 'handle-value-notify', 0x1d: 'handle-value-ind',
+};
+
+// Nibble-decoded host->controller ACL packet: [handle u16][dlen u16]
+// [llen u16][cid u16][ATT op][ATT payload...]. Emitted by the parked
+// llAclPrint shim on LL chips (VHCI/C3 answers flow as B-frames instead).
+function parseAclTx(hexPart) {
+  const bytes = [];
+  for (const pair of hexPart.trim().split(/\s+/)) {
+    if (pair.length !== 2) continue;
+    const hi = pair.charCodeAt(0) - 97, lo = pair.charCodeAt(1) - 97;
+    if (hi < 0 || hi > 15 || lo < 0 || lo > 15) continue;
+    bytes.push((hi << 4) | lo);
+  }
+  const ev = { type: 'ble.acl_tx', bytes };
+  if (bytes.length >= 9) {
+    ev.handle = bytes[0] | (bytes[1] << 8);
+    ev.cid = bytes[6] | (bytes[7] << 8);
+    ev.attOp = bytes[8];
+    ev.attOpName = ATT_OP_NAMES[bytes[8]] || ('0x' + bytes[8].toString(16));
+  }
+  return ev;
 }
 
 function parseBle(msg) {
@@ -43,6 +75,21 @@ function parseBle(msg) {
                                            return { type: 'ble.gatt_notify', uuid: mm[1], value: mm[2] };
   if ((mm = msg.match(/^console-notify value='([^']*)'$/)))
                                            return { type: 'ble.console_notify', value: mm[1] };
+  if ((mm = msg.match(/^console-(conn|advterm|rver|feat|disc|find|wr) injected$/)))
+                                           return { type: 'ble.console_injected', what: mm[1] };
+  if ((mm = msg.match(/^console-stat conn1=(0x[0-9a-fA-F]+) serverCount=(\d+) advertising=(\d)(?: msysfree=(-?\d+))?(?: l2cap=(0x[0-9a-fA-F]+))?(?: acl=(0x[0-9a-fA-F]+))?$/))) {
+                                           const ev = { type: 'ble.console_stat', conn: mm[1], serverCount: +mm[2], advertising: mm[3] === '1' };
+                                           if (mm[4] !== undefined) ev.msysFree = +mm[4];
+                                           if (mm[5] !== undefined) ev.l2cap = mm[5];
+                                           if (mm[6] !== undefined) ev.acl = mm[6];
+                                           return ev;
+  }
+  if ((mm = msg.match(/^inj-pool rc=(-?\d+) buf=(\S+)$/)))
+                                           return { type: 'ble.inj_pool', rc: +mm[1], buf: mm[2] };
+  if ((mm = msg.match(/^inj-pool arena=(\S+)$/)))
+                                           return { type: 'ble.inj_pool', arena: mm[1] };
+  if ((mm = msg.match(/^inj-pool registered rr=(-?\d+)$/)))
+                                           return { type: 'ble.inj_pool_registered', rr: +mm[1] };
   if ((mm = msg.match(/^connect peer=(\S+) handle=(\d+)$/)))
                                            return { type: 'ble.connect', peer: mm[1], handle: +mm[2] };
   if ((mm = msg.match(/^disconnect peer=(\S+) reason=(0x[0-9a-fA-F]+)$/)))
