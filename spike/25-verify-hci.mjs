@@ -295,8 +295,8 @@ async function fabricatePeer(chip, dir, full) {
 for (const [chip, dir, full] of [
     ['esp32c6', 'build_esp32c6', true],
     ['esp32c3', null, true],
-    ['esp32h2', 'build_esp32h2', false],
-    ['esp32c5', 'build_esp32c5', false],
+    ['esp32h2', 'build_esp32h2', true],
+    ['esp32c5', 'build_esp32c5', true],
 ].filter(([chip]) => !process.env.ONLY_CHIP || process.env.ONLY_CHIP === chip)) {
     console.log('\n========================================');
     console.log(`TEST: fabricated-peer ${full ? 'ATT round trip' : 'connection'} on ${chip}`);

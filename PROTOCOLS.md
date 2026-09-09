@@ -217,7 +217,8 @@ cannot reach them:
   (fixed bases collide with the firmware heap / .dram0.data once .bss grows;
   C3's 0x3fc94000 sits inside .data).
   Verified by `25-verify-hci.mjs` §5 (connect + disc 0x11 + write-rsp 0x13 +
-  notify 0x1B + payload on C6 and C3; connect on H2/C5).
+  notify 0x1B + payload on C6, C3, H2 and C5 — identical attribute tables,
+  CCCD at handle 0x11 on all four).
   Enrich sketches to log
   MAC, service/characteristic UUIDs, advertising config, and connection/GATT
   callbacks (see `spike/sketches/BLEDemo`, `BLEDetect`, `BLETest`).
