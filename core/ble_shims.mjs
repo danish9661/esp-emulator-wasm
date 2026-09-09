@@ -72,6 +72,77 @@ function registerCb(scratch) {
     ]));
 }
 
+/**
+ * Parked VHCI inbound-injection body (C3 Arduino BLE: test console -> host).
+ * Entered via a JAL overwrite of the sketch-global ble_console_inject stub
+ * with a0 = packet type (4 = HCI event, 2 = ACL), a1 = flat buffer
+ * ([evtcode][len]... / [handle][len][cid]...).
+ * Copies [type][flat...] into the VHCI mirror slot (same layout the
+ * send_packet shim + host mirror use) and invokes the registered host
+ * receive callback exactly like sendPacket's tail (plain fn(data) vs
+ * struct recv(data, len) sniffed by pointer top bits). Returns 0.
+ * Uses t0-t5/a0-a3/sp only (caller-saved); preserves ra + sp.
+ */
+function vhciInjectPark({ scratch }) {
+    const evtBase = scratch + BLE_EVT_OFF;
+    const cbBase = scratch + BLE_CB_OFF;
+    const p = [
+        { op: 'addi', rd: SP, rs1: SP, imm: -16 },
+        { op: 'sw', rs2: 1, rs1: SP, imm: 12 },
+        // T1 = payload length: evt -> lbu[a1+1]+2; acl -> lbu[a1+2]+lbu[a1+3]<<8+4.
+        { op: 'lbu', rd: T1, rs1: A1, imm: 1 },
+        { op: 'addi', rd: T1, rs1: T1, imm: 2 },
+        { op: 'addi', rd: T5, rs1: 0, imm: 4 },
+        { op: 'beq', rs1: A0, rs2: T5, label: 'vinj_lenok' },
+        { op: 'lbu', rd: T1, rs1: A1, imm: 2 },
+        { op: 'lbu', rd: T2, rs1: A1, imm: 3 },
+        { op: 'slli', rd: T2, rs1: T2, sh: 8 },
+        { op: 'or', rd: T1, rs1: T1, rs2: T2 },
+        { op: 'addi', rd: T1, rs1: T1, imm: 4 },
+        { label: 'vinj_lenok' },
+        // Stash total length in A2 (caller-saved, unused by the caller).
+        { op: 'addi', rd: A2, rs1: T1, imm: 0 },
+        // Copy [type][flat 0..len] to evtBase.
+        ...li(T0, evtBase),
+        { op: 'sb', rs2: A0, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T0, rs1: T0, imm: 1 },
+        { op: 'addi', rd: T3, rs1: 0, imm: 0 },
+        { label: 'vinj_copy' },
+        { op: 'bge', rs1: T3, rs2: T1, label: 'vinj_copied' },
+        { op: 'lbu', rd: T2, rs1: A1, imm: 0 },
+        { op: 'sb', rs2: T2, rs1: T0, imm: 0 },
+        { op: 'addi', rd: A1, rs1: A1, imm: 1 },
+        { op: 'addi', rd: T0, rs1: T0, imm: 1 },
+        { op: 'addi', rd: T3, rs1: T3, imm: 1 },
+        { op: 'jal', rd: 0, label: 'vinj_copy' },
+        { label: 'vinj_copied' },
+        // Invoke the registered callback (same sniff as sendPacket tail).
+        ...li(T1, cbBase),
+        { op: 'lw', rd: T1, rs1: T1, imm: 0 },
+        { op: 'beq', rs1: T1, rs2: 0, label: 'vinj_done' },
+        { op: 'addi', rd: A1, rs1: A2, imm: 1 }, // a1 = total incl. type byte
+        ...li(T0, evtBase),
+        { op: 'addi', rd: A0, rs1: T0, imm: 0 },
+        { op: 'srli', rd: T4, rs1: T1, sh: 20 },
+        { op: 'addi', rd: T5, rs1: T4, imm: -0x400 },
+        { op: 'beq', rs1: T5, rs2: 0, label: 'vinj_call' },
+        { op: 'addi', rd: T5, rs1: T4, imm: -0x420 },
+        { op: 'beq', rs1: T5, rs2: 0, label: 'vinj_call' },
+        { op: 'addi', rd: T5, rs1: T4, imm: -0x403 },
+        { op: 'beq', rs1: T5, rs2: 0, label: 'vinj_call' },
+        { op: 'lw', rd: T1, rs1: T1, imm: 4 },
+        { op: 'beq', rs1: T1, rs2: 0, label: 'vinj_done' },
+        { label: 'vinj_call' },
+        { op: 'jalr_ra', rs1: T1 },
+        { label: 'vinj_done' },
+        { op: 'lw', rd: 1, rs1: SP, imm: 12 },
+        { op: 'addi', rd: SP, rs1: SP, imm: 16 },
+        { op: 'addi', rd: A0, rs1: 0, imm: 0 },
+        { op: 'ret' },
+    ];
+    return asm32(assemble(p));
+}
+
 function sendPacket(scratch, uartHi, give) {
     const evtBase = scratch + BLE_EVT_OFF;
     const cbBase = scratch + BLE_CB_OFF;
@@ -308,7 +379,7 @@ function initWithSem(createAddr, sendAddr, semAddr) {
  */
 export function prepareBleShims(elf, chip) {
     const uartHi = UART_HI[chip] ?? UART_HI.esp32c3;
-    const scratch = BLE_SCRATCH[chip] ?? BLE_SCRATCH.esp32c3;
+    let scratch = BLE_SCRATCH[chip] ?? BLE_SCRATCH.esp32c3;
     const names = [
         'esp_bt_controller_init', 'esp_bt_controller_enable',
         'esp_vhci_host_check_send_available', 'esp_vhci_host_register_callback',
@@ -343,6 +414,15 @@ export function prepareBleShims(elf, chip) {
     ];
     const { found } = elf.resolve(names);
     const byName = Object.fromEntries(found.map(s => [s.name, s]));
+    // Prefer the sketch-provided linker-placed scratch: the fixed legacy
+    // bases can sit inside firmware .dram0.data (C3: 0x3fc94000 is inside
+    // .data — mirror/event writes then smash live globals once the layout
+    // shifts) or in the heap's path. Same relative layout, just relocated.
+    // Soft: fall back to the legacy base.
+    const emuScratch = byName['ble_emu_scratch'];
+    if (emuScratch && emuScratch.size >= 0x300) {
+        scratch = emuScratch.addr >>> 0;
+    }
     const shims = {};
     const extra = [];
 
@@ -386,6 +466,30 @@ export function prepareBleShims(elf, chip) {
         shims['esp_bt_controller_enable'] = stubReturn(0);
         shims['esp_vhci_host_check_send_available'] = stubReturn(1);
         shims['esp_vhci_host_register_callback'] = registerCb(scratch);
+        // Test-only inbound injection (VHCI images, e.g. C3): patch the
+        // sketch-global ble_console_inject stub into a JAL to a parked body
+        // that copies [type][flat] into the VHCI mirror slot and invokes the
+        // registered host receive callback. LL images handle this separately
+        // (j to recv_cb); skip here when the LL receive path exists (C3
+        // carries the LL symbols dead — gate on recv_cb, not cmd_impl).
+        // Soft: skip if symbols/shapes/ranges differ.
+        const injFn = byName['ble_console_inject'];
+        if (injFn && byName['esp_vhci_host_send_packet'] && !byName['ble_transport_host_recv_cb']) {
+            const injBody = vhciInjectPark({ scratch });
+            const injAt = extra.length ? shimAddr + big.length : shimAddr;
+            const injJal = injAt - injFn.addr;
+            if (injFn.size >= 4 && injAt + injBody.length <= initAddr + initSize &&
+                injJal >= -(1 << 20) && injJal < (1 << 20)) {
+                const ijw = ((((injJal >> 20) & 1) << 31) | (((injJal >> 1) & 0x3ff) << 21) |
+                    (((injJal >> 11) & 1) << 20) | (((injJal >> 12) & 0xff) << 12)) | 0x6f;
+                const ij = new Uint8Array(4);
+                new DataView(ij.buffer).setUint32(0, ijw >>> 0, true);
+                extra.push({ addr: injFn.addr, bytes: ij });
+                extra.push({ addr: injAt, bytes: injBody });
+            } else {
+                console.warn('[ble] VHCI console-inject skipped (size/range/fit)');
+            }
+        }
         // ESP-NimBLE-controller images (C6/H2: LL transport, no VHCI send
         // symbols): stub the scan-duplicate-filter config calls. The real
         // ones dereference LL env structs that only exist after radio init

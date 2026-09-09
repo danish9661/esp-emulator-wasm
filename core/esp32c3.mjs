@@ -21,6 +21,9 @@ import { SDMMCController } from './sdmmc.mjs';
 import { CameraController } from './camera.mjs';
 import { LCDController } from './lcd.mjs';
 
+// Node-side wasm module counter for per-instance isolation (see create()).
+let wasmInstanceCounter = 0;
+
 export class ESP32C3 {
     /**
      * @param {object} wasmInstance - Initialized WasmEmulator instance
@@ -80,7 +83,16 @@ export class ESP32C3 {
             const { dirname, join } = await import('node:path');
             const here = dirname(fileURLToPath(import.meta.url));
             const pkgPath = join(here, '..', 'pkg');
-            const mod = await import(join(pkgPath, 'esp_emu.js'));
+            // Isolate each MCU in a FRESH wasm module instance. initSync
+            // caches `wasm` per module, so all MCUs would otherwise share one
+            // dlmalloc heap — and pkg 0.42 corrupts it deterministically
+            // across runs (3rd instance aborts; see issue.md #3). The query
+            // string busts Node's ESM cache; costs one wasm compile/create.
+            wasmInstanceCounter += 1;
+            const { pathToFileURL } = await import('node:url');
+            const glueUrl = pathToFileURL(join(pkgPath, 'esp_emu.js')).href +
+                `?instance=${wasmInstanceCounter}`;
+            const mod = await import(glueUrl);
             const wasmBytes = readFileSync(join(pkgPath, 'esp_emu_bg.wasm'));
             wasmExports = mod.initSync({ module: wasmBytes });
             WasmEmulator = mod.WasmEmulator;

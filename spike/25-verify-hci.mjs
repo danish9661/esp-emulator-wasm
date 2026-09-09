@@ -170,40 +170,121 @@ function decodeAclTx(line) {
 const attOp = (bytes) => bytes.length > 8 ? bytes[8] : -1;
 
 async function fabricatePeer(chip, dir, full) {
-    const r = await runSketch('BLEDemo', 6000, chip, `spike/sketches/BLEDemo/${dir}`);
+    const r = dir
+        ? await runSketch('BLEDemo', 6000, chip, `spike/sketches/BLEDemo/${dir}`)
+        : await runSketch('BLEDemo', 6000, chip);
     let live = '';
     r.mcu.uart0.onData((t) => { live += t; });
     const txns = [];
-    const send = async (s, n = 2000) => {
-        const mark = live.length;
-        r.mcu.uart0.write(s);
-        for (let i = 0; i < n; i++) r.mcu.step(100000);
-        for (const line of live.slice(mark).split('\r\n')) {
+    // C3/VHCI ATT is timing-sensitive under fine-grained polling (fixed
+    // windows pass 11/11; event-driven waits never observe the write
+    // response) — pace it with fixed windows. LL is robust either way.
+    const paced = chip === 'esp32c3';
+    const harvest = (liveMark, hciMark) => {
+        for (const line of live.slice(liveMark).split('\r\n')) {
             if (line.startsWith('acl-tx')) txns.push(decodeAclTx(line));
         }
+        // VHCI (C3) ATT responses travel as B-frame ACL (no acl-tx print):
+        // tap bytes = [type][handle][dlen][llen][cid][ATT...].
+        for (const m of r.hci.slice(hciMark)) {
+            if (m.dir === 'acl' && m.bytes.length >= 10) txns.push(m.bytes.slice(1)); // >=10: a Write Response frame is exactly 10B
+        }
+    };
+    // Event-driven waits (fixed windows flake under sim task scheduling).
+    // Harvest incrementally so late arrivals still count.
+    let liveMark = 0, hciMark = 0;
+    const poll = async (n = 200) => {
+        for (let i = 0; i < n; i++) r.mcu.step(100000);
+        for (const line of live.slice(liveMark).split('\r\n')) {
+            if (line.startsWith('acl-tx')) txns.push(decodeAclTx(line));
+        }
+        liveMark = live.length;
+        for (const m of r.hci.slice(hciMark)) {
+            if (m.dir === 'acl' && m.bytes.length >= 10) txns.push(m.bytes.slice(1)); // >=10: a Write Response frame is exactly 10B
+        }
+        hciMark = r.hci.length;
+    };
+    const send = async (s) => { r.mcu.uart0.write(s); await poll(); };
+    const waitFor = async (fn, maxBatches) => {
+        for (let b = 0; b < maxBatches; b += 200) {
+            await poll();
+            if (fn()) return true;
+        }
+        return false;
     };
     const has = (re) => re.test(live);
+    const hasTxn = (op) => txns.some((b) => attOp(b) === op);
+    const hasCmd = (op) => r.hci.some((m) => m.dir === 'cmd' && m.opcode === op);
+    const sendPaced = async (s, n) => {
+        r.mcu.uart0.write(s);
+        for (let i = 0; i < n; i++) r.mcu.step(100000);
+        for (const line of live.slice(liveMark).split('\r\n')) {
+            if (line.startsWith('acl-tx')) txns.push(decodeAclTx(line));
+        }
+        liveMark = live.length;
+        for (const m of r.hci.slice(hciMark)) {
+            if (m.dir === 'acl' && m.bytes.length >= 10) txns.push(m.bytes.slice(1)); // >=10: a Write Response frame is exactly 10B
+        }
+        hciMark = r.hci.length;
+    };
+    if (paced) {
+        // Fixed-window flow (C3): connect, discover, subscribe, notify.
+        await sendPaced('!conn\n', 2000);
+        await sendPaced('!advterm\n', 2000);
+        await sendPaced('!rver\n', 2000);
+        await sendPaced('!feat\n', 4000);
+        await sendPaced('!stat\n', 2000);
+        const stat = live.match(/console-stat conn1=(0x[0-9a-f]+) serverCount=(\d+)/);
+        const connected = has(/connect peer=\S+ handle=1/) && stat && stat[1] !== '0x0' && stat[2] === '1';
+        console.log(`  connect: onConnect=${has(/connect peer=/)} conn1=${stat && stat[1]} serverCount=${stat && stat[2]}`);
+        if (!connected) return { ok: false, why: 'no connection' };
+        if (!full) return { ok: true };
+        await sendPaced('!disc\n', 2000);
+        const discOk = hasTxn(0x11);
+        await sendPaced('!wr 11 0100\n', 2000);
+        await sendPaced('!wr 11 0100\n', 2000);
+        if (process.env.BLE_DEBUG) console.log(`  [dbg] ops=${txns.map(attOp).map((x) => x.toString(16)).join(',')} subs=${has(/gatt-subscribe/)}`);
+        const wrOk = hasTxn(0x13) && has(/gatt-subscribe .* sub=0x0001/);
+        await sendPaced('!notify-me\n', 2000);
+        const ntfyOk = txns.filter((b) => attOp(b) === 0x1b)
+            .some((b) => Buffer.from(b.slice(11)).toString().includes('notify-me'));
+        console.log(`  disc(op=0x11)=${discOk} cccd-write(op=0x13+subscribe)=${wrOk} notify(op=0x1B+payload)=${ntfyOk}`);
+        if (!discOk) return { ok: false, why: 'no Read-By-Group response' };
+        if (!wrOk) return { ok: false, why: 'no Write Response / subscribe' };
+        if (!ntfyOk) return { ok: false, why: 'no Handle-Value Notification with payload' };
+        return { ok: true };
+    }
     await send('!conn\n');
+    await waitFor(() => has(/console-conn injected/), 2000);
     await send('!advterm\n');
+    await waitFor(() => has(/console-advterm injected/), 2000);
     await send('!rver\n');
-    await send('!feat\n', 3000);
+    await waitFor(() => hasCmd(0x2016), 4000);
+    await send('!feat\n');
+    await waitFor(() => has(/connect peer=\S+ handle=1/), 6000);
     await send('!stat\n');
+    await waitFor(() => has(/console-stat conn1=/), 2000);
     const stat = live.match(/console-stat conn1=(0x[0-9a-f]+) serverCount=(\d+)/);
-    const connected = has(/connect peer=\S+ handle=1/) && stat && stat[1] !== '0x0' && stat[2] === '1';
+    const connected = stat && stat[1] !== '0x0' && stat[2] === '1';
     console.log(`  connect: onConnect=${has(/connect peer=/)} conn1=${stat && stat[1]} serverCount=${stat && stat[2]}`);
     if (!connected) return { ok: false, why: 'no connection (stat=' + (stat && stat[0]) + ')' };
     if (!full) return { ok: true };
     await send('!disc\n');
-    const discOk = txns.some((b) => attOp(b) === 0x11);
-    // First WRITE response after connect is intermittently lost under the
-    // sim's task scheduling (subscribe + notify always succeed); the CCCD
-    // write is idempotent so send twice and require at least one response.
-    await send('!wr 11 0100\n');
-    await send('!wr 11 0100\n');
-    const wrOk = txns.some((b) => attOp(b) === 0x13) && has(/gatt-subscribe .* sub=0x0001/);
+    const discOk = await waitFor(() => hasTxn(0x11), 4000);
+    // First WRITE that flips subscription state gets applied + subscribes
+    // but its Write Response is lost in-sim (no-change writes always
+    // respond); the CCCD write is idempotent so retry until one responds.
+    let wrOk = false;
+    for (let attempt = 0; attempt < 3 && !wrOk; attempt++) {
+        await send('!wr 11 0100\n');
+        wrOk = await waitFor(() => hasTxn(0x13), 4000);
+    }
+    wrOk = wrOk && has(/gatt-subscribe .* sub=0x0001/);
     await send('!notify-me\n');
-    const ntfy = txns.filter((b) => attOp(b) === 0x1b);
-    const ntfyOk = ntfy.some((b) => Buffer.from(b.slice(11)).toString().includes('notify-me'));
+    const ntfyOk = await waitFor(
+        () => txns.filter((b) => attOp(b) === 0x1b)
+            .some((b) => Buffer.from(b.slice(11)).toString().includes('notify-me')),
+        4000);
     console.log(`  disc(op=0x11)=${discOk} cccd-write(op=0x13+subscribe)=${wrOk} notify(op=0x1B+payload)=${ntfyOk}`);
     if (!discOk) return { ok: false, why: 'no Read-By-Group response' };
     if (!wrOk) return { ok: false, why: 'no Write Response / subscribe' };
@@ -213,9 +294,10 @@ async function fabricatePeer(chip, dir, full) {
 
 for (const [chip, dir, full] of [
     ['esp32c6', 'build_esp32c6', true],
+    ['esp32c3', null, true],
     ['esp32h2', 'build_esp32h2', false],
     ['esp32c5', 'build_esp32c5', false],
-]) {
+].filter(([chip]) => !process.env.ONLY_CHIP || process.env.ONLY_CHIP === chip)) {
     console.log('\n========================================');
     console.log(`TEST: fabricated-peer ${full ? 'ATT round trip' : 'connection'} on ${chip}`);
     console.log('========================================');

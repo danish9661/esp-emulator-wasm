@@ -116,8 +116,9 @@ export class UARTController {
                 for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                 const event = ble.handle(new Uint8Array(bytes));
                 // Preferred: shared-memory event channel (reliable, no RX).
-                // Fallback: legacy E-UART reply (dribbled).
-                if (!this.bleMirror.deliver(event)) {
+                // Fallback: legacy E-UART reply (dribbled). Null/empty (e.g.
+                // host->controller ACL, observed only) delivers nothing.
+                if (event && event.length && !this.bleMirror.deliver(event)) {
                     let out = '\x1b_E';
                     const len = event.length;
                     out += String.fromCharCode(97 + ((len >> 4) & 0xf), 97 + (len & 0xf));

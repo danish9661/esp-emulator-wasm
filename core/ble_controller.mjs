@@ -71,10 +71,26 @@ export class BLEController {
 
     /**
      * @param {Uint8Array|number[]} msg - full VHCI message [type, opcode_lo, opcode_hi, ...]
-     * @returns {number[]} full VHCI event message [0x04, event_code, ...]
+     * @returns {number[]|null} full VHCI event message [0x04, event_code, ...],
+     * or null when no controller reply exists (host->controller ACL data:
+     * observed on the tap, nothing to answer).
      */
     handle(msg) {
         const type = msg[0];
+        if (type === 0x02) {
+            // Host->controller ACL data (outgoing ATT/notification on VHCI
+            // transports): observed on the tap; answered with Number Of
+            // Completed Packets so the sender's mirror wait completes and
+            // controller-buffer credits replenish (one completion per
+            // fragment balances bhc_outstanding_pkts; no reset).
+            // [0x04][0x13][len=5][num_handles=1][handle][completed=1].
+            const hLo = msg[1] & 0xff;
+            const hHi = msg[2] & 0x0f;
+            this.#notify({ dir: 'acl', bytes: [...msg] });
+            const evt = [0x04, 0x13, 0x05, 0x01, hLo, hHi, 0x01, 0x00];
+            this.#notify({ dir: 'evt', opcode: 0x13, bytes: evt });
+            return evt;
+        }
         const opLo = msg[1] & 0xff;
         const opHi = msg[2] & 0xff;
         const opcode = (opHi << 8) | opLo;

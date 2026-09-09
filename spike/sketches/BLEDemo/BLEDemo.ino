@@ -94,31 +94,50 @@ struct os_mbuf;
 extern "C" struct os_mbuf *ble_hs_mbuf_from_flat(const void *buf, uint16_t len);
 extern "C" struct os_mbuf *ble_hs_mbuf_l2cap_pkt(void);
 extern "C" struct os_mbuf *ble_hs_mbuf_acl_pkt(void);
+#ifdef BLE_LL_INJECT
 extern "C" int r_os_mbuf_free_chain(struct os_mbuf *);
+#define EMU_MBUF_FREE r_os_mbuf_free_chain
+#else
+// VHCI images build without the ROM r_ prefix (plain os_ names).
+extern "C" int os_mbuf_free_chain(struct os_mbuf *);
+#define EMU_MBUF_FREE os_mbuf_free_chain
+#endif
 
 // Test-only introspection (global NimBLE symbols, verified via nm).
 struct ble_hs_conn;
 extern "C" struct ble_hs_conn *ble_hs_conn_find(uint16_t);
 extern "C" int ble_gap_adv_active(void);
 
+// Inbound fabrication targets: LL transport (C6/H2/C5: emulator jumps
+// ble_console_inject into ble_transport_host_recv_cb) and VHCI (C3:
+// emulator routes it into the registered host receive callback).
+#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32H2) || defined(CONFIG_IDF_TARGET_ESP32C5)
+#define BLE_LL_INJECT 1
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#define BLE_VHCI_INJECT 1
+#endif
+
 // Host mbuf pool for injection (the stubbed controller init never builds
 // one, so from_flat/ATT responses would have nothing to allocate from).
-// Uses the real NimBLE struct types (visible via NimBLEDevice.h); the arena
-// is heap-malloc'd by r_mem_malloc_mbufpkt_pool itself (no .bss cost).
+// Uses the real NimBLE struct types (visible via NimBLEDevice.h).
 static struct os_mempool sInjMp;
 static struct os_mbuf_pool sInjOmp;
 static bool sInjPoolDone = false;
 
+#ifdef BLE_LL_INJECT
 // Not exposed via NimBLEDevice.h (mem.h is internal); the r_ symbol is
 // global in all LL images (verified via nm).
 extern "C" int r_mem_malloc_mbufpkt_pool(struct os_mempool*, struct os_mbuf_pool*,
                                          int, int, char*, void**);
 extern "C" int r_os_msys_num_free(void);
+#endif
 
 static void bleNetPoolInit(void) {
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32H2) || defined(CONFIG_IDF_TARGET_ESP32C5)
+#if defined(BLE_LL_INJECT) || defined(BLE_VHCI_INJECT)
     if (sInjPoolDone) return;
     sInjPoolDone = true;
+#ifdef BLE_LL_INJECT
     void *buf = nullptr;
     // 32 blocks: ATT responses/requests are consumed+few-freed by the real
     // controller; margin for multi-step fabricated flows.
@@ -132,14 +151,37 @@ static void bleNetPoolInit(void) {
         int rr = r_os_msys_register(&sInjOmp);
         Serial.printf("[BLE] inj-pool registered rr=%d\n", rr);
     }
+#else
+    // VHCI images lack the one-call r_ helper: malloc the arena and run the
+    // three documented steps manually (os_* fns come from NimBLEDevice.h).
+    void *arena = malloc(6144);
+    Serial.printf("[BLE] inj-pool arena=%p\n", arena);
+    if (!arena) return;
+    int rc = os_mempool_init(&sInjMp, 32, 192, arena, "emu_inject");
+    Serial.printf("[BLE] inj-pool rc=%d\n", rc);
+    if (rc == 0) {
+        rc = os_mbuf_pool_init(&sInjOmp, &sInjMp, 192 - 16, 32);
+        sInjMp.mp_flags |= 0x02;
+        int rr = os_msys_register(&sInjOmp);
+        Serial.printf("[BLE] inj-pool registered rr=%d\n", rr);
+    }
+#endif
 #endif
 }
 
 static void bleInjectPacket(int type, uint8_t *flat, unsigned flatLen) {
-#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32H2) || defined(CONFIG_IDF_TARGET_ESP32C5)
+#if defined(BLE_LL_INJECT) || defined(BLE_VHCI_INJECT)
+#ifdef BLE_VHCI_INJECT
+    // VHCI host_rcv_pkt takes flat bytes for BOTH kinds (it copies into its
+    // own bufs internally); never hand it an mbuf struct.
+    (void)flatLen;
+    ble_console_inject(type, flat);
+    return;
+#else
     if (type == HCI_EVT_IND) {
-        // HCI events travel as flat buffers (ble_hs_hci_rx_evt parses
-        // bytes; ble_transport_free is a no-op in-sim, so statics are safe).
+        // HCI events travel as flat buffers (the host parses bytes and
+        // copies what it keeps; on LL ble_transport_free is a no-op in-sim
+        // so statics are safe too).
         ble_console_inject(type, flat);
         return;
     }
@@ -150,6 +192,7 @@ static void bleInjectPacket(int type, uint8_t *flat, unsigned flatLen) {
         return;
     }
     ble_console_inject(type, (uint8_t*)om);
+#endif
 #else
     (void)type; (void)flat; (void)flatLen;
     Serial.println("[BLE] console-inject unsupported on this chip");
@@ -223,16 +266,20 @@ static void bleConsoleCmd(const char* cmd) {
         return;
     }
     if (strncmp(cmd, "stat", 4) == 0) {
-        // Observability for the fabricated-peer flow (all test-only).
         struct ble_hs_conn *c = ble_hs_conn_find(1);
         struct os_mbuf *t1 = ble_hs_mbuf_l2cap_pkt();
         struct os_mbuf *t2 = ble_hs_mbuf_acl_pkt();
+#ifdef BLE_LL_INJECT
+        int free = r_os_msys_num_free();
+#else
+        int free = -1;
+#endif
         Serial.printf("[BLE] console-stat conn1=%p serverCount=%d advertising=%d msysfree=%d l2cap=%p acl=%p\n",
                       c, pServer->getConnectedCount(),
                       (int)NimBLEDevice::getAdvertising()->isAdvertising(),
-                      r_os_msys_num_free(), t1, t2);
-        if (t1) r_os_mbuf_free_chain(t1);
-        if (t2) r_os_mbuf_free_chain(t2);
+                      free, t1, t2);
+        if (t1) EMU_MBUF_FREE(t1);
+        if (t2) EMU_MBUF_FREE(t2);
         return;
     }
     if (strncmp(cmd, "disc", 4) == 0) {

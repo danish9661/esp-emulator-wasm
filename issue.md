@@ -103,16 +103,20 @@ regression fails 3/3 loudly, flakes pass on retry.
 (or a documented seed/pinning knob if the nondeterminism is intentional).
 
 **New 0.42.0 data point (H2, deterministic):** `spike/22-verify-h2.mjs`
-crashes 4/4 runs at the 3rd demo with a host-side Rust panic
+crashed 4/4 runs at the 3rd demo with a host-side Rust panic
 (`dlmalloc-0.2.11: assertion failed: psize >= size + min_overhead` →
 `RuntimeError: unreachable`), while 0.41.0 passes the same suite.
-Bisected further: single demos pass alone (even 8000 batches), pairs pass,
-fixed-count triplets pass — only the suite's early-marker-break pattern
-(fewer prior batches) crashes, pointing at WASM memory growth/fragmentation
-across instances (0.42.0's "keep internal memory across every reset" is the
-prime suspect). Minimal repro: boot Blink → I2CRead → SPIDemo H2 images in
-fresh `WasmEmulator('esp32h2')` instances with early marker break; the 3rd
-`load_firmware`/early steps abort the process (no retry possible).
+Root-caused (Sep 2026): `initSync` caches `wasm` per glue module, so every
+`ESP32C3.create()` shares ONE WASM linear memory / dlmalloc heap
+(`a.memory.buffer === b.memory.buffer`). Bare construction ×4 is fine and
+load-without-run is fine — corruption accumulates across RUNNING instances
+(two full demo runs, third aborts in `run_batch`). Single demos pass alone.
+Our workaround: bust Node's ESM cache per create (`esp_emu.js?instance=N`)
+so each MCU gets an isolated heap — full 18-demo H2 suite green on 0.42.0
+(`core/esp32c3.mjs` `wasmInstanceCounter`). Upstream ask: either isolate
+per-`WasmEmulator` heaps again (0.41 behavior) or document that one WASM
+instance supports exactly one emulator lifetime; a `Drop`/reset entry point
+would also help long test sessions.
 
 ---
 
