@@ -162,10 +162,14 @@ silicon (no shim needed), not explicitly regression-tested
   through its own glue code** — `set_wifi_config` / `wifi_rx_push` / `wifi_tx_drain`
   in `pkg/esp_emu.js`. This is intentionally **not** shimmed by this SDK: firmware
   talks to the emulated radio natively, no RV32 trampoline or APC bridge is involved.
-  Exercised end to end through the OpenHW gateway (gVisor NAT): DHCP +
-  HTTP 200 — see `spike/sketches/WiFiDemo/`, `spike/31-verify-wifi.mjs` and
+  Exercised end to end through the OpenHW gateway (default port 5095):
+  DHCP + HTTP + HTTPS + MQTT against test servers on the host LAN
+  (deterministic; public-internet egress proven separately) — see
+  `spike/sketches/WiFiDemo/`, `spike/31-verify-wifi.mjs`,
+  `spike/mqtt_broker.mjs` and
   `openhw-studio-gateway/ESP-EMU-INTEGRATION.md` (wire rules: raw frames per
-  message, answer ARP, pump the event loop, retry; gateway-optional SKIP).
+  message, answer ARP, pump the event loop, per-protocol best-of retry;
+  gateway-optional SKIP).
 
 ### Supported in the native CLI, absent from the WASM build (†)
 
