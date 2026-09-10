@@ -121,7 +121,7 @@ silicon (no shim needed), not explicitly regression-tested
 | SDMMC host (4-bit, sector-level) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-sdmmc API + APC `M` frames | 24-verify #3 |
 | Camera (grayscale test pattern) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-camera API + APC `F` frames | 24-verify #4 |
 | LCD panel (RGB565 blits) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-lcd API + APC `L` frames | 24-verify #5 |
-| Wi-Fi (STA/AP) | ✅* | ✅* | — | — | ❌ | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | none* |
+| Wi-Fi (STA/AP) | ✅* | ✅* | — | — | ❌ | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | 31-verify-wifi (gateway E2E) |
 | BLE HCI (direct transport calls) | ✅ | — | — | — | ❌ | JS VHCI shims + virtual controller, fully observable (C3 VHCI; C6/H2/C5 routed around ROM LL, same controller) | 25-verify |
 | BLE via NimBLE host stack | ✅ | ✅ | ✅ | — | ✅ | host task live on all chips: Reset…adv setup answered, syncs, advertises (C3 via VHCI; C6/H2/C5 via LL-transport HCI routing — no radio needed). Fabricated peer on all BLE chips: console-driven connect + ATT discovery + CCCD subscribe + notifications | 25-verify, observe_ble.mjs |
 | 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only) | none |
@@ -162,7 +162,10 @@ silicon (no shim needed), not explicitly regression-tested
   through its own glue code** — `set_wifi_config` / `wifi_rx_push` / `wifi_tx_drain`
   in `pkg/esp_emu.js`. This is intentionally **not** shimmed by this SDK: firmware
   talks to the emulated radio natively, no RV32 trampoline or APC bridge is involved.
-  (* = provided by emulator glue, not exercised by this repo's verify suites.)
+  Exercised end to end through the OpenHW gateway (gVisor NAT): DHCP +
+  HTTP 200 — see `spike/sketches/WiFiDemo/`, `spike/31-verify-wifi.mjs` and
+  `openhw-studio-gateway/ESP-EMU-INTEGRATION.md` (wire rules: raw frames per
+  message, answer ARP, pump the event loop, retry; gateway-optional SKIP).
 
 ### Supported in the native CLI, absent from the WASM build (†)
 
