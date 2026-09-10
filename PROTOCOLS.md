@@ -124,7 +124,7 @@ silicon (no shim needed), not explicitly regression-tested
 | Wi-Fi (STA/AP) | ✅* | ✅* | — | — | ❌ | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | 31-verify-wifi (gateway E2E) |
 | BLE HCI (direct transport calls) | ✅ | — | — | — | ❌ | JS VHCI shims + virtual controller, fully observable (C3 VHCI; C6/H2/C5 routed around ROM LL, same controller) | 25-verify |
 | BLE via NimBLE host stack | ✅ | ✅ | ✅ | — | ✅ | host task live on all chips: Reset…adv setup answered, syncs, advertises (C3 via VHCI; C6/H2/C5 via LL-transport HCI routing — no radio needed). Fabricated peer on all BLE chips: console-driven connect + ATT discovery + CCCD subscribe + notifications | 25-verify, observe_ble.mjs |
-| 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only) | none |
+| 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only); WASM: OT stack boots but the 15.4 radio is unmodeled (`esp_ieee802154_enable` → -1, no ZB_MAC interrupt; probe: `spike/sketches/ThreadDemo/`) | none |
 | Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | — | native CLI only (`--net tap/user`) | none |
 | USB (Serial/JTAG driver; OTG on P4) | ✅ | ❌ | ❌ | ❌ | ❌ | `usb_serial_jtag_*` shims route bytes to/from the UART console (no WASM glue needed); C3 verified | 27-verify #4 |
 | Timers / watchdog / RTC | ✅ | ✅ | ✅ | ✅ | ✅ | native silicon model (GPTimer IRQ, TWDT, esp_timer) | 26-verify (C3), 28-verify (C5) |
