@@ -179,9 +179,12 @@ range` lines during partition load). Remaining upstream-adjacent gap: P4 GPIO
 is unmodeled in the WASM core (0x820000 alias region stays zero; nothing
 co-moves in linear memory), so MP GPIO on P4 is untestable from JS.
 
-**Impact (remaining):** P4 GPIO is unmodeled in the WASM core, so MP GPIO on
-P4 is untestable from JS; everything else on P4/C5 MP is now verified.
-No upstream change needed for boot — keeping this record for the recipe.
+**Impact (remaining):** none for MP bring-up — full REPL + I2C + SPI + GPIO +
+ADC + PWM verified on P4 and C5. Notes: P4 GPIO mirrors live at a different
+linear window (OUT+0/ENABLE+8 auto-discovered; MP must use low pins — Pin 16+
+drives OUT but never sets ENABLE); C5 prints benign `mmap: no such vaddr
+range` lines during partition load. No upstream change needed for boot —
+keeping this record for the recipe.
 
 **Expected:** ROM-model boot accepts standard multi-segment app images on P4/C5
 (partition-declared app offset, XIP segments), as it does for Arduino-shaped

@@ -46,7 +46,7 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 | **SPI (IDF driver)** | ✅ | `spi_device_transmit` / polling (pointer + inline data, full duplex) | IDF SPI shims (chunked `\x1b_SX`) |
 | **I2C (IDF v5 + legacy)** | ✅ | `i2c_master_transmit/receive` + `write/read_to_device` + cmd-link `i2c_master_cmd_begin` | IDF I2C shims (`\x1b_W`, `\x1b_R`) |
 | **USB (IDF serial/JTAG)** | ✅ | `usb_serial_jtag_write/read_bytes` routed to console/RX (C3) | IDF USB shims, no WASM glue needed |
-| **MicroPython v1.29.0** | ✅ | REPL + `machine.I2C`/`SPI`/`Pin`/`ADC`/`PWM` on C3/C6/H2 (P4/C5 ROM-blocked, see `issue.md` #5) | `spike/mpy_repl.mjs` + IDF shims (`samples/mpy/`) |
+| **MicroPython v1.29.0** | ✅ | REPL + `machine.I2C`/`SPI`/`Pin`/`ADC`/`PWM` on all 5 chips (P4/C5 boot from composed flashes, see `spike/mk_mpy_p4c5.py` + `issue.md` #5) | `spike/mpy_repl.mjs` + IDF shims (`samples/mpy/`) |
 | **Timers / WDT / RTC** | ✅ | GPTimer alarms, task watchdog, `esp_timer`/`gettimeofday` | Native silicon model, no shims |
 | **LittleFS / NVS** | ✅ | Flash filesystems + settings storage | Native flash MMIO model |
 | **Networking (WiFi)** | ✅* | Native emulator glue (`set_wifi_config`/`wifi_rx_push`/`wifi_tx_drain`, C3/C6). Ethernet TAP is native-CLI only, no WASM glue | WASM Wi-Fi MAC (no shims by design) |

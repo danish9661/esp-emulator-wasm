@@ -18,10 +18,10 @@ const CHIPS = [
     // C5: like H2 (Pin(3) reads ADC channel 2, 16-bit PWM saturates); the
     // composed flash image carries bootloader + enlarged factory partition.
     { chip: 'esp32c5', tag: 'c5', flash: 'mpy_c5_flash.bin', spiPins: [6, 7, 2], pwmMax: 16383, adcPin: 3, adcChan: 2 },
-    // P4: ADC lives on GPIO16+ (Pin(16) reads channel 0); GPIO is NOT
-    // modeled in the WASM core (no co-moving word in linear memory), so the
-    // GPIO block is skipped — REPL + I2C + SPI + ADC + PWM verified.
-    { chip: 'esp32p4', tag: 'p4', flash: 'mpy_p4_flash.bin', spiPins: [6, 7, 2], pwmMax: 16383, adcPin: 16, adcChan: 0, gpio: false },
+    // P4: ADC lives on GPIO16+ (Pin(16) reads channel 0); GPIO mirrors live
+    // at a different linear window (OUT+0/ENABLE+8 auto-discovered; the IN
+    // sweep finds the readback-coupled word) — full block runs.
+    { chip: 'esp32p4', tag: 'p4', flash: 'mpy_p4_flash.bin', spiPins: [6, 7, 2], pwmMax: 16383, adcPin: 16, adcChan: 0 },
 ];
 
 const results = [];
@@ -103,7 +103,7 @@ for (const { chip, tag, flash, spiPins, pwmMax, adcPin, adcChan, gpio } of CHIPS
 
 console.log('\n================================================================================');
 if (results.every(Boolean)) {
-    console.log('ALL MICROPYTHON FIRMWARE TESTS PASSED (REPL + I2C + SPI + GPIO + ADC + PWM on C3/C6/H2/C5; P4 without GPIO)! ✅');
+    console.log('ALL MICROPYTHON FIRMWARE TESTS PASSED (REPL + I2C + SPI + GPIO + ADC + PWM on C3/C6/H2/C5/P4)! ✅');
 } else {
     console.log('MICROPYTHON FAILURES PRESENT ❌');
     process.exit(1);

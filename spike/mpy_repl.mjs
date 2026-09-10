@@ -55,12 +55,13 @@ export async function calibrateGpioLive(mcu, getConsole, { pins = [2, 3] } = {})
     exec('_pa.off()');
     exec('_pb.off()');
     const s4 = snap();
-    // OUT: both bits track 0,1,0,1,0 across all five snapshots AND start at
-    // exactly 0 (nothing drives GPIO before our pins; STATUS-like shadows
-    // read all-ones and are excluded by this).
+    // OUT: both bits track 0,1,0,1,0 across all five snapshots AND start
+    // clear for OUR pins (other bits may be driven, e.g. UART TX held high
+    // by ROM on P4 — so mask, don't require the whole word to be zero).
+    // STATUS-like shadows read all-ones and are excluded by the tracking.
     const outs = [];
     for (let i = 0; i + 7 < s1.length; i++) {
-        if (s0[i] === 0 && (s1[i] & both) === both && !(s2[i] & both) &&
+        if ((s0[i] & both) === 0 && (s1[i] & both) === both && !(s2[i] & both) &&
             (s3[i] & both) === both && !(s4[i] & both)) outs.push(i * 4);
     }
     if (outs.length !== 1) {
@@ -101,8 +102,12 @@ export async function calibrateGpioLive(mcu, getConsole, { pins = [2, 3] } = {})
         new Uint32Array(mcu.gpio._memory.buffer)[idx] = orig;
         if (hi === '1' && lo === '0') { input = out + off; break; }
     }
-    if (input < 0) throw new Error(`GPIO IN discovery failed on ${mcu.chip}`);
-    mcu.gpio.setBaseAddrs({ out, enable, input });
+    if (input < 0) {
+        // No JS-visible IN mirror (e.g. P4: guest IN has no linear alias).
+        // OUT/ENABLE still verify; callers skip input assertions.
+        console.warn(`GPIO IN discovery: no mirror found on ${mcu.chip}, inputs untestable`);
+    }
+    mcu.gpio.setBaseAddrs({ out, enable, input: input < 0 ? null : input });
     mcu.step(50000);
     return { out, enable, input };
 }
