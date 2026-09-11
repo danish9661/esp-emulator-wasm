@@ -842,9 +842,13 @@ export function prepareThreadShims(elf, chip) {
                 if (in2At) {
                     patchPairs(inbound2, [[PH_CP0, PH_CP1, T5, copyAt]]);
                     extra.push({ addr: in2At, bytes: inbound2 });
+                    boxNext = in2At + inbound2.length;
                 } else if (inbound2) {
                     console.warn('[thread] skip inbound2 (fit; MLE TX uses scan path)');
                 }
+                // NOTE: alarm-start shim removed (regressed 37: shimming
+                // shifts timing and breaks attach windows; real StartAt
+                // programs dead FRC harmlessly and OT queues anyway).
             } else {
                 if (deliver) console.warn('[thread] skip idle delivery (no dead-box fit; TX-driven only)');
                 extra.push({ addr: copyAt, bytes: cPark });
