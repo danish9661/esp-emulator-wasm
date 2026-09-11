@@ -123,8 +123,8 @@ silicon (no shim needed), not explicitly regression-tested
 | LCD panel (RGB565 blits) | ✅ | ✅ | ✅ | ✅ | ✅ | virtual-lcd API + APC `L` frames | 24-verify #5 |
 | Wi-Fi (STA/AP) | ✅* | ✅* | — | — | ❌ | native emulator glue: `set_wifi_config`, `wifi_rx_push`, `wifi_tx_drain` | 31-verify-wifi (gateway E2E) |
 | BLE HCI (direct transport calls) | ✅ | — | — | — | ❌ | JS VHCI shims + virtual controller, fully observable (C3 VHCI; C6/H2/C5 routed around ROM LL, same controller) | 25-verify |
-| BLE via NimBLE host stack | ✅ | ✅ | ✅ | — | ✅ | host task live on all chips: Reset…adv setup answered, syncs, advertises (C3 via VHCI; C6/H2/C5 via LL-transport HCI routing — no radio needed). Fabricated peer on all BLE chips: console-driven connect + ATT discovery + CCCD subscribe + notifications | 25-verify, observe_ble.mjs |
-| 802.15.4 (Zigbee/Thread) | — | ❌† | ❌† | — | ❌† | radio frame bridge (native CLI only); WASM: OT stack boots but the 15.4 radio is unmodeled (`esp_ieee802154_enable` → -1, no ZB_MAC interrupt; probe: `spike/sketches/ThreadDemo/`) | none |
+| BLE via NimBLE host stack | ✅ | ✅ | ✅ | — | ✅ | host task live on all chips: Reset…adv setup answered, syncs, advertises (C3 via VHCI; C6/H2/C5 via LL-transport HCI routing — no radio needed). Fabricated peer on all BLE chips: console-driven connect + ATT discovery + CCCD subscribe + notifications. Browser "real radio" mode forwards H4 over `/api/ble-gateway` to Bumble (worker pump + UI toggle; `0xfc01`/`0x204e` answered locally) | 25-verify, 33-verify-ble-pump, observe_ble.mjs |
+| 802.15.4 (Zigbee/Thread) | — | ✅ | ✅ | — | ✅ | Phase 1b+1c (C6/H2/C5): virtual radio — `esp_ieee802154_enable`→0, `otPlatRadioGetState`→RECEIVE, TX tap + sync TxDone, energy via deferred EnergyScanDone (sync completion wedges SubMac → Links::Send asserts mac_links.hpp:536), fabricated ext-src beacons (PAN 0x1234, OT's own payload) via sync ReceiveDone with Mac+1 borrowed. Beacon PSDU bridged to `/api/thread-gateway` room; host RX injection (staged slot + guest-copy) + multi-node relay (C6 TX → H2 report) | 32-verify-thread, 34-verify-thread-gw, 35-verify-thread-inject, 36-verify-thread-multi |
 | Ethernet (OpenETH / P4 GMAC) | ❌† | ❌† | ❌† | ❌† | — | native CLI only (`--net tap/user`) | none |
 | USB (Serial/JTAG driver; OTG on P4) | ✅ | ❌ | ❌ | ❌ | ❌ | `usb_serial_jtag_*` shims route bytes to/from the UART console (no WASM glue needed); C3 verified | 27-verify #4 |
 | Timers / watchdog / RTC | ✅ | ✅ | ✅ | ✅ | ✅ | native silicon model (GPTimer IRQ, TWDT, esp_timer) | 26-verify (C3), 28-verify (C5) |
@@ -323,7 +323,7 @@ UART bytes at batch boundaries on H2/P4 with smaller batches).
 
 | Status | Count | Protocols |
 |---|:---:|---|
-| ✅ Implemented & verified | 30 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (all chips), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, IDF-USB-serial, Timers, WDT, RTC, LittleFS, NVS, MicroPython (REPL + machine.* on all 5 chips) |
+| ✅ Implemented & verified | 31 | UART0, GPIO, I2C, SPI, NeoPixel, ADC, PWM, I2S, TWAI, SD (SPI), OLED, TFT, MPU6050, Touch, DAC, SDMMC, Camera, LCD, BLE-HCI (direct), BLE via NimBLE host (all chips), IDF-SPI, IDF-I2C-v5, IDF-I2C-legacy, IDF-USB-serial, Timers, WDT, RTC, LittleFS, NVS, MicroPython (REPL + machine.* on all 5 chips), 802.15.4 Thread scans + fabricated beacons (C6/H2/C5) |
 | ✅ Native via emulator glue | 1 | Wi-Fi (C3/C6) — no shims by design |
-| ❌ Native CLI only, no WASM glue | 2 | 802.15.4, Ethernet |
+| ❌ Native CLI only, no WASM glue | 1 | Ethernet |
 | ❌ Not supported | 0 | — (all previously open items are covered or upstream-blocked; see `issue.md`) |

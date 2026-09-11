@@ -29,12 +29,12 @@
     let periDiffEl = null;
     let periSnapshot = null;
     let periLastReportT = 0;
-    const periTagFilter = { I2C: true, SPI: true, TWAI: true, ADC: true, PWM: true, I2S: true, NEO: true, OLED: true, TFT: true, SD: true, GPIO: true, TOUCH: true, DAC: true, SDMMC: true, CAM: true, LCD: true, BLE: true };
+    const periTagFilter = { I2C: true, SPI: true, TWAI: true, ADC: true, PWM: true, I2S: true, NEO: true, OLED: true, TFT: true, SD: true, GPIO: true, TOUCH: true, DAC: true, SDMMC: true, CAM: true, LCD: true, BLE: true, THREAD: true };
     // High-frequency streams (frames / audio) are sampled in the live log but
     // still counted in full in the report.
     const periHighFreq = { OLED: true, TFT: true, NEO: true, I2S: true, CAM: true, LCD: true };
     const periLogThrottle = {};
-    const periColor = { I2C: '#22d3ee', SPI: '#8b5cf6', TWAI: '#10b981', ADC: '#f59e0b', PWM: '#f472b6', I2S: '#38bdf8', NEO: '#34d399', OLED: '#a78bfa', TFT: '#fb7185', SD: '#facc15', GPIO: '#94a3b8', TOUCH: '#f97316', DAC: '#e879f9', SDMMC: '#fde047', CAM: '#7dd3fc', LCD: '#fda4af', BLE: '#5eead4' };
+    const periColor = { I2C: '#22d3ee', SPI: '#8b5cf6', TWAI: '#10b981', ADC: '#f59e0b', PWM: '#f472b6', I2S: '#38bdf8', NEO: '#34d399', OLED: '#a78bfa', TFT: '#fb7185', SD: '#facc15', GPIO: '#94a3b8', TOUCH: '#f97316', DAC: '#e879f9', SDMMC: '#fde047', CAM: '#7dd3fc', LCD: '#fda4af', BLE: '#5eead4', THREAD: '#a3e635' };
     const periColorOf = (p) => periColor[p] || '#94a3b8';
 
     // --- Unified Timeline: a single chronological stream of BLE + Peripheral events ---
@@ -1115,6 +1115,32 @@
                     break;
                 }
 
+                case 'ble_status': {
+                    const el = document.getElementById('ble-radio-status');
+                    if (el) {
+                        el.textContent = msg.mode === 'bumble'
+                            ? (msg.connected ? 'real radio: connected' : 'real radio: connecting…')
+                            : 'local stub';
+                        el.style.color = msg.mode === 'bumble'
+                            ? (msg.connected ? '#10b981' : '#f59e0b')
+                            : 'var(--text-dim)';
+                    }
+                    break;
+                }
+
+                case 'thread_activity': {
+                    if (msg.kind === 'scan') {
+                        emitPeripheral('THREAD', 'scan',
+                            `15.4 energy scan ch=${msg.channel}`,
+                            { channel: msg.channel, n: msg.n });
+                    } else {
+                        emitPeripheral('THREAD', 'tx',
+                            `15.4 TX ch=${msg.channel} len=${msg.len}`,
+                            { channel: msg.channel, len: msg.len, n: msg.n });
+                    }
+                    break;
+                }
+
                 case 'status':
                     document.getElementById('mips-display').textContent = `${msg.mips} MIPS`;
                     document.getElementById('cycle-display').textContent = `${Math.floor(msg.cycles)} cycles`;
@@ -1419,6 +1445,23 @@
         bindPeriFilt('peri-filt-cam', 'CAM');
         bindPeriFilt('peri-filt-lcd', 'LCD');
         bindPeriFilt('peri-filt-ble', 'BLE');
+        bindPeriFilt('peri-filt-thread', 'THREAD');
+
+        // --- BLE real radio (Bumble via gateway) toggle ---
+        const bleRadioChk = document.getElementById('ble-radio-chk');
+        if (bleRadioChk) bleRadioChk.addEventListener('change', (e) => {
+            if (!worker) return;
+            if (e.target.checked) {
+                const host = window.location.hostname || '127.0.0.1';
+                worker.postMessage({ type: 'ble_set_mode', mode: 'bumble' });
+                worker.postMessage({ type: 'ble_connect', url: `ws://${host}:5095/api/ble-gateway` });
+                if (terminal) terminal.writeln('\x1b[36m[BLE] Real-radio mode: forwarding HCI to gateway Bumble stack…\x1b[0m');
+            } else {
+                worker.postMessage({ type: 'ble_set_mode', mode: 'local' });
+                worker.postMessage({ type: 'ble_disconnect' });
+                if (terminal) terminal.writeln('\x1b[36m[BLE] Local stub controller mode.\x1b[0m');
+            }
+        });
 
         const periExportJson = document.getElementById('peri-export-json');
         if (periExportJson) periExportJson.addEventListener('click', () => {

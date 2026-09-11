@@ -46,8 +46,34 @@ jobs:
       - name: Run BLE verification (25-verify-hci)
         run: node spike/25-verify-hci.mjs
 
-  regression:
-    name: Peripheral regression (tracked samples)
+  c3:
+    name: C3 peripheral regression (tracked samples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run parser unit tests
+        run: node spike/ble_inspector.test.mjs && node spike/peripheral_inspector.test.mjs
+
+      - name: Run C3 protocol suite (18-verify-all)
+        run: node spike/18-verify-all.mjs
+
+      - name: Run C3 virtual peripherals (24-verify-new)
+        run: node spike/24-verify-new.mjs
+
+      - name: Run C3 native peripherals (26-verify-native)
+        run: node spike/26-verify-native.mjs
+
+      - name: Run IDF verification (27-verify-idf)
+        run: node spike/27-verify-idf.mjs
+
+  multichip:
+    name: Multi-chip regression (tracked samples)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -57,5 +83,97 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Run IDF verification (27-verify-idf)
-        run: node spike/27-verify-idf.mjs
+      - name: Run C6 suite (21-verify-c6)
+        run: node spike/21-verify-c6.mjs
+
+      - name: Run H2 suite (22-verify-h2)
+        run: node spike/22-verify-h2.mjs
+
+      - name: Run P4 suite (23-verify-p4)
+        run: node spike/23-verify-p4.mjs
+
+      - name: Run C5 suite (28-verify-c5)
+        run: node spike/28-verify-c5.mjs
+
+      - name: Run S31 smoke (29-verify-s31)
+        run: node spike/29-verify-s31.mjs
+
+  mpy:
+    name: MicroPython regression (tracked samples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run MicroPython suite (30-verify-mpy)
+        run: node spike/30-verify-mpy.mjs
+
+  thread-pump:
+    name: Thread 1b+1c+1d + BLE pump (tracked samples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Thread Phase 1b+1c (32-verify-thread)
+        run: node spike/32-verify-thread.mjs
+
+      - name: Run Thread GW E2E (34-verify-thread-gw, SKIP exit 0 if no gateway)
+        run: node spike/34-verify-thread-gw.mjs
+
+      - name: Run Thread inject (35-verify-thread-inject)
+        run: node spike/35-verify-thread-inject.mjs
+
+      - name: Run Thread multi (36-verify-thread-multi)
+        run: node spike/36-verify-thread-multi.mjs
+
+      - name: Run BLE pump unit (33-verify-ble-pump)
+        run: node spike/33-verify-ble-pump.mjs
+
+  wifi:
+    name: WiFi E2E (gateway-gated, SKIP without gateway)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run WiFi E2E (31-verify-wifi, SKIP exit 0 if no gateway)
+        run: node spike/31-verify-wifi.mjs
+
+  bumble-poc:
+    name: BLE-over-Bumble PoC (gated, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Bumble
+        run: pip install bumble
+        continue-on-error: true
+
+      - name: Run Bumble PoC (needs local TCP controller)
+        run: |
+          python3 spike/bumble_hci_poc.py > /tmp/bumble.log 2>&1 &
+          sleep 3
+          node spike/ble_bumble_fwd.mjs

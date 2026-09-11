@@ -787,6 +787,10 @@
                     <label style="font-size: 10px; color: #a78bfa;"><input type="checkbox" id="ble-filt-detect" checked> DETECT</label>
                     <label style="font-size: 10px; color: #f59e0b;"><input type="checkbox" id="ble-filt-test" checked> TEST</label>
                 </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;">
+                    <label style="font-size: 10px; color: var(--text-main);"><input type="checkbox" id="ble-radio-chk"> Real radio (Bumble via gateway)</label>
+                    <span id="ble-radio-status" style="font-size: 10px; color: var(--text-dim);">local stub</span>
+                </div>
                 <div class="i2c-log-box" id="ble-log" style="max-height: 160px; font-family: 'Fira Code', monospace; font-size: 10px;">
                     <div style="color: var(--text-dim);">No BLE events yet. Load a BLE firmware (BLEDemo / BLEDetect / BLETest).</div>
                 </div>
@@ -829,6 +833,7 @@
                     <label style="font-size: 10px; color: #7dd3fc;"><input type="checkbox" id="peri-filt-cam" checked> CAM</label>
                     <label style="font-size: 10px; color: #fda4af;"><input type="checkbox" id="peri-filt-lcd" checked> LCD</label>
                     <label style="font-size: 10px; color: #5eead4;"><input type="checkbox" id="peri-filt-ble" checked> BLE-HCI</label>
+                    <label style="font-size: 10px; color: #a3e635;"><input type="checkbox" id="peri-filt-thread" checked> 15.4</label>
                 </div>
                 <div class="i2c-log-box" id="peri-log" style="max-height: 160px; font-family: 'Fira Code', monospace; font-size: 10px;">
                     <div style="color: var(--text-dim);">No peripheral events yet. Load a firmware that uses any peripheral (I2C / SPI / TWAI / ADC / PWM / I2S / …).</div>

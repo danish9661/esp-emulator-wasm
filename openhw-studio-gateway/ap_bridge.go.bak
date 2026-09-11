@@ -1,0 +1,354 @@
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"net"
+	"time"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+)
+
+var (
+	// BSSID of our virtual access point
+	gatewayMac = []byte{0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xdd}
+	outboundSeq uint16 = 1
+	lastClientMac []byte = nil
+)
+
+func nextSeq() uint16 {
+	outboundSeq++
+	return (outboundSeq & 0x0fff) << 4 // Seq number is in the upper 12 bits of the 16-bit field
+}
+
+func ts() string {
+	return time.Now().Format("15:04:05.000")
+}
+
+// Translate80211ToEthernet decapsulates an 802.11 frame to 802.3 Ethernet.
+// Returns (ackFrame, responseFrame, ethernetFrame).
+func Translate80211ToEthernet(msg []byte) ([]byte, []byte, []byte) {
+	if len(msg) < 4 {
+		fmt.Printf("[%s][AP Bridge] ERROR: Frame too short (%d bytes): %x\n", ts(), len(msg), msg)
+		return nil, nil, nil
+	}
+
+	// Manual Frame Control parse (always works, even when gopacket fails)
+	fc := binary.LittleEndian.Uint16(msg[0:2])
+	frameType := (fc >> 2) & 0x3
+	frameSubtype := (fc >> 4) & 0xf
+
+	// Extract Addr1 (receiver) and Addr2 (sender) manually - they're always at offset 4 and 10
+	var addr1, addr2 []byte
+	if len(msg) >= 16 {
+		addr1 = msg[4:10]
+		addr2 = msg[10:16]
+		
+		// Track the client MAC for outbound DHCP patching
+		if frameType != 1 && !bytes.Equal(addr2, gatewayMac) {
+			lastClientMac = append([]byte(nil), addr2...)
+		}
+	} else if len(msg) >= 10 {
+		addr1 = msg[4:10]
+	}
+
+	// Build ACK for unicast frames
+	var ack []byte
+	if addr1 != nil && addr2 != nil && !bytes.Equal(addr1, []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) {
+		ack = buildAck(net.HardwareAddr(addr2))
+	}
+
+	// Type 0 = Management, Type 1 = Control, Type 2 = Data
+	switch frameType {
+	case 1: // Control frame
+		fmt.Printf("[%s][AP Bridge] Received Control Frame (subtype=%d). Len=%d. ACK sent: %v\n", ts(), frameSubtype, len(msg), ack != nil)
+		return ack, nil, nil
+
+	case 0: // Management frame - use gopacket for rich parsing
+		packet := gopacket.NewPacket(msg, layers.LayerTypeDot11, gopacket.NoCopy)
+		dot11Layer := packet.Layer(layers.LayerTypeDot11)
+		if dot11Layer == nil {
+			fmt.Printf("[%s][AP Bridge] WARNING: gopacket failed to parse mgmt frame (type=%d sub=%d len=%d): %x\n", ts(), frameType, frameSubtype, len(msg), msg)
+			return ack, nil, nil
+		}
+		dot11, _ := dot11Layer.(*layers.Dot11)
+
+		switch dot11.Type {
+		case layers.Dot11TypeMgmtProbeReq:
+			fmt.Printf("[%s][AP Bridge] << PROBE REQUEST  (from %x)\n", ts(), addr2)
+			resp := buildProbeResponse(dot11.Address2)
+			fmt.Printf("[%s][AP Bridge] >> PROBE RESPONSE (len=%d)\n", ts(), len(resp))
+			return ack, resp, nil
+
+		case layers.Dot11TypeMgmtAuthentication:
+			authAlgo := binary.LittleEndian.Uint16(msg[24:26])
+			authSeq := binary.LittleEndian.Uint16(msg[26:28])
+			fmt.Printf("[%s][AP Bridge] << AUTH REQUEST   (from %x, algo=%d, seq=%d)\n", ts(), addr2, authAlgo, authSeq)
+			resp := buildAuthResponse(dot11.Address2)
+			fmt.Printf("[%s][AP Bridge] >> AUTH RESPONSE  (len=%d, status=0=Success)\n", ts(), len(resp))
+			return ack, resp, nil
+
+		case layers.Dot11TypeMgmtDeauthentication:
+			reason := uint16(0)
+			if len(msg) >= 26 {
+				reason = binary.LittleEndian.Uint16(msg[24:26])
+			}
+			fmt.Printf("[%s][AP Bridge] << DEAUTH         (from %x, reason=%d) - ACK sent, ignoring.\n", ts(), addr2, reason)
+			return ack, nil, nil
+
+		case layers.Dot11TypeMgmtAssociationReq:
+			fmt.Printf("[%s][AP Bridge] << ASSOC REQUEST  (from %x): %x\n", ts(), addr2, msg)
+			resp := buildAssocResponse(dot11.Address2)
+			fmt.Printf("[%s][AP Bridge] >> ASSOC RESPONSE (len=%d, AID=0xC001, status=0=Success)\n", ts(), len(resp))
+			return ack, resp, nil
+
+		case layers.Dot11TypeMgmtDisassociation:
+			fmt.Printf("[%s][AP Bridge] << DISASSOC       (from %x) - ignoring.\n", ts(), addr2)
+			return ack, nil, nil
+
+		default:
+			fmt.Printf("[%s][AP Bridge] UNHANDLED MGMT   type=%v len=%d: %x\n", ts(), dot11.Type, len(msg), msg)
+			return ack, nil, nil
+		}
+
+	case 2: // Data frame
+		// Manually extract payload to avoid gopacket stripping 4 bytes for FCS
+		hdrLen := 24
+		if frameSubtype == 8 {
+			hdrLen = 26
+		}
+		if len(msg) < hdrLen+8 {
+			if len(msg) <= 32 {
+				// Likely a QoS Null or Data Null frame for keep-alive, ignore safely.
+				return ack, nil, nil
+			}
+			fmt.Printf("[%s][AP Bridge] WARNING: Data frame too short (len=%d)\n", ts(), len(msg))
+			return ack, nil, nil
+		}
+
+		// SNAP header is 8 bytes, EtherType is the last 2 bytes
+		etherType := binary.BigEndian.Uint16(msg[hdrLen+6 : hdrLen+8])
+		payload := msg[hdrLen+8:]
+
+		if len(payload) == 0 {
+			return ack, nil, nil
+		}
+
+		// DEBUG: If it's a DHCP packet, print the DHCP Message Type!
+	if len(payload) >= 28 && payload[12] == 0x08 && payload[13] == 0x00 { // IPv4
+		ipHeaderLen := int(payload[14] & 0x0F) * 4
+		if payload[23] == 17 { // UDP
+			udpOffset := 14 + ipHeaderLen
+			if len(payload) >= udpOffset+8 {
+				srcPort := binary.BigEndian.Uint16(payload[udpOffset : udpOffset+2])
+				if srcPort == 68 { // DHCP Client
+					dhcpOffset := udpOffset + 8
+					if len(payload) >= dhcpOffset+240 {
+						// Search for Option 53 (Message Type)
+						optOffset := dhcpOffset + 240
+						for optOffset < len(payload) && payload[optOffset] != 255 {
+							optType := payload[optOffset]
+							if optType == 0 {
+								optOffset++
+								continue
+							}
+							if optOffset+1 >= len(payload) {
+								break
+							}
+							optLen := int(payload[optOffset+1])
+							if optType == 53 && optLen == 1 && optOffset+2 < len(payload) {
+								msgType := payload[optOffset+2]
+								msgName := "UNKNOWN"
+								switch msgType {
+								case 1: msgName = "DISCOVER"
+								case 3: msgName = "REQUEST"
+								}
+								fmt.Printf("[%s][AP Bridge] *** DHCP CLIENT SENT: %s ***\n", ts(), msgName)
+							}
+							optOffset += 2 + optLen
+						}
+					}
+				}
+			}
+		}
+	}
+
+	eth := make([]byte, 14+len(payload))
+		
+		// For ToDS=1, FromDS=0: Addr1=BSSID, Addr2=SA, Addr3=DA
+		// For ToDS=0, FromDS=1: Addr1=DA, Addr2=BSSID, Addr3=SA
+		toDS := (msg[1] & 0x01) != 0
+		fromDS := (msg[1] & 0x02) != 0
+
+		var da, sa []byte
+		if toDS && !fromDS {
+			da = msg[16:22] // Addr3
+			sa = addr2      // Addr2
+		} else if !toDS && fromDS {
+			da = addr1      // Addr1
+			sa = msg[16:22] // Addr3
+		} else {
+			da = msg[16:22] // IBSS fallback
+			sa = addr2
+		}
+
+		copy(eth[0:6], da)
+		copy(eth[6:12], sa)
+		binary.BigEndian.PutUint16(eth[12:14], etherType)
+		copy(eth[14:], payload)
+
+		// DEBUG: Log the first 48 bytes of the inbound ESP32 Data frame to inspect its headers
+		debugLen := len(msg)
+		if debugLen > 48 {
+			debugLen = 48
+		}
+		fmt.Printf("[%s][AP Bridge] DEBUG: INBOUND ESP32 DATA HEX: %x\n", ts(), msg[:debugLen])
+
+		fmt.Printf("[%s][AP Bridge] << DATA FRAME     src=%x -> dst=%x EtherType=0x%04x payloadLen=%d\n",
+			ts(), sa, da, etherType, len(payload))
+		fmt.Printf("[%s][AP Bridge] >> FORWARDING to gVisor (total eth frame %d bytes)\n", ts(), len(eth))
+		return ack, nil, eth
+
+	default:
+		fmt.Printf("[%s][AP Bridge] UNKNOWN FRAME type=%d sub=%d len=%d: %x\n", ts(), frameType, frameSubtype, len(msg), msg)
+		return nil, nil, nil
+	}
+}
+
+func buildAck(targetMac net.HardwareAddr) []byte {
+	// Frame Control: Type=Control(1), Subtype=ACK(13) => 0x00d4
+	header := make([]byte, 10)
+	binary.LittleEndian.PutUint16(header[0:2], 0x00d4)
+	binary.LittleEndian.PutUint16(header[2:4], 0) // Duration
+	copy(header[4:10], targetMac)                  // Receiver Address
+	return header
+}
+
+// TranslateEthernetTo80211 encapsulates an 802.3 Ethernet frame into an 802.11 Data frame.
+func TranslateEthernetTo80211(eth []byte, destMac []byte) []byte {
+	if len(eth) < 14 {
+		return nil
+	}
+
+	// Frame Control: Type=Data(2), Subtype=Data(0), FromDS=1
+	// FC bits: ToDS=0, FromDS=1, bits 9-8 of FC word => 0x0208
+	header := make([]byte, 24)
+	binary.LittleEndian.PutUint16(header[0:2], 0x0208) // FC
+	binary.LittleEndian.PutUint16(header[2:4], 0)      // Duration
+	
+	// Respect the Ethernet destination MAC (Unicast or Broadcast)
+	if bytes.Equal(destMac, []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) && lastClientMac != nil {
+		copy(header[4:10], lastClientMac) // FORCE UNICAST TO ESP32
+	} else {
+		copy(header[4:10], destMac)
+	}
+
+	copy(header[10:16], gatewayMac)                     // Addr2: AP BSSID
+	copy(header[16:22], eth[6:12])                      // Addr3: Src
+	binary.LittleEndian.PutUint16(header[22:24], nextSeq()) // Seq
+
+	// LLC/SNAP header
+	snap := []byte{0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00, eth[12], eth[13]}
+	payload := eth[14:]
+
+	out := append(header, snap...)
+
+
+
+	out = append(out, payload...)
+
+	// NOTE: We DO NOT append an FCS (CRC32). 
+	// The Wokwi ESP32 simulator's sendFrame internally adds 4 to the length 
+	// of any frame passed to it to compensate for the ESP32 hardware driver 
+	// subtracting 4 bytes. If we add the FCS here, the length will be 4 bytes 
+	// too long and lwIP will drop the frame as corrupt!
+
+	fmt.Printf("[%s][AP Bridge] >> OUTBOUND 802.11 FRAME (len=%d) HEX: %x\n", ts(), len(out), out)
+	return out
+}
+
+func buildBeacon() []byte {
+	header := make([]byte, 24)
+	binary.LittleEndian.PutUint16(header[0:2], 0x0080) // Beacon
+	copy(header[4:10], []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) // Broadcast
+	copy(header[10:16], gatewayMac)
+	copy(header[16:22], gatewayMac)
+
+	fixed := make([]byte, 12)
+	binary.LittleEndian.PutUint64(fixed[0:8], 0)     // Timestamp
+	binary.LittleEndian.PutUint16(fixed[8:10], 100)  // Beacon Interval
+	binary.LittleEndian.PutUint16(fixed[10:12], 0x0001) // Capabilities (ESS)
+
+	ssid := []byte("Wokwi-GUEST")
+	ieSsid := append([]byte{0, byte(len(ssid))}, ssid...)
+	ieRates := []byte{1, 8, 0x8b, 0x96, 0x82, 0x84, 0x0c, 0x18, 0x30, 0x60}
+	ieDS := []byte{3, 1, 6} // DS Parameter Set (Channel 6)
+
+	out := append(header, fixed...)
+	out = append(out, ieSsid...)
+	out = append(out, ieRates...)
+	out = append(out, ieDS...)
+	return out
+}
+
+func buildProbeResponse(clientMac net.HardwareAddr) []byte {
+	header := make([]byte, 24)
+	binary.LittleEndian.PutUint16(header[0:2], 0x0050) // Probe Response
+	copy(header[4:10], clientMac)
+	copy(header[10:16], gatewayMac)
+	copy(header[16:22], gatewayMac)
+
+	fixed := make([]byte, 12)
+	binary.LittleEndian.PutUint64(fixed[0:8], 0)     // Timestamp
+	binary.LittleEndian.PutUint16(fixed[8:10], 100)  // Beacon Interval
+	binary.LittleEndian.PutUint16(fixed[10:12], 0x0001) // Capabilities (ESS)
+	binary.LittleEndian.PutUint16(header[22:24], nextSeq()) // Seq
+	ssid := []byte("Wokwi-GUEST")
+	ieSsid := append([]byte{0, byte(len(ssid))}, ssid...)
+	ieRates := []byte{1, 8, 0x8b, 0x96, 0x82, 0x84, 0x0c, 0x18, 0x30, 0x60}
+	ieDS := []byte{3, 1, 6} // DS Parameter Set (Channel 6)
+
+	out := append(header, fixed...)
+	out = append(out, ieSsid...)
+	out = append(out, ieRates...)
+	out = append(out, ieDS...)
+	return out
+}
+
+func buildAuthResponse(clientMac net.HardwareAddr) []byte {
+	header := make([]byte, 24)
+	binary.LittleEndian.PutUint16(header[0:2], 0x00b0) // Authentication
+	copy(header[4:10], clientMac)
+	copy(header[10:16], gatewayMac)
+	copy(header[16:22], gatewayMac)
+
+	fixed := make([]byte, 6)
+	binary.LittleEndian.PutUint16(fixed[0:2], 0) // Auth Algorithm: Open
+	binary.LittleEndian.PutUint16(fixed[2:4], 2) // Auth Seq: 2
+	binary.LittleEndian.PutUint16(fixed[4:6], 0) // Status: Success
+
+	return append(header, fixed...)
+}
+
+func buildAssocResponse(clientMac net.HardwareAddr) []byte {
+	header := make([]byte, 24)
+	binary.LittleEndian.PutUint16(header[0:2], 0x0010) // Association Response
+	copy(header[4:10], clientMac)
+	copy(header[10:16], gatewayMac)
+	copy(header[16:22], gatewayMac)
+
+	fixed := make([]byte, 6)
+	binary.LittleEndian.PutUint16(fixed[0:2], 0x0001) // Capabilities
+	binary.LittleEndian.PutUint16(fixed[2:4], 0)      // Status: Success
+	binary.LittleEndian.PutUint16(fixed[4:6], 0xc001) // AID (bits 15:14 must be 1)
+
+	ieRates := []byte{1, 8, 0x8b, 0x96, 0x82, 0x84, 0x0c, 0x18, 0x30, 0x60}
+
+	out := append(header, fixed...)
+	out = append(out, ieRates...)
+	return out
+}
+
+

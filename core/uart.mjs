@@ -107,7 +107,7 @@ export class UARTController {
         return cleanText;
     }
 
-    _routeApcFrame(kind, body, { i2c, spi, neopixel, adc, pwm, i2s, twai, ble, touch, dac, sdmmc, camera, lcd }) {
+    _routeApcFrame(kind, body, { i2c, spi, neopixel, adc, pwm, i2s, twai, ble, touch, dac, sdmmc, camera, lcd, thread }) {
         switch (kind) {
             case 'B': { // BLE HCI command -> virtual controller -> event
                 if (!ble) break;
@@ -312,6 +312,14 @@ export class UARTController {
                     bytes[i] = (nib(body[o]) << 4) | nib(body[o + 1]);
                 }
                 lcd.drawBitmap(x1, y1, x2, y2, bytes);
+                break;
+            }
+            case 'G': { // 802.15.4 TX tap: G<ch><len><psdu nibbles>
+                if (thread && typeof thread.handle === 'function') thread.handle(body);
+                break;
+            }
+            case 'H': { // 802.15.4 energy-scan tap: H<ch>
+                if (thread && typeof thread.handleScan === 'function') thread.handleScan(body);
                 break;
             }
         }

@@ -6,6 +6,8 @@ import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from '../elf.mjs';
 import { EspImage } from '../espimage.mjs';
 import { SHIMS, relocateShimsForChip } from '../shims.mjs';
 import { prepareBleShims } from './ble_shims.mjs';
+import { prepareThreadShims } from './thread_shims.mjs';
+import { ThreadController } from './thread_controller.mjs';
 import { GPIOController } from './gpio.mjs';
 import { I2CBus } from './i2c.mjs';
 import { SPIBus } from './spi.mjs';
@@ -52,6 +54,7 @@ export class ESP32C3 {
         this.sdmmc = new SDMMCController();
         this.camera = new CameraController();
         this.lcd = new LCDController();
+        this.thread = new ThreadController();
         this.uart0 = new UARTController(this.emu);
         this.uart0.bindMemory(this.memory);
 
@@ -133,6 +136,7 @@ export class ESP32C3 {
         this._patchedHooks = [];
         // Fresh boot image: forget any cached BLE mirror mapping.
         if (this.uart0 && this.uart0.bleMirror) this.uart0.bleMirror.clear();
+        if (this.thread) this.thread.reset();
 
         if (elfBinary) {
             try {
@@ -153,7 +157,8 @@ export class ESP32C3 {
                     .concat(hookPlan?.sdmmc?.hooks || [])
                     .concat(hookPlan?.camera?.hooks || [])
                     .concat(hookPlan?.lcd?.hooks || [])
-                    .concat(hookPlan?.usb?.hooks || []);
+                    .concat(hookPlan?.usb?.hooks || [])
+                    .concat(hookPlan?.thread?.hooks || []);
 
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
                 const effectiveShims = prepareSpiShims(elf, relocateShimsForChip(SHIMS, this.chip));
@@ -182,6 +187,18 @@ export class ESP32C3 {
                 const ble = prepareBleShims(elf, this.chip);
                 for (const [fn, shim] of Object.entries(ble.shims)) effectiveShims[fn] = shim;
                 for (const h of ble.hooks || []) hooks[h.name] = h;
+
+                // 802.15.4 / Thread radio shims (soft: missing/small skips).
+                // The EnergyScan parked body travels via th.extra (written
+                // below alongside the BLE/IDF extras).
+                try {
+                    const th = prepareThreadShims(elf, this.chip);
+                    for (const [fn, shim] of Object.entries(th.shims)) effectiveShims[fn] = shim;
+                    for (const h of th.hooks || []) hooks[h.name] = h;
+                    idfExtras.push(...(th.extra || []));
+                } catch (e) {
+                    console.warn('[ESP32C3] thread shim prep skipped:', e?.message || e);
+                }
 
                 const img = new EspImage(flashBuf);
                 for (const [fn, shim] of Object.entries(effectiveShims)) {
@@ -247,6 +264,7 @@ export class ESP32C3 {
             sdmmc: this.sdmmc,
             camera: this.camera,
             lcd: this.lcd,
+            thread: this.thread,
         });
     }
 

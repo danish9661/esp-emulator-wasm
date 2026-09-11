@@ -6,6 +6,9 @@ spike/sketches/*/build_*/
 # Raw memory dumps from differential scans
 *.raw
 
+# Built gateway binary (regenerate with `go build`; source is committed)
+openhw-studio-gateway/openhw-gw.exe
+
 node_modules/
 
 __pycache__/

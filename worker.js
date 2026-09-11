@@ -2,6 +2,9 @@ import { Elf32, planHooks, prepareSpiShims, prepareIdfShims } from './elf.mjs';
 import { EspImage } from './espimage.mjs';
 import { SHIMS, relocateShimsForChip } from './shims.mjs';
 import { prepareBleShims } from './core/ble_shims.mjs';
+import { prepareThreadShims } from './core/thread_shims.mjs';
+import { ThreadController } from './core/thread_controller.mjs';
+import { BleHciPump } from './core/ble_hci_pump.mjs';
 import { BLEController } from './core/ble_controller.mjs';
 import { BLEMirror } from './core/ble_mirror.mjs';
 import { ReplyDribbler } from './reply_queue.mjs';
@@ -14,8 +17,11 @@ let running = false;
 let batchSize = 100000;
 let pendingLoad = null;
 let ws = null;
+let bleWs = null;
+let bleMode = 'local';
 let currentChip = 'esp32c3';
 const bleController = new BLEController();
+const threadController = new ThreadController();
 const bleMirror = new BLEMirror(() => {
     if (!wasmExports?.memory) throw new Error('no memory bound');
     return wasmExports.memory.buffer;
@@ -30,6 +36,18 @@ bleController.onHci((msg) => {
         data: Array.from(msg.bytes || []),
     });
 });
+// HCI pump: local stub by default; 'bumble' forwards H4 over bleWs to the
+// gateway's /api/ble-gateway (real Bumble stack). Shared with headless tests.
+// (Created after replyDribbler below; declared here for message-handler use.)
+let blePump = null;
+
+function postBleStatus() {
+    postMessage({
+        type: 'ble_status',
+        mode: bleMode,
+        connected: !!(bleWs && bleWs.readyState === WebSocket.OPEN),
+    });
+}
 // Paced host->firmware replies: the guest HW RX FIFO drops bursts larger
 // than ~128B, so SDMMC/camera replies dribble out across batches.
 const replyDribbler = new ReplyDribbler();
@@ -39,6 +57,21 @@ function pumpReplies() {
         if (emulator) emulator.uart_input(b);
     });
 }
+
+blePump = new BleHciPump({
+    controller: bleController,
+    mirror: bleMirror,
+    dribbler: replyDribbler,
+    postHci: (msg) => {
+        postMessage({
+            type: 'ble_hci',
+            dir: msg.dir,
+            opcode: msg.opcode,
+            name: msg.name,
+            data: Array.from(msg.bytes || []),
+        });
+    },
+});
 
 // Virtual buses and devices
 const i2cBus = new I2CBus();
@@ -137,6 +170,10 @@ lcdDevice.onFrame((frame) => {
         height: frame.height,
         buffer: frame.buffer,
     });
+});
+
+threadController.onActivity((act) => {
+    postMessage({ type: 'thread_activity', ...act });
 });
 
 oledDevice.onFrame((frame) => {
@@ -284,8 +321,8 @@ async function handleLoad(msg) {
                     .concat(hookPlan?.dac?.hooks || [])
                     .concat(hookPlan?.sdmmc?.hooks || [])
                     .concat(hookPlan?.camera?.hooks || [])
-                    .concat(hookPlan?.lcd?.hooks || []);
-
+                    .concat(hookPlan?.lcd?.hooks || [])
+                    .concat(hookPlan?.thread?.hooks || []);
                 // Relocate UART0/SPI-bus bases per chip (C3 vs C6/H2 vs P4).
                 const effectiveShims = prepareSpiShims(elf, relocateShimsForChip(SHIMS, chip));
                 const hooks = Object.fromEntries(allHooks.map(h => [h.name, h]));
@@ -310,6 +347,18 @@ async function handleLoad(msg) {
                     idfExtras.push(...(idf.extra || []));
                 } catch (idfErr) {
                     console.warn('IDF shim prep skipped:', idfErr);
+                }
+
+                // 802.15.4 / Thread radio shims (soft: missing/small skips).
+                // The EnergyScan parked body travels via th.extra, merged
+                // into idfExtras (written below like the BLE/IDF extras).
+                try {
+                    const th = prepareThreadShims(elf, chip);
+                    for (const [fn, shim] of Object.entries(th.shims || {})) effectiveShims[fn] = shim;
+                    for (const h of th.hooks || []) hooks[h.name] = h;
+                    idfExtras.push(...(th.extra || []));
+                } catch (thErr) {
+                    console.warn('Thread shim prep skipped:', thErr);
                 }
 
                 // Warn for tiers that resolve but still lack shim bytecode
@@ -383,6 +432,7 @@ async function handleLoad(msg) {
         streamBuffer = '';
         replyDribbler.clear();
         bleMirror.clear();
+        threadController.reset();
         lastGpioOut = -1n;
         lastGpioEn = -1n;
 
@@ -431,6 +481,57 @@ function disconnectNetwork() {
         ws.close();
         ws = null;
     }
+}
+
+// --- BLE gateway (real radio via Bumble) ---
+function connectBle(url) {
+    disconnectBle();
+    try {
+        bleWs = new WebSocket(url);
+        bleWs.binaryType = 'arraybuffer';
+        blePump.setTransport({
+            send: (bytes) => {
+                if (bleWs && bleWs.readyState === WebSocket.OPEN) {
+                    const out = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+                    bleWs.send(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength));
+                }
+            },
+            isOpen: () => !!(bleWs && bleWs.readyState === WebSocket.OPEN),
+        });
+        bleWs.onopen = function() {
+            postBleStatus();
+        };
+        bleWs.onclose = function() {
+            postBleStatus();
+            bleWs = null;
+            if (blePump) blePump.setTransport(null);
+        };
+        bleWs.onerror = function() {
+            postMessage({ type: 'error', message: `BLE gateway connection failed: ${url}` });
+        };
+        bleWs.onmessage = function(e) {
+            if (e.data instanceof ArrayBuffer && e.data.byteLength > 0) {
+                try {
+                    blePump.handleWsMessage(new Uint8Array(e.data));
+                } catch (err) {
+                    console.warn('BLE gateway message error:', err);
+                }
+            } else if (typeof e.data === 'string' && e.data.startsWith('ERROR')) {
+                postMessage({ type: 'error', message: `BLE gateway: ${e.data}` });
+            }
+        };
+    } catch (e) {
+        postMessage({ type: 'error', message: `BLE gateway error: ${e.message}` });
+    }
+    postBleStatus();
+}
+
+function disconnectBle() {
+    if (bleWs) {
+        try { bleWs.close(); } catch (_) {}
+        bleWs = null;
+    }
+    if (blePump) blePump.setTransport(null);
 }
 
 function drainTxToNetwork() {
@@ -671,28 +772,23 @@ function handleApcFrame(kind, body) {
             bytes[i] = (nib(o) << 4) | nib(o + 1);
         }
         lcdDevice.drawBitmap(x1, y1, x2, y2, bytes);
-    } else if (kind === 'B') {        // BLE HCI command -> virtual controller -> E event frame.
+    } else if (kind === 'B') {        // BLE HCI command -> controller or Bumble.
         // Mirrors core/uart.mjs so browser BLE matches Node SDK behavior.
-        // (E replies dribble: long events exceed one RX FIFO.)
-        if (!emulator) return;
+        // Local stub answers via the shared-memory mirror (E-UART dribbled
+        // fallback); 'bumble' mode forwards H4 to /api/ble-gateway instead.
+        if (!emulator || !blePump) return;
         try {
             const hex = [...body].map(c => c.charCodeAt(0) - 97);
             const bytes = [];
             for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
-            const event = bleController.handle(new Uint8Array(bytes));
-            // Preferred: shared-memory event channel (reliable, no RX).
-            // Fallback: legacy E-UART reply (dribbled).
-            if (!bleMirror.deliver(event)) {
-                let out = '\x1b_E';
-                const len = event.length;
-                out += String.fromCharCode(97 + ((len >> 4) & 0xf), 97 + (len & 0xf));
-                for (const b of event) out += String.fromCharCode(97 + ((b >> 4) & 0xf), 97 + (b & 0xf));
-                out += '\x1b\\';
-                replyDribbler.push(new TextEncoder().encode(out));
-            }
+            blePump.handleBFrame(new Uint8Array(bytes));
         } catch (e) {
             console.warn('BLE HCI bridge error:', e);
         }
+    } else if (kind === 'G') { // 802.15.4 TX tap: G<ch><len><psdu nibbles>
+        threadController.handle(body);
+    } else if (kind === 'H') { // 802.15.4 energy-scan tap: H<ch>
+        threadController.handleScan(body);
     }
 }
 
@@ -790,6 +886,7 @@ onmessage = async function(e) {
                     streamBuffer = '';
                     replyDribbler.clear();
                     bleMirror.clear();
+                    threadController.reset();
                     lastGpioOut = -1n;
                     lastGpioEn = -1n;
                     postMessage({ type: 'reset', reloaded: true, pc: emulator.pc() });
@@ -851,6 +948,21 @@ onmessage = async function(e) {
 
         case 'net_disconnect':
             disconnectNetwork();
+            break;
+
+        case 'ble_connect':
+            connectBle(msg.url);
+            break;
+
+        case 'ble_disconnect':
+            disconnectBle();
+            postBleStatus();
+            break;
+
+        case 'ble_set_mode':
+            bleMode = msg.mode === 'bumble' ? 'bumble' : 'local';
+            if (blePump) blePump.setMode(bleMode);
+            postBleStatus();
             break;
 
         case 'sd_upload_img':

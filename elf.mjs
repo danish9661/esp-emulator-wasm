@@ -222,6 +222,13 @@ export const HOOK_TARGETS = {
         'spi_device_transmit', 'spi_device_polling_transmit',
         'spi_bus_add_device', 'spi_bus_initialize',
     ],
+    'thread-15d4': [
+        'esp_ieee802154_enable', 'esp_ieee802154_disable',
+        'otPlatRadioReceive', 'otPlatRadioGetState', 'otPlatRadioTransmit',
+        'otPlatRadioEnergyScan', 'otPlatRadioTxDone', 'otPlatRadioEnergyScanDone',
+        'otPlatRadioReceiveDone', 'ieee802154_mac_init', 'ieee802154_transmit',
+        'ieee802154_transmit_at',
+    ],
 };
 
 export function makeJal(fromAddr, toAddr) {
@@ -346,6 +353,7 @@ export function planHooks(elf) {
         camera: pick(['virtual-camera']),
         lcd: pick(['virtual-lcd']),
         usb: pick(['idf-usb']),
+        thread: pick(['thread-15d4']),
     };
 }
 
