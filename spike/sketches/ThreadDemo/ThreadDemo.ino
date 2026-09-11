@@ -103,14 +103,11 @@ void loop() {
     // first request; A answers the stable challenge. Scans (role<2) and
     // router+ (after upgrade) still pump. H2/C6 pump always.
 #ifdef THREAD_NODE_B
-    // Pump gate (38 multihop): scans + first request need timers early
-    // (n<200); after that freeze retries so A's in-flight response lands
-    // on a stable challenge (challenge race). Routers/leaders (3/4)
-    // always pump (parenting needs timers). H2/C6 pump always.
-    {
-        int roleNow = (int)OThread.otGetDeviceRole();
-        if (roleNow >= 3 || n < 500) otPlatAlarmMilliFired(OThread.getInstance());
-    }
+    // Slow timers (38 multihop): pump every 2nd loop so Parent Req retries
+    // (~1500ms effective) lag A's response (~700ms). Fast retries invalidate
+    // in-flight responses (challenge race). Polls stay fast (delivery).
+    // (Windowed pump by loop count abandoned: retries are event-driven.)
+    if ((n % 2) == 0) otPlatAlarmMilliFired(OThread.getInstance());
 #else
     otPlatAlarmMilliFired(OThread.getInstance());
 #endif
@@ -174,13 +171,7 @@ void loop() {
             }, nullptr);
         Serial.printf("[THREAD] rescan-start rc=%d n=%d\n", (int)err, n);
     }
-    // Node-B loop rate (38 multihop): SLOW polls (1s) so its Parent
-    // Request challenge stays stable for 5s+ while A responds (~1s).
-    // Fast retries invalidate in-flight responses (challenge race).
-    // Others stay fast.
-#ifdef THREAD_NODE_B
-    delay(1000);
-#else
+    // Node-B loop rate (38 multihop): fast polls (delivery + upgrade
+    // hook); timers slowed separately above for challenge stability.
     delay(100);
-#endif
 }

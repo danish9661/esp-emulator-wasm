@@ -15,7 +15,7 @@ function aesEcb(key, block16) {
     c.setAutoPadding(false);
     return Buffer.concat([c.update(block16), c.final()]);
 }
-const frame = readFileSync('/tmp/mle63.bin');
+const frame = readFileSync(process.env.F || '/tmp/mle63.bin');
 const srcExt = frame.slice(7, 15);
 const mle = frame.slice(25);
 const keySeq = mle.readUInt32BE(6);
