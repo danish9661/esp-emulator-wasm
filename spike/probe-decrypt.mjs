@@ -12,7 +12,7 @@ function mleKey(seq) {
 }
 console.log('mleKey(1)=' + mleKey(1).toString('hex'));
 
-const frame = readFileSync('/tmp/mle63.bin'); // H2 parent req, 63B
+const frame = readFileSync('/tmp/h2_ad.bin'); // H2 MLE ad, 69B
 console.log('frame=' + frame.toString('hex'));
 // MHR 15B: fcf(2) seq(1) dstpan(2) dstshort(2) srcext(8)
 const srcExt = frame.slice(7, 15);
@@ -38,7 +38,9 @@ function iidFromExt(ext) {
     return iid;
 }
 const sender = Buffer.concat([Buffer.from('fe80000000000000', 'hex'), iidFromExt(srcExt)]);
-const receiver = Buffer.from('ff020000000000000000000000000002', 'hex');
+const dstByte = frame[17];
+const receiver = Buffer.concat([Buffer.from([0xff, 0x02]), Buffer.alloc(13), Buffer.from([dstByte])]);
+console.log('dstByte=0x' + dstByte.toString(16));
 console.log('sender=' + sender.toString('hex'));
 const aad = Buffer.concat([sender, receiver, secHdr]);
 console.log(`aad(${aad.length}B)=` + aad.toString('hex'));

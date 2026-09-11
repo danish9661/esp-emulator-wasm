@@ -4,7 +4,9 @@
 #include "OThreadCLI.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_mac.h"
 #include <openthread/platform/alarm-milli.h>
+#include <openthread/thread_ftd.h>
 
 // Direct 802.15.4 driver probe (C linkage, signatures from esp_ieee802154.h).
 extern "C" {
@@ -41,6 +43,17 @@ static void provisionThreadNetwork() {
 
 void setup() {
     Serial.begin(115200);
+#ifdef THREAD_NODE_B
+    // Second-C6 identity (38 multihop): default emulated EUIs collide
+    // across same-chip instances (same link-local IID -> MLE confusion).
+    // Override with a locally-administered EUI before OT starts.
+    // NOTE: no RNG burn here (esp_random traps in-sim, unemulated RNG).
+    {
+        static const uint8_t bEui[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0xB2 };
+        esp_base_mac_addr_set(bEui);
+        Serial.println("[THREAD] node-b EUI override");
+    }
+#endif
     Serial.println("thread-start");    OThread.begin(false);
     Serial.printf("[THREAD] role=%d (%s)\n",
                   (int)OThread.otGetDeviceRole(), OThread.otGetStringDeviceRole());
@@ -86,7 +99,16 @@ void loop() {
     // Pump OT alarms (polled): the FRC/esp_timer alarm ISR never fires
     // in-sim, so TimerMilli would pile up forever (no Parent Responses,
     // retries, advertisements). GetNow is shimmed to FreeRTOS ticks.
+    // NOTE: do NOT wrap in vTaskSuspendAll (deadlocks: scheduler lock
+    // around Fired wedges boot (roles stuck 0,1 + Guru)).
+    // Node-B rate split (38 multihop): polls stay fast (delivery), but
+    // timers run slow so its Parent Request challenge stays stable while
+    // A responds (fast retries invalidate in-flight responses).
+#ifdef THREAD_NODE_B
+    if ((n % 50) == 0) otPlatAlarmMilliFired(OThread.getInstance());
+#else
     otPlatAlarmMilliFired(OThread.getInstance());
+#endif
     // Polling GetState drives the virtual radio's deferred energy-scan
     // completion; the first poll after setup fires the energy callback.
     int radio = (int)otPlatRadioGetState(OThread.getInstance());
@@ -118,8 +140,21 @@ void loop() {
         Serial.printf("[THREAD] active-scan-start rc=%d\n", (int)err);
         Serial.println("thread-done");
     }
-    // Periodic re-scan probe (SubMac liveness): if SubMac can still TX,
-    // these emit beacon requests; if wedged, they return BUSY/fail.
+#if CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C5
+    // MULTIHOP test hook (38): become a router on the first poll as a
+    // child so a third node can attach through us. C6/C5-gated (never H2,
+    // never leaders); immediate to outrun long-run tick decay. 37 uses
+    // H2 as B (no hook there) so it still pins role 2.
+    {
+        static bool triedUpgrade = false;
+        if (!triedUpgrade && (int)OThread.otGetDeviceRole() == 2) {
+            triedUpgrade = true;
+            otError err = otThreadBecomeRouter(OThread.getInstance());
+            Serial.printf("[THREAD] upgrade-to-router rc=%d\n", (int)err);
+        }
+    }
+#endif
+    // Periodic re-scan probe (SubMac liveness): if SubMac can still TX,    // these emit beacon requests; if wedged, they return BUSY/fail.
     // Runs rarely to avoid disturbing attach timing.
     if ((n % 50) == 0 && n > 0) {
         int err = otLinkActiveScan(OThread.getInstance(), 1 << 15, 50,
@@ -134,5 +169,7 @@ void loop() {
             }, nullptr);
         Serial.printf("[THREAD] rescan-start rc=%d n=%d\n", (int)err, n);
     }
+    // Node-B loop rate (38 multihop): fast polls (delivery + upgrade
+    // hook); timers slowed separately above for challenge stability.
     delay(100);
 }

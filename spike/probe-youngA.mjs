@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { ESP32C3 } from '../index.mjs';
 // Replay a captured H2 Parent Request into a YOUNG C6 leader.
 // If young-A answers (A.tx=3+), the issue is age/decay; else validity.
-const REQ = Buffer.from('41d83d3412ffff03c9c589d428a5127f3b02f04d4c4d4c738d0015000000000000000001ff3d956bc1288ba24b351e8596d2f5fa0348295f97483279c50000', 'hex');
+const REQ = Buffer.from('41d8a43412fffff4b94f71edc11b5e7f3b02f04d4c4d4c09740015000000000000000001781bf1599b7f0f35b0b1c401f95e268ba2fd7169e42416bfea0000', 'hex');
 const SLOT_GUEST = 0x50000180;
 const SLOT_MPSDU = SLOT_GUEST + 32;
 const mcu = await ESP32C3.create({ chip: 'esp32c6' });
