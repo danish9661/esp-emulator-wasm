@@ -49,17 +49,8 @@ static void provisionThreadNetwork() {
 
 void setup() {
     Serial.begin(115200);
-#ifdef THREAD_NODE_B
-    // Second-C6 identity (38 multihop): default emulated EUIs collide
-    // across same-chip instances (same link-local IID -> MLE confusion).
-    // Override with a locally-administered EUI before OT starts.
-    // NOTE: no RNG burn here (esp_random traps in-sim, unemulated RNG).
-    {
-        static const uint8_t bEui[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0xB2 };
-        esp_base_mac_addr_set(bEui);
-        Serial.println("[THREAD] node-b EUI override");
-    }
-#endif
+    // NOTE (38 multihop): no EUI override here. esp_base_mac_addr_set is
+    // ignored by OT (per-build random EUIs) and may poison MAC state.
     Serial.println("thread-start");    OThread.begin(false);
     Serial.printf("[THREAD] role=%d (%s)\n",
                   (int)OThread.otGetDeviceRole(), OThread.otGetStringDeviceRole());
@@ -183,7 +174,13 @@ void loop() {
             }, nullptr);
         Serial.printf("[THREAD] rescan-start rc=%d n=%d\n", (int)err, n);
     }
-    // Node-B loop rate (38 multihop): fast polls (delivery + upgrade
-    // hook); timers slowed separately above for challenge stability.
+    // Node-B loop rate (38 multihop): SLOW polls (1s) so its Parent
+    // Request challenge stays stable for 5s+ while A responds (~1s).
+    // Fast retries invalidate in-flight responses (challenge race).
+    // Others stay fast.
+#ifdef THREAD_NODE_B
+    delay(1000);
+#else
     delay(100);
+#endif
 }

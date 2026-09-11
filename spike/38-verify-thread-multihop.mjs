@@ -220,9 +220,9 @@ let cChildAt = -1;
 let rounds = 0;
 let lastAtxAll = 0;
 let lastBtxAll = 0;
-for (let r = 0; r < 1500; r++) {
+for (let r = 0; r < 3000; r++) {
     rounds = r;
-    for (let i = 0; i < 200; i++) outA += a.step(100000);
+    for (let i = 0; i < 100; i++) outA += a.step(100000);
     if (outA.length > 30000) outA = outA.slice(-30000);
     if (a.thread.txCount !== lastAtxAll && a.thread.txCount < 40) {
         const f = a.thread.frames[a.thread.frames.length - 1];
@@ -230,7 +230,7 @@ for (let r = 0; r < 1500; r++) {
         lastAtxAll = a.thread.txCount;
     }
     relay(a, b, 'A->B');
-    for (let i = 0; i < 200; i++) outB += b.step(100000);
+    for (let i = 0; i < 100; i++) outB += b.step(100000);
     if (outB.length > 30000) outB = outB.slice(-30000);
     if (b.thread.txCount !== lastBtxAll && b.thread.txCount < 60) {
         const f = b.thread.frames[b.thread.frames.length - 1];
@@ -240,7 +240,7 @@ for (let r = 0; r < 1500; r++) {
     relay(b, a, 'B->A');
     if (cBooted) {
         relay(b, c, 'B->C');
-        for (let i = 0; i < 200; i++) outC += c.step(100000);
+        for (let i = 0; i < 100; i++) outC += c.step(100000);
         if (outC.length > 30000) outC = outC.slice(-30000);
         relay(c, b, 'C->B');
         // FIREWALL: A<->C frames dropped (force C via B). No relay(a,c)/relay(c,a).
