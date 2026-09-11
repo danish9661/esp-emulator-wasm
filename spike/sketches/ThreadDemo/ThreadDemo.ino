@@ -30,9 +30,15 @@ static void provisionThreadNetwork() {
     static const uint8_t kExtPan[8] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
     ds.setExtendedPanId(kExtPan);
     // Thread spec test master key (shared with the harness peer).
+    // THREAD_KEY2 builds use the reversed key (dataset-agility proof).
     static const uint8_t kKey[16] = {
+#ifdef THREAD_KEY2
+        0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88,
+        0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00
+#else
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
         0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF
+#endif
     };
     ds.setNetworkKey(kKey);
     ds.setChannel(15);
@@ -101,11 +107,19 @@ void loop() {
     // retries, advertisements). GetNow is shimmed to FreeRTOS ticks.
     // NOTE: do NOT wrap in vTaskSuspendAll (deadlocks: scheduler lock
     // around Fired wedges boot (roles stuck 0,1 + Guru)).
-    // Node-B rate split (38 multihop): polls stay fast (delivery), but
-    // timers run slow so its Parent Request challenge stays stable while
-    // A responds (fast retries invalidate in-flight responses).
+    // Node-B freeze (38 multihop): as an un-upgraded child, skip the pump
+    // so Parent Request retries (and challenge churn) freeze after the
+    // first request; A answers the stable challenge. Scans (role<2) and
+    // router+ (after upgrade) still pump. H2/C6 pump always.
 #ifdef THREAD_NODE_B
-    if ((n % 50) == 0) otPlatAlarmMilliFired(OThread.getInstance());
+    // Pump gate (38 multihop): scans + first request need timers early
+    // (n<200); after that freeze retries so A's in-flight response lands
+    // on a stable challenge (challenge race). Routers/leaders (3/4)
+    // always pump (parenting needs timers). H2/C6 pump always.
+    {
+        int roleNow = (int)OThread.otGetDeviceRole();
+        if (roleNow >= 3 || n < 500) otPlatAlarmMilliFired(OThread.getInstance());
+    }
 #else
     otPlatAlarmMilliFired(OThread.getInstance());
 #endif

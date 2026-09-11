@@ -108,6 +108,12 @@ The MP `mpy_p4/c5.bin` are **app-only**. P4/C5 need Arduino layout: bootloader `
 - **MLE wire (decoded, not guessed):** suite 0x00 + secCtl 0x15 (KeyIdMode2/Mic32) + counter LE + keySeq BE + keyIdx + enc(cmd+TLVs) + MIC4; suite 0 IS the secured suite; keyIdx = (seq&0x7f)+1.
 - **Sketch:** ThreadDemo pumps alarms, delay 100, periodic rescan probe (SubMac liveness: rc=0) + heap/tick/etime/now diag. Rebuilt C6/H2 samples (C5 old build still passes 35).
 
+### Wave J — Dataset agility + gateway E2E + multihop probe
+- **39-verify-thread-key2:** same 2-node attach with reversed network key (`THREAD_KEY2` builds in /tmp, not committed) — green, proves the harness isn't key-locked and OT crypto works across datasets.
+- **34-verify-thread-gw:** green with live gateway (`go build` → `:5095`, guest TX → room → peer).
+- **38 multihop (BLOCKED, documented in-file):** C6 leader + C6B router + H2 child via router (firewalled C↔A). B (healthy C6) retries Parent Reqs every 750ms with fresh challenges, deterministically invalidating A's ~700ms in-flight response (challenge race; H2 wins 37 by accident — dead loop never retries). Tried: latest-wins, in-flight pause, optimistic hold, pump gating/windowing. Needs StartAt shim (proper waits) or OT-side stable retries. H2/C5 loops die fast (tick decay) so only C6 can route; two C6s need distinct EUIs (OT ignores base-MAC override, uses per-build random — C6 vs C6B draws differ, no collision).
+- **MLE wire (host-decrypted via CTR crib):** Parent Req = cmd 09 + Mode + Challenge(8) + ScanMask + Version; ScanMask 0x80 (routers) confirmed — A must answer (and does, when timers/challenges align).
+
 ---
 
 ## 3. What has been done (state @ ef37025, all suites green)

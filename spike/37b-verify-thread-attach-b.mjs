@@ -17,9 +17,6 @@ const HOME = new Map(); // mcu -> guest slot base
 const guestFor = (mcu) => HOME.get(mcu) || 0x40820180;
 const mpsduFor = (mcu) => guestFor(mcu) + 32;
 const LP_MPSDU = 0x50000200 + 32; // LP mirror anchor (planted by beaconPark, clear of copy)
-// In-flight pause: when A answers (unicast Parent Response), hold B's
-// retries briefly so the Child ID exchange completes on a stable
-// challenge instead of racing (deterministic 750ms-vs-~700ms loss).
 const RELAY_RSSI = -50;
 const RELAY_LQI = 200;
 
@@ -127,23 +124,7 @@ function relay(src, dst, tag) {
     if (sst.fwdN === undefined) sst.fwdN = 0;
     let maxN = sst.fwdN;
     for (const f of src.thread.frames) {
-        // Parent Response sighting (A answering): unicast data, len ~113.
-        if (f.n > sst.fwdN && f.len >= 100 && f.len <= 120 && ((f.psdu[0] & 7) === 1)) {
-            sst.lastRespMs = Date.now();
-        }
-    }
-    for (const f of src.thread.frames) {
-        if (f.n > sst.fwdN) {
-            // Latest-wins for Parent Requests + in-flight pause (see above).
-            if (f.len === 63 && ((f.psdu[0] & 7) === 1)) {
-                dstSt.queue = dstSt.queue.filter(
-                    (q) => !(q.len === 63 && ((q.psdu[0] & 7) === 1)));
-                slotState(dst).queue = dstSt.queue;
-            }
-            const holdPR = (f.len === 63 && ((f.psdu[0] & 7) === 1) &&
-                dstSt.lastRespMs && (Date.now() - dstSt.lastRespMs) < 3000);
-            if (!holdPR) dstSt.queue.push(f);
-        }
+        if (f.n > sst.fwdN) dstSt.queue.push(f);
         if (f.n > maxN) maxN = f.n;
     }
     sst.fwdN = maxN;
@@ -162,18 +143,8 @@ function relay(src, dst, tag) {
 }
 
 console.log('========================================');
-console.log('TEST: Thread two-node attach C6(leader) + H2(child)');
+console.log('TEST: Thread two-node attach C6(leader) + C6B(child)');
 console.log('========================================');
-// Timing-flaky (challenge/response windows vs host speed; ~2/3 green
-// solo): retry whole attach up to 3x with fresh instances (like 21/22/23).
-let attemptNo = 0;
-let passed = false;
-while (attemptNo < 5 && !passed) {
-attemptNo += 1;
-if (attemptNo > 1) console.log(`--- attach attempt ${attemptNo} ---`);
-peers.clear();
-HOME.clear();
-failures = 0;
 
 // Node A (C6): boot alone, wait for Leader.
 const a = await ESP32C3.create({ chip: 'esp32c6' });
@@ -191,17 +162,17 @@ for (let i = 0; i < 60000; i++) {
 assert(/role=4/.test(outA), `[A/c6] became Leader (roles seen: ${[...new Set([...outA.matchAll(/role=(\d+)/g)].map((m) => m[1]))].join(',')})`);
 
 // Node B (H2): boot after A is Leader.
-const b = await ESP32C3.create({ chip: 'esp32h2' });
-HOME.set(b, 0x40820180); // H2 stages in HP
+const b = await ESP32C3.create({ chip: 'esp32c6' });
+HOME.set(b, 0x50000180); // C6B stages in LP (C6 family)
 {
-    const { flash, elf } = loadSample('threaddemo_h2');
+    const { flash, elf } = loadSample('threaddemo_c6b');
     await b.loadFirmware(flash, elf);
 }
 let outB = '';
 let bChildAt = -1;
 let rounds = 0;
 let lastAtx = a.thread.txCount, lastBtx = b.thread.txCount;
-for (let r = 0; r < 800; r++) {
+for (let r = 0; r < 4000; r++) {
     rounds = r;
     for (let i = 0; i < 200; i++) outA += a.step(100000);
     if (outA.length > 30000) outA = outA.slice(-30000);
@@ -240,13 +211,12 @@ console.log(`  info: relay rounds=${rounds} A.tx=${a.thread.txCount} B.tx=${b.th
     console.log('--- outB tail ---');
     console.log(outB.slice(-800));
 }
-assert(bChildAt >= 0, '[B/h2] attached as Child (role=2)');
+assert(bChildAt >= 0, '[B/c6b] attached as Child (role=2)');
 assert(/role=[34]/.test(outA), '[A/c6] still Router/Leader');
 assert(!/Guru|panic|Assert/i.test(outA + outB), 'no Guru/panic/assert');
-passed = (failures === 0);
-} // end attempts
-if (!passed) {
-    console.log(`\nTHREAD ATTACH: FAILURE(S) after ${attemptNo} attempt(s)`);
+
+if (failures) {
+    console.log(`\nTHREAD ATTACH: ${failures} FAILURE(S)`);
     process.exit(1);
 }
-console.log('\nTHREAD ATTACH PASSED (C6 leader + H2 child via relay) ✅');
+console.log('\nTHREAD ATTACH-B PASSED (C6 leader + C6B child via relay) ✅');

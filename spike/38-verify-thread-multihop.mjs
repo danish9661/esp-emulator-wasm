@@ -6,6 +6,13 @@
 // All endpoints run real OT stacks; relay is per-ordered-pair queues,
 // staged only when the peer slot is free, consumed via TX hooks (nodes
 // that TX) and GetState-hop idle delivery (silent nodes).
+// STATUS (2026-09-11): BLOCKED, not failed. C6B-B never attaches: healthy
+// C6 retries every 750ms with a fresh challenge, deterministically
+// invalidating A's ~700ms in-flight response (challenge race; H2 wins by
+// accident — its dead loop never retries). Latest-wins + in-flight pause
+// + optimistic hold + pump gating all attempted (see git log). Needs
+// either StartAt shim (proper 750ms waits) or challenge-stable retries
+// (OT change). C via B untested until B routes.
 // Run: node spike/38-verify-thread-multihop.mjs
 import { readFileSync, existsSync } from 'node:fs';
 import { ESP32C3 } from '../index.mjs';
@@ -126,7 +133,29 @@ function relay(src, dst, tag) {
     if (sst[key] === undefined) sst[key] = 0;
     let maxN = sst[key];
     for (const f of src.thread.frames) {
-        if (f.n > sst[key]) dstSt.queue.push(f);
+        if (f.n > sst[key] && f.len >= 100 && f.len <= 120 && ((f.psdu[0] & 7) === 1)) {
+            sst.lastRespMs = Date.now();
+        }
+    }
+    for (const f of src.thread.frames) {
+        if (f.n > sst[key]) {
+            // Latest-wins for Parent Requests + optimistic hold: forward
+            // the first, then hold further ones 5s so A's in-flight
+            // response lands on a stable challenge (challenge race).
+            // Safety: a retry passes after 5s if A stayed silent.
+            if (f.len === 63 && ((f.psdu[0] & 7) === 1)) {
+                dstSt.queue = dstSt.queue.filter(
+                    (q) => !(q.len === 63 && ((q.psdu[0] & 7) === 1)));
+                slotState(dst).queue = dstSt.queue;
+            }
+            const isPR = (f.len === 63 && ((f.psdu[0] & 7) === 1));
+            const prKey = key + ':fwdpr';
+            const holdPR = isPR && sst[prKey] && (Date.now() - sst[prKey]) < 5000;
+            if (!holdPR) {
+                if (isPR) sst[prKey] = Date.now();
+                dstSt.queue.push(f);
+            }
+        }
         if (f.n > maxN) maxN = f.n;
     }
     sst[key] = maxN;
