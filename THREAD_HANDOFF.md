@@ -471,3 +471,54 @@ git push origin main
 6. Run gates: `node --check core/thread_shims.mjs` → 32 → 35 → 37. Budget ~15 min. Do NOT start with 38 (blocked instrument, not gate).
 7. Implement §9.1; after EVERY shim edit re-run 32/35/36/37/39 before pushing.
 
+
+---
+
+## 23. Per-binary symbol table (measured 2026-09-15; re-resolve per ELF, never hardcode)
+
+| Binary | GetNow (32B) | StartAt (22B) | enh_ack box (436B) | recv_done box (344B) | mac_init (266B) | tx_at box (254B) |
+|---|---|---|---|---|---|---|
+| `threaddemo_c6` | 0x42038d8e | 0x42038d6e | 0x408021ce | 0x40802382 | 0x420a6864 | 0x4080caf2 |
+| `threaddemo_h2` | 0x420389d0 | 0x420389b0 | 0x40802100 | 0x408022b4 | 0x420aa884 | 0x4080ada4 |
+| `threaddemo_c5` | 0x42038dfc | 0x42038ddc | 0x40802426 | 0x408025da | 0x420afbfc | 0x4080ed50 |
+| `threaddemo_c6b` | 0x4203ab04 | 0x4203aae4 | 0x408021ce | 0x40802382 | 0x420a85da | 0x4080caf2 |
+
+- Box sizes identical across chips (same dead RF-interrupt code); mac_init/tx addresses move per build.
+- GetNow 32B fits `li+jalr` hook (12B) + nop pad; StartAt 22B likewise (both verified fittable).
+- Regenerate: `nm -S samples/<base>.elf | grep -E "otPlatAlarmMilli|enh_ack_generator|receive_done|mac_init|transmit_at"`.
+
+---
+
+## 24. StartAt v1 post-mortem (exact diff shape for the retry)
+
+- ADDED (then fully reverted): `alarmStartPark()` leaf (~11 insns: frame, `li T0,LP+0x3c`, `sw a1,+0`, `sw a2,+4`, `li T1,1`, `sw T1,+8`, restore, ret) + `'otPlatAlarmMilliStartAt'` in `THREAD_HOOKS` + `boxSym2` secondary-box resolution + placement after `in2At` in the box cursor + inline hook (`li t0,startAt; jalr x0,t0`, nop-padded to 22B).
+- OBSERVED: 37 went from ~2/3 green to all-FAIL across 5 self-retries (roles [0,1] or attach never completes); 38 unchanged (still 3 FAILs). Revert commit `224ed2c` restored green.
+- INTERPRETATION: real StartAt programs dead FRC harmlessly AND OT still queues (37 greens prove timers flow); the shim didn't add pacing — it shifted every subsequent box address?? No: placement was cursor-appended AFTER in2At, so deliver/copy/alarmNow/inbound2 addresses were unchanged. More likely: StartAt is called in hot paths (every timer set) and the extra LP stores + hook `jalr` cost stretched sub-tick timing, OR recording armed=1 without ever firing confused OT's `IsRunning` checks into longer waits that exceed harness round budgets.
+- RETRY RULES: (a) secondary-box only (primary bytes bit-identical — verify by dumping box words with/without); (b) B-only first (C6B-gated via ELF marker or env opt — A untouched); (c) gate on 32+35 BEFORE 37 (fast canaries); (d) if 37 regresses again, instrument: log StartAt call rate (counter at LP+0x40) to see hot-path volume before theorizing further.
+- LP alarm region map (do not collide): +0x28 counter, +0x2c (legacy instance stash, unused?), +0x3c StartAt record (t0/dt/armed = 12B → ends 0x48), +0x100 rxBase (160B → 0x1A0), +0x180 C6 staging slot (164B → 0x224), +0x200 LP mirror (164B → 0x2A4). H2 LP is 4K — all clear.
+
+---
+
+## 25. Sketch flag/build matrix (exact)
+
+| Flag | Binary | Samples path | Used by | Pump | Upgrade hook | Loop |
+|---|---|---|---|---|---|---|
+| (none) | C6/H2/C5 stock | `samples/threaddemo_{c6,h2,c5}.*` | 32/34/35/36/37(A,C6)/38(A)/39(A) | full-rate every loop | C6+C5 immediate-on-child (38's B only if C6/C5; 37's H2 unaffected) | 100 ms |
+| `-DTHREAD_NODE_B` | C6B | `samples/threaddemo_c6b.*` | 38 (B), 37b (probe) | half-rate `(n%2)==0` | yes (same C6-gated hook) | 100 ms |
+| `-DTHREAD_KEY2` | key2 | `/tmp/thrbuild_{c6,h2}k2/` ONLY | 39 (A+B) | full-rate | yes but irrelevant (2-node, already-green flow) | 100 ms |
+
+- 37's B is STOCK H2 (no flags) — the upgrade hook never fires there (H2-gated out), so 37 pins role 2. 38's B is C6B (hook fires → role 3 expected). 37b (C6+C6B diagnostic) fails by design of the race, not the hook.
+- After ANY `.ino` edit: rebuild ALL FOUR binaries (stock C6/H2/C5 → samples; C6B → samples) + key2 pair to /tmp if 39 is in the gate. `chmod 755` every ELF. Forgetting one binary = testing stale code (silent wrong results, no error).
+
+---
+
+## 26. Open questions (answer in order; each unblocks the next)
+
+1. Does StartAt fire in a hot path? (LP+0x40 call counter, one run, no hook — read after 60k batches.) If >1000 calls/min → B-only gating is mandatory, all-nodes will always shift timing.
+2. Does B-only StartAt keep 37 green? (A untouched = control.) If yes → run 38. If no → the shim perturbs B's own windows; try record-without-hook (park placed but StartAt unhooked — measures placement disturbance vs hook disturbance).
+3. With paced waits, does B's ParentReq cadence actually slow to ~750 ms+? (B-TX# timestamps.) If cadence unchanged → attacher doesn't use StartAt for that wait (hypothesis wrong; pivot to §9.3 OT-side or §7 Q3 time-dilation).
+4. If B attaches: does the C6/C5-gated upgrade hook fire promptly (role 3 < 200 rounds)? If slow → tick-decay (§9.2) is now the bottleneck; fix there.
+5. If B routes: does firewalled C attach via B (role 2)? If C stalls → new race at Child-ID stage (same playbook: latest-wins + hold already cover; extend sighting lens to Child-ID lens).
+6. Commissioning: does `OThread.h` expose joiner APIs, or is raw `otJoiner*` reachable from the sketch? (Determines joiner-only vs full-commissioner slice.)
+
+*End of handoff — `THREAD_HANDOFF.md`. Primary sources: `HANDOVER.md` (Waves E–J), `core/thread_shims.mjs`, `spike/37|38|39-verify-thread-*.mjs`, `spike/sketches/ThreadDemo/ThreadDemo.ino`, git log `5018107..224ed2c`.*
