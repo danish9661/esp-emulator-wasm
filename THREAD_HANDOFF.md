@@ -256,6 +256,26 @@ THREAD_HANDOFF.md              # THIS file (Thread continuation focus)
 - [ ] Full regression (32/35/36/37/39) after every shim edit
 - [ ] Commit + push (keepalive SSH) after each green slice
 
+### 10.1 Item handbook (why → how → gate → rollback; §9.1 detail)
+
+1. **Re-add `alarmStartPark` leaf + `THREAD_HOOKS` entry.** WHY: §7 race — attacher waits never pace (StartAt programs dead FRC). HOW: leaf per §16 (`li T0,LP+0x3c; sw a1,+0; sw a2,+4; li T1,1; sw T1,+8; ret`, own 16B frame, no S0, no T4-live clash); add `'otPlatAlarmMilliStartAt'` to `THREAD_HOOKS`. GATE: `node --check` + load-all-chips (no `skip` warns). ROLLBACK: delete function + entry (v1 did exactly this).
+2. **Secondary-box placement.** WHY: v1 disturbed primary layout → 37 regressed. HOW: resolve both dead boxes; primary keeps deliver/copy/alarmNow/inbound2 at identical addresses; StartAt goes to the OTHER box (`receive_done` if primary is `enh_ack_generator` and vice versa); skip cleanly if either unmapped. GATE: diff box addresses with/without the shim (log + compare). ROLLBACK: `boxSym2 = null` forces primary-tail (still identical? No — re-diff).
+3. **Inline hook.** WHY: redirect OT's calls into the park. HOW: `li t0,startAt; jalr x0,t0` + `0x13` nop pad sliced to `startSym.size`; assert `>= 12` (22B actual). GATE: file-offset dump shows jump at StartAt vaddr; 32 still green. ROLLBACK: remove the two `extra.push` lines.
+4. **32 + 35 green.** WHY: timing-shift canary (fast, deterministic). HOW: run both fully; any FAIL = address/timing disturbance, not flake (these two don't flake). GATE: both PASSED. ROLLBACK: revert hook, keep park (park without hook is inert).
+5. **37 solo ×3.** WHY: the flake gate (self-retry ≤5; ≥2/3 = pass). HOW: three full runs; log attempt counts. GATE: ≥2 PASSED. ROLLBACK: if 0–1/3, go to item 7 (B-only) before touching anything else.
+6. **38 GREEN.** WHY: the actual unblock. HOW: full 3000-round run; watch B-TX# lens (want 69/75/113s, not endless 63s), A-TX#113s, Adel/Bdel, B polls. GATE: `B role 2 → B role 3 → C role 2 (A firewalled)` + no crash. ROLLBACK: none — on success, update 38 STATUS header + HANDOVER Wave J + §1/§7 here.
+7. **Fallback: B-only StartAt.** WHY: v1 regressed ALL nodes; B alone may pace retries without shifting A. HOW: key off C6B ELF marker (string `node-b EUI`?? — C6B still carries it as a print? No — EUI override removed but the print string may remain; else add a fresh `-D` marker section) or env `THREAD_STARTAT=B-ONLY` through `prepareThreadShims(elf,chip,opts)` + caller in `core/esp32c3.mjs`. GATE: 37 green + 38 green. ROLLBACK: env default = all-nodes (current behavior).
+8. **H2/C5 solo TX census.** WHY: is "tick death" CPU or OT-progress death? HOW: solo boot each chip, log TX# {n,len,hex16} to 100k batches (see §11 probe pattern). GATE: timeline showing last-TX batch per chip. ROLLBACK: n/a (read-only).
+9. **H2/C5 rescan-BUSY test.** WHY: distinguishes wedge (rc=5) from silence. HOW: rescan-probe sketch already emits `rescan-start rc=`; run solo per chip, collect rc series. GATE: rc=0 alive / rc=5 wedged verdict per chip. ROLLBACK: n/a.
+10. **H2/C5 Mac state/dwell.** WHY: Mac stuck 5/dwell 1 post-election would explain silence. HOW: `probe-state.mjs` LP-mirror read post-60k run. GATE: Mac0/1 numbers per chip. ROLLBACK: n/a.
+11. **Commissioning design doc.** WHY: no commissioner code exists; coding blind wastes builds. HOW: `doc-coauthoring` skill workflow; 3-message slice (discovery → PSKc auth → dataset deliver) against OT docs; check `OThread.h` joiner hooks first. GATE: reviewed doc, not code. ROLLBACK: n/a.
+12. **Joiner-only build.** WHY: smallest comm slice. HOW: sketch joiner flow, harness holds PSKc (stub commissioner?) — decide in doc first. GATE: new verifier green (name it `40-…`). ROLLBACK: keep stub out of stock sketch (flag-gated like THREAD_KEY2).
+13. **In-network rekey.** WHY: proves key agility beyond swap (seq++ rotation). HOW: bump seq on leader, assert `keyIdx=(seq&0x7f)+1` on wire via CTR-crib method (§8). GATE: crib HIT on rotated frames + both nodes stay attached. ROLLBACK: n/a (additive test).
+14. **CI triage.** WHY: 7-way split auto-ran on recent pushes. HOW: ask user for GH Actions URLs (no `gh` binary here); fix only flagged jobs. GATE: user confirms green or pastes failures. ROLLBACK: n/a.
+15. **Bumble re-check.** WHY: cheap to confirm still-blocked. HOW: `id -u` (=1000, no VHCI), `ls /dev/vhci*`, `ls ~/platform-tools | grep -i ble`. GATE: documented still-blocked (or new hardware → new plan). ROLLBACK: n/a.
+16. **Full regression after every shim edit.** WHY: shims are timing-critical; 32/35/36/37/39 each guard a different layer (§19). HOW: run in that order (fast→slow); stop at first red. GATE: all PASSED. ROLLBACK: `git stash` the shim, re-run to confirm green baseline.
+17. **Commit + push per green slice.** WHY: ELFs are large; small packs push reliably. HOW: stage verifier + sketch + samples together; keepalive SSH (§11); confirm `## main...origin/main` clean. GATE: remote in sync. ROLLBACK: `git reset --soft HEAD~1` if pushed wrong (then force-push is FORBIDDEN — ask user).
+
 ---
 
 ## 11. Command cheat sheet (copy-paste; repo root = `/home/danish1075/Documents/espc3 wasm`)
