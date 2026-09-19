@@ -135,6 +135,21 @@ jobs:
       - name: Run Thread multi (36-verify-thread-multi)
         run: node spike/36-verify-thread-multi.mjs
 
+      - name: Build JoinerDemo (/tmp-only, never committed)
+        run: |
+          export TMPDIR=/tmp/isolated_path
+          mkdir -p /tmp/isolated_path
+          export PATH="$GITHUB_WORKSPACE/bin:$PATH"
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.10
+          for chip in esp32c6 esp32h2; do
+            short=${chip#esp32}
+            arduino-cli compile --fqbn esp32:esp32:$chip --build-path /tmp/thrbuild_${short}join "$GITHUB_WORKSPACE/spike/sketches/JoinerDemo/JoinerDemo.ino"
+          done
+
+      - name: Run Thread joiner discovery (40-verify-thread-joiner)
+        run: node spike/40-verify-thread-joiner.mjs
+
       - name: Run BLE pump unit (33-verify-ble-pump)
         run: node spike/33-verify-ble-pump.mjs
 
