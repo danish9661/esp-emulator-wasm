@@ -20,6 +20,15 @@ int esp_ieee802154_transmit(const uint8_t *frame, bool cca);
 // active scan (back-to-back scans return BUSY while the MAC is occupied).
 static volatile bool sEnergyDone = false;
 
+// ELF marker for per-node shim profiles (hook-b-only gates on the STRING
+// 'thread-node-b-enabled', present only in -DTHREAD_NODE_B builds; the linker
+// GCs unreferenced static const arrays so the marker must be a USED global.
+// Stock C6 also links otThreadBecomeRouter via the C6/C5-gated upgrade hook,
+// so that symbol cannot discriminate B).
+#ifdef THREAD_NODE_B
+const char thread_node_b_enabled[] = "thread-node-b-enabled";
+#endif
+
 // Static Thread network dataset (known test key shared with the harness).
 // Starts from initNew() (a complete VALID dataset) and overrides the
 // identity fields, so commit validation always passes.
@@ -158,6 +167,13 @@ void loop() {
 #endif
     // Periodic re-scan probe (SubMac liveness): if SubMac can still TX,    // these emit beacon requests; if wedged, they return BUSY/fail.
     // Runs rarely to avoid disturbing attach timing.
+    // B-marker use (keeps thread_node_b_enabled in .rodata: the hook-b-only
+    // shim profile gates on its ELF string; unreferenced const arrays are
+    // GCed by the linker). Prints at n=250 only (once per boot, never during
+    // attach traffic at n>=500).
+#ifdef THREAD_NODE_B
+    if (n == 250) Serial.println(thread_node_b_enabled);
+#endif
     if ((n % 50) == 0 && n > 0) {
         int err = otLinkActiveScan(OThread.getInstance(), 1 << 15, 50,
             [](otActiveScanResult *r, void *) {

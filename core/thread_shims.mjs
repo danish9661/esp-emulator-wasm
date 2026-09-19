@@ -707,6 +707,8 @@ export const THREAD_HOOKS = [
     'ieee802154_transmit',
     'ieee802154_transmit_at',
     'otPlatAlarmMilliGetNow',
+    'otPlatAlarmMilliStartAt',
+    'otPlatAlarmMilliStop',
     'xTaskGetTickCount',
 ];
 
@@ -735,10 +737,51 @@ function alarmNowPark(tickAddr) {
     return asm32(assemble(p));
 }
 
-export function prepareThreadShims(elf, chip) {
+/**
+ * StartAt probe park (in the SECONDARY dead LL IRAM box, never the
+ * primary — primary layout must stay bit-identical with/without this
+ * shim; address stability is timing stability).
+ *
+ * Records (t0=a1, dt=a2, armed=1) to LP+0x3c and counts calls at
+ * LP+0x40, then returns OK (0). Purely observational for now: it does
+ * NOT drive OT's Timer scheduler (GetNow ticks + sketch-pumped Fired
+ * do that); it answers §26 Q1 — does StartAt fire in a hot path?
+ * Leaf, own 16B frame, no S0, T4 untouched (callers may hold T4 live
+ * across copySub boundaries — see §16 register contracts).
+ * LP alarm region: +0x28 counter, +0x3c record (12B → 0x48), +0x40
+ * call counter, +0x100 rxBase, +0x180 C6 slot, +0x200 mirror.
+ */
+function alarmStartProbePark() {
+    const base = (LP_BASE + 0x3c) >>> 0;
+    const ctr = (LP_BASE + 0x40) >>> 0;
+    const p = [
+        { op: 'addi', rd: SP, rs1: SP, imm: -16 },
+        { op: 'sw', rs2: 1, rs1: SP, imm: 12 },
+        ...li(T0, base),
+        { op: 'sw', rs2: A1, rs1: T0, imm: 0 }, // t0
+        { op: 'sw', rs2: A2, rs1: T0, imm: 4 }, // dt
+        { op: 'addi', rd: T1, rs1: 0, imm: 1 },
+        { op: 'sw', rs2: T1, rs1: T0, imm: 8 }, // armed
+        ...li(T0, ctr),
+        { op: 'lw', rd: T1, rs1: T0, imm: 0 },
+        { op: 'addi', rd: T1, rs1: T1, imm: 1 },
+        { op: 'sw', rs2: T1, rs1: T0, imm: 0 }, // count++
+        { op: 'lw', rd: 1, rs1: SP, imm: 12 },
+        { op: 'addi', rd: SP, rs1: SP, imm: 16 },
+        { op: 'addi', rd: A0, rs1: 0, imm: 0 }, // OK
+        { op: 'ret' },
+    ];
+    return asm32(assemble(p));
+}
+
+export function prepareThreadShims(elf, chip, opts = {}) {
     const shims = {};
     const extra = [];
     const { found } = elf.resolve(THREAD_HOOKS);
+    // Opt-in StartAt probe: THREAD_STARTAT=probe (place-only control)
+    // or hook / hook-b-only (place + li+jalr redirect). Default off:
+    // v1 proved an all-nodes StartAt hook shifts attach timing.
+    const startAtMode = opts.startAt || process.env.THREAD_STARTAT || 'off';
     // Silent when the firmware has no 15.4 stack at all (most suites);
     // warn per-symbol only on partial presence (shape change).
     if (!found.length) return { shims, extra, hooks: found };
@@ -846,9 +889,63 @@ export function prepareThreadShims(elf, chip) {
                 } else if (inbound2) {
                     console.warn('[thread] skip inbound2 (fit; MLE TX uses scan path)');
                 }
-                // NOTE: alarm-start shim removed (regressed 37: shimming
-                // shifts timing and breaks attach windows; real StartAt
-                // programs dead FRC harmlessly and OT queues anyway).
+                // StartAt PROBE (opt-in via THREAD_STARTAT=probe|hook|
+                // probe-b-only|hook-b-only): records (t0,dt,armed)+counter
+                // to LP+0x3c/0x40 in the SECONDARY dead box (primary layout
+                // bit-identical on/off). Answers §26 Q1: hot-path call volume.
+                // Default off (v1 proved an all-nodes hook shifts attach timing).
+                try {
+                    const startSym = byName['otPlatAlarmMilliStartAt'];
+                    const { found: box2Found } = elf.resolve(['esp_ieee802154_enh_ack_generator', 'esp_ieee802154_receive_done']);
+                    const box2By = Object.fromEntries(box2Found.map((s) => [s.name, s]));
+                    const secSym = (boxSym && boxSym.name === 'esp_ieee802154_enh_ack_generator')
+                        ? box2By['esp_ieee802154_receive_done']
+                        : box2By['esp_ieee802154_enh_ack_generator'];
+                    let wantProbe = (startAtMode === 'probe' || startAtMode === 'hook');
+                    if (startAtMode === 'probe-b-only' || startAtMode === 'hook-b-only') {
+                        // B-only: gate on the sketch-emitted rodata string
+                        // 'thread-node-b-enabled' (present only in
+                        // -DTHREAD_NODE_B builds). Symbol markers vanish to
+                        // linker GC (unreferenced empty functions); strings
+                        // survive. otThreadBecomeRouter cannot discriminate
+                        // (stock C6 links it via the upgrade hook).
+                        const hay = Buffer.from(elf.buf).toString('latin1');
+                        wantProbe = hay.includes('thread-node-b-enabled');
+                    }
+                    if (wantProbe && startSym && secSym && mapped(secSym.addr)) {
+                        const probe = alarmStartProbePark();
+                        // Place AFTER boxNext (never at secSym.addr: the
+                        // bytes there are LIVE init code that runs at boot —
+                        // parking at +0 executes the probe as init and
+                        // Gurus in _uartAttachPins. 68B probe fits the
+                        // 344B secondary box even after the primary's tail.
+                        const probeAt = secSym.addr + secSym.size - probe.length;
+                        // Hook-gating: 'probe' (control) places but does NOT
+                        // hook — answers placement-vs-hook. 'hook' / 'hook-b-only'
+                        // additionally redirect StartAt via li+jalr (flash<->
+                        // IRAM is ~24MB: JAL's ±1MB CANNOT reach; every other
+                        // cross-region link in this file uses li+jalr).
+                        const hookModes = (startAtMode === 'hook' || startAtMode === 'hook-b-only');
+                        if (probeAt > boxNext && probeAt + probe.length <= secSym.addr + secSym.size && startSym.size >= 12) {
+                            extra.push({ addr: probeAt, bytes: probe });
+                            // Hook: li t0,probeAt + jalr x0,t0 + nop pad.
+                            // (An earlier `j`-only attempt wrote a JAL with a
+                            // -25MB offset — out of range, decoded to a wild
+                            // target and Gurus in _uartAttachPins. Never JAL
+                            // across flash<->IRAM.)
+                            if (hookModes) {
+                                const jump = [...li(T0, probeAt), { op: 'jalr', rd: 0, rs1: T0, imm: 0 }];
+                                const jb = Array.from(asm32(assemble(jump)));
+                                while (jb.length + 4 <= startSym.size) jb.push(0x13, 0x00, 0x00, 0x00);
+                                extra.push({ addr: startSym.addr, bytes: new Uint8Array(jb.slice(0, startSym.size)) });
+                            }
+                        } else {
+                            console.warn('[thread] skip startat-probe (fit)');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[thread] startat-probe skipped:', e?.message || e);
+                }
             } else {
                 if (deliver) console.warn('[thread] skip idle delivery (no dead-box fit; TX-driven only)');
                 extra.push({ addr: copyAt, bytes: cPark });
