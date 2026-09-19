@@ -131,9 +131,12 @@ export class ESP32C3 {
      * @param {Uint8Array | ArrayBuffer | null} [elfBinary=null] - App ELF for symbol patching
      * @returns {Promise<{ patched: string[] }>}
      */
-    async loadFirmware(flashBinary, elfBinary = null) {
+    async loadFirmware(flashBinary, elfBinary = null, shimOpts = {}) {
         let flashBuf = flashBinary instanceof Uint8Array ? flashBinary : new Uint8Array(flashBinary);
         this._patchedHooks = [];
+        // Per-node shim options (e.g. { thread: { tickDivShift: 1 } } for 38
+        // time-dilation tests). Plumbs through to prepareThreadShims opts.
+        const threadOpts = (shimOpts && shimOpts.thread) || {};
         // Fresh boot image: forget any cached BLE mirror mapping.
         if (this.uart0 && this.uart0.bleMirror) this.uart0.bleMirror.clear();
         if (this.thread) this.thread.reset();
@@ -192,7 +195,7 @@ export class ESP32C3 {
                 // The EnergyScan parked body travels via th.extra (written
                 // below alongside the BLE/IDF extras).
                 try {
-                    const th = prepareThreadShims(elf, this.chip);
+                    const th = prepareThreadShims(elf, this.chip, threadOpts);
                     for (const [fn, shim] of Object.entries(th.shims)) effectiveShims[fn] = shim;
                     for (const h of th.hooks || []) hooks[h.name] = h;
                     idfExtras.push(...(th.extra || []));

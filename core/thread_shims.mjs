@@ -134,12 +134,20 @@ const BEACON_LQI = 200;
 // NOTE: ConvertBeaconToActiveScanResult requires an EXTENDED src address
 // (Address mode Short=1 is silently dropped; Ext=2 passes) — verified
 // against OT's own beacon construction, not guessed.
+//
+// Joiner variant (Phase 40): same shape, PAN 0x1234, payload FF 0F 01 00
+// (byte 2 = join-permit flag the Discover Scanner's mDiscover bit reads).
+// Stock attach beacons keep payload FF 0F 00 00; the joiner path is selected
+// per-TX (see txMainProg JNB_* placeholders + prepareThreadShims opts.joiner).
+// Both variants are 23B so BEACON_LEN is shared.
 const BEACON_W0 = 0x345ad000;
 const BEACON_W1 = 0x2222c412;
 const BEACON_W2 = 0x22222222;
 const BEACON_W3 = 0x0000ff22;
 const BEACON_W4 = 0x000fff00;
 const BEACON_LEN = 23;
+// Joiner-beacon payload word: FF 0F 01 00 (vs stock FF 0F 00 00).
+const BEACON_W4_JOIN = 0x00010f00;
 
 // Placeholder markers for hand-patched absolute calls (scanned out of the
 // assembled blob; values never collide with real encodings here). `li` is
@@ -455,7 +463,7 @@ function inbound2Park(slotAddr, doneAddr, rxBase) {
  * for our caller). Returns directly to SubMac: restores s0/ra from the
  * still-active Transmit frame and pops both frames.
  */
-function beaconPark(rxBase, rxDoneAddr) {
+function beaconPark(rxBase, rxDoneAddr, w4 = BEACON_W4) {
     const rssilqi = ((BEACON_LQI << 16) | ((BEACON_RSSI & 0xff) << 8)) >>> 0;
     const p = [
         { op: 'addi', rd: SP, rs1: SP, imm: -16 },
@@ -484,7 +492,7 @@ function beaconPark(rxBase, rxDoneAddr) {
         { op: 'sw', rs2: T1, rs1: T0, imm: 40 },
         ...li(T1, BEACON_W3),
         { op: 'sw', rs2: T1, rs1: T0, imm: 44 },
-        ...li(T1, BEACON_W4),
+        ...li(T1, w4),
         { op: 'sw', rs2: T1, rs1: T0, imm: 48 },
         { op: 'sw', rs2: 0, rs1: T0, imm: 52 },
         // mPsdu = scratch+32.
@@ -724,15 +732,20 @@ export const THREAD_HOOKS = [
  * Absolute li+jalr (flash<->IRAM out of JAL range); the 32B original is
  * overwritten inline (jump + nops).
  */
-function alarmNowPark(tickAddr) {
+function alarmNowPark(tickAddr, tickDivShift = 0) {
     const p = [
         { op: 'addi', rd: SP, rs1: SP, imm: -16 },
         { op: 'sw', rs2: 1, rs1: SP, imm: 12 },
         ...li(T1, tickAddr),
         { op: 'jalr_ra', rs1: T1 }, // a0 = xTaskGetTickCount()
+        // Time-dilation knob (38 race, hypothesis B): shift ticks right so
+        // this node's OT clock runs 2^shift SLOWER than its peer's. Slower
+        // clock => longer waits => stable challenge while A answers.
+        // shift=0 (default) = identity, timing-uncritical for all greens.
+        ...(tickDivShift > 0 ? [{ op: 'srli', rd: A0, rs1: A0, sh: tickDivShift }] : []),
         { op: 'lw', rd: 1, rs1: SP, imm: 12 },
         { op: 'addi', rd: SP, rs1: SP, imm: 16 },
-        { op: 'ret' }, // return ticks in a0
+        { op: 'ret' }, // return (dilated) ticks in a0
     ];
     return asm32(assemble(p));
 }
@@ -828,9 +841,13 @@ export function prepareThreadShims(elf, chip, opts = {}) {
         // Alarm-Now park (ticks timebase for dead esp_timer alarms).
         const getNowSym = byName['otPlatAlarmMilliGetNow'];
         const tickSym = byName['xTaskGetTickCount'];
+        // Time-dilation knob (38 race, hypothesis B): THREAD_TICK_DIV_SHIFT
+        // or opts.tickDivShift slows this node's OT clock 2^shift (slower
+        // waits => stable challenge while A answers). Default 0 = identity.
+        const tickDivShift = opts.tickDivShift ?? (parseInt(process.env.THREAD_TICK_DIV_SHIFT || '0', 10) || 0);
         let alarmNow = null;
         try {
-            if (boxOk && getNowSym && tickSym) alarmNow = alarmNowPark(tickSym.addr);
+            if (boxOk && getNowSym && tickSym) alarmNow = alarmNowPark(tickSym.addr, tickDivShift);
         } catch (e) {
             console.warn(`[thread] alarm assemble failed (${e.message})`);
         }
@@ -971,6 +988,16 @@ export function prepareThreadShims(elf, chip, opts = {}) {
     const rxDoneSym = byName['otPlatRadioReceiveDone'];
     const tParkSym = byName['ieee802154_transmit'];
     const tPark2Sym = byName['ieee802154_transmit_at'];
+    // Joiner-beacon mode (Phase 40, opt-in via opts.joiner or
+    // THREAD_JOINER_BEACON=1): the fabricated beacon carries the join-permit
+    // payload word (BEACON_W4_JOIN) so the Discover Scanner sets mDiscover
+    // and the joiner advances past NOT_FOUND. Selected per-TX at load time —
+    // stock suites keep the default word (32-verify asserts it).
+    // PROVEN unnecessary 2026-09-19: joiner discovery TXs are MLE-data
+    // (type 1, inbound2 path, never answered); the join-cb err=23 comes from
+    // the scanner timing out with NO commissioner, not from beacon content.
+    // Kept as an opt-in knob for the commissioner phase (never default).
+    const joinerBeacon = !!(opts.joiner || process.env.THREAD_JOINER_BEACON);
     if (txSym && doneSym) {
         let txMain;
         try {
@@ -990,7 +1017,7 @@ export function prepareThreadShims(elf, chip, opts = {}) {
                 if (tParkSym) emit = emitSub();
                 if (rxDoneSym) {
                     inbound = inboundPark(slotAddrFor(chip), rxDoneSym.addr, rxScratchFor(chip));
-                    beacon = tPark2Sym ? beaconPark(rxScratchFor(chip), rxDoneSym.addr) : null;
+                    beacon = tPark2Sym ? beaconPark(rxScratchFor(chip), rxDoneSym.addr, joinerBeacon ? BEACON_W4_JOIN : BEACON_W4) : null;
                 }
             } catch (e) {
                 console.warn(`[thread] shim assemble failed (${e.message})`);
