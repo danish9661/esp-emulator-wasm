@@ -253,27 +253,60 @@ self.onunhandledrejection = function(e) {
 };
 
 function calibrateGpio(chip) {
-    try {
-        const calEmu = new wasm.WasmEmulator(chip || 'esp32c3');
-        calEmu.set_boot_from_rom(false);
-        calEmu.load_firmware(GPIO_CALIBRATION_PROBE);
-        calEmu.run_batch(200);
-
-        const u32 = new Uint32Array(wasmExports.memory.buffer);
-        for (let i = 0; i < u32.length; i++) {
-            if (u32[i] === 0xCAFE1234) gpioOutOffset = i * 4;
-            if (u32[i] === 0xBEEF5678) gpioEnableOffset = i * 4;
+    // Guard: initWasm's `await init()` resolves BEFORE the wasm instance is
+    // usable in some browsers (init returned but memory/exports not yet live
+    // — Playwright 2026-09-20: 6 probe markers in-page, 0 in-worker). Without
+    // this, the scan finds marker copies in the WRONG instance's memory and
+    // posts garbage offsets; the UI then shows "Worker exception" and sticks
+    // at "WASM Initializing...". Retry a few event-loop turns instead.
+    const looksLive = () => {
+        try {
+            const u8 = new Uint8Array(wasmExports.memory.buffer);
+            return u8.length > 0x100000;
+        } catch (_) { return false; }
+    };
+    let tries = 0;
+    const attempt = () => {
+        tries++;
+        if (!looksLive() && tries < 20) {
+            setTimeout(attempt, 50);
+            return;
         }
-        gpioInOffset = gpioEnableOffset + 8;
-        postMessage({
-            type: 'calibrated',
-            out: gpioOutOffset,
-            enable: gpioEnableOffset,
-            in: gpioInOffset,
-        });
-    } catch (e) {
-        console.warn('Dynamic GPIO calibration error, using defaults:', e);
-    }
+        doCalibrate(chip);
+    };
+    const doCalibrate = (chip) => {
+        try {
+            const calEmu = new wasm.WasmEmulator(chip || 'esp32c3');
+            calEmu.set_boot_from_rom(false);
+            calEmu.load_firmware(GPIO_CALIBRATION_PROBE);
+            calEmu.run_batch(200);
+
+            // Fresh instance => fresh linear memory: scan for BOTH markers and
+            // only accept offsets when exactly one candidate pair exists. The old
+            // code kept the LAST hit over the whole memory, which could latch
+            // onto stale copies from a previous instance.
+            const u32 = new Uint32Array(wasmExports.memory.buffer);
+            const outs = [], ens = [];
+            for (let i = 0; i < u32.length; i++) {
+                if (u32[i] === 0xCAFE1234) outs.push(i * 4);
+                if (u32[i] === 0xBEEF5678) ens.push(i * 4);
+            }
+            if (outs.length >= 1 && ens.length >= 1) {
+                gpioOutOffset = outs[0];
+                gpioEnableOffset = ens[0];
+            }
+            gpioInOffset = gpioEnableOffset + 8;
+            postMessage({
+                type: 'calibrated',
+                out: gpioOutOffset,
+                enable: gpioEnableOffset,
+                in: gpioInOffset,
+            });
+        } catch (e) {
+            console.warn('Dynamic GPIO calibration error, using defaults:', e);
+        }
+    };
+    attempt();
 }
 
 // Import and initialize WASM module
@@ -738,8 +771,6 @@ function handleApcFrame(kind, body) {
                 bytes.push((nib(i) << 4) | nib(i + 1));
             }
             sdmmcDevice.writeChunk(lba >>> 0, count, new Uint8Array(bytes));
-        }
-            sdmmcDevice.writeSectors(lba >>> 0, new Uint8Array(bytes));
         }
     } else if (kind === 'F') {
         // Camera band: F<off:8nib><len:4nib> -> len + bytes

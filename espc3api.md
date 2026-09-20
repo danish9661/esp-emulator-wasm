@@ -103,7 +103,17 @@ Node init MUST be `initSync({module: readFileSync(wasm)})`; browser uses
 - MicroPython harness: `bootMpy({chip,binPath,elfPath,setup,gpioProbe})/replExec/calibrateGpioLive` — REPL over UART0, live GPIO discovery (see `spike/30-verify-mpy.mjs` per-chip quirks: H2 USB pins, ADC maps, PWM saturate, P4 low-pins).
 - APC frames (`PROTOCOLS.md` §1, `core/uart.mjs:110-325`): `\x1b_<kind>…\x1b\\`, kinds `W/R/Q`(I2C) `S`(SPI) `N`(RMT) `A/V`(ADC) `P`(PWM) `I`(I2S) `C`(TWAI) `T`(touch) `D`(DAC) `M`(SDMMC) `F`(camera) `L`(LCD) `B`(BLE cmd)/`E`(legacy evt) `G/H`(15.4 TX/scan); nibble-encoded (`'a'+nibble`); batch ≥100000 (`AGENT.md` §6).
 
-## 7. Browser worker (demo harness — NOT the OpenHW runner)
+## 7. Browser worker + Pages demo (demo harness — NOT the OpenHW runner)
+
+Deployed to GitHub Pages on every `main` push via `.github/workflows/pages.yml`
+(build → upload-pages-artifact → deploy-pages; enable Pages → Source
+"GitHub Actions" once in repo Settings). The artifact ships the UI shell
+(`index.html/app.js/worker.js/index.mjs/core/pkg/*.js+wasm/loader+devices+
+observers`), root C3 samples (68 files, ~368 MB — the preset dropdown's ONLY
+firmware source), and C3 BLE sketch builds (built in-CI, never committed).
+Excluded: per-chip `samples/c5-c6-h2-p4-mpy`, `pkg.prev*`, gateway Go sources,
+`spike/build` (not fetched by the UI; keeps the artifact small). Gateway-backed
+features degrade gracefully with no gateway (WiFi/BLE-radio need `ws://`).
 
 `worker.js` main→worker (19 cases): `init/load/start/stop/step/reset/
 uart_input/gpio_set/mem_read/net_connect/net_disconnect/ble_connect/

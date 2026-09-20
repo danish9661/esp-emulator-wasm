@@ -1,0 +1,125 @@
+name: pages-demo
+
+# GitHub Pages demo for the esp-emu Web UI (OpenHW-style board playground).
+# Deploys index.html + app.js + worker.js + index.mjs/core + pkg WASM + the
+# C3 demo samples the preset dropdown loads. Per-chip c5/c6/h2/p4/mpy and
+# bisect pkgs are EXCLUDED (hundreds of MB; the UI only fetches root samples
+# + BLE sketch builds, which the ble CI job regenerates in-repo).
+# Gateway-backed features (WiFi/BLE-radio) degrade gracefully with no gateway.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'app.js'
+      - 'worker.js'
+      - 'index.mjs'
+      - 'core/**'
+      - 'pkg/esp_emu.js'
+      - 'pkg/esp_emu_bg.wasm'
+      - 'elf.mjs'
+      - 'espimage.mjs'
+      - 'shims.mjs'
+      - 'peripherals.mjs'
+      - 'reply_queue.mjs'
+      - 'ble_monitor_api.js'
+      - 'peripheral_monitor_api.js'
+      - 'samples/*.elf'
+      - 'samples/*.merged.bin'
+      - 'spike/sketches/BLEDemo/**'
+      - 'spike/sketches/BLEDetect/**'
+      - 'spike/sketches/BLETest/**'
+      - 'spike/ble_inspector.mjs'
+      - 'spike/ble_report.mjs'
+      - 'spike/peripheral_inspector.mjs'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - name: Install ESP32 core and libs
+        run: |
+          export PATH="$GITHUB_WORKSPACE/bin:$PATH"
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.10
+          arduino-cli lib install "NimBLE-Arduino@2.5.1"
+
+      - name: Build BLE sketches (UI presets fetch these paths; C3 only — the UI chip dropdown re-targets the same binaries)
+        run: |
+          export PATH="$GITHUB_WORKSPACE/bin:$PATH"
+          export TMPDIR=/tmp/isolated_path
+          mkdir -p /tmp/isolated_path
+          arduino-cli compile --fqbn esp32:esp32:esp32c3 --build-path "$GITHUB_WORKSPACE/spike/sketches/BLETest/build/esp32.esp32.esp32c3" "$GITHUB_WORKSPACE/spike/sketches/BLETest/BLETest.ino"
+          arduino-cli compile --fqbn esp32:esp32:esp32c3 --build-path "$GITHUB_WORKSPACE/spike/sketches/BLEDetect/build/esp32.esp32.esp32c3" "$GITHUB_WORKSPACE/spike/sketches/BLEDetect/BLEDetect.ino"
+          arduino-cli compile --fqbn esp32:esp32:esp32c3 --build-path /tmp/blebuild_esp32c3 "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/BLEDemo.ino"
+          cp /tmp/blebuild_esp32c3/BLEDemo.ino.{elf,merged.bin,bin,bootloader.bin,partitions.bin,map} "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/"
+
+      - name: Smoke UI assets (worker syntax + preset files present)
+        run: |
+          node --check worker.js
+          node --check app.js
+          node --check index.mjs
+          test -f pkg/esp_emu_bg.wasm
+          test -f samples/neopixel_demo.merged.bin
+          test -f spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/BLEDemo.ino.merged.bin
+
+      - name: Assemble Pages artifact (UI shell + C3 demos only)
+        run: |
+          rm -rf dist && mkdir -p dist
+          cp index.html app.js worker.js index.mjs elf.mjs espimage.mjs shims.mjs \
+             peripherals.mjs reply_queue.mjs ble_monitor_api.js peripheral_monitor_api.js dist/
+          cp -r core dist/core
+          mkdir -p dist/pkg
+          cp pkg/esp_emu.js pkg/esp_emu_bg.wasm dist/pkg/
+          mkdir -p dist/samples
+          cp samples/*.elf samples/*.merged.bin dist/samples/
+          mkdir -p dist/spike/sketches/BLEDemo dist/spike/sketches/BLEDetect dist/spike/sketches/BLETest dist/spike
+          cp -r spike/sketches/BLEDemo/build dist/spike/sketches/BLEDemo/ 2>/dev/null || true
+          cp -r spike/sketches/BLEDetect/build dist/spike/sketches/BLEDetect/ 2>/dev/null || true
+          cp -r spike/sketches/BLETest/build dist/spike/sketches/BLETest/ 2>/dev/null || true
+          cp spike/ble_inspector.mjs spike/ble_report.mjs spike/peripheral_inspector.mjs dist/spike/
+          # Pages serves from repo root of the artifact; relative fetch() paths keep working.
+          # Exclude on purpose: samples/c5 c6 h2 p4 mpy, pkg.prev*, openhw-studio-gateway,
+          # spike/build (hundreds of MB; not fetched by the UI).
+          du -sh dist
+          ls dist dist/pkg dist/samples | head -20
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
