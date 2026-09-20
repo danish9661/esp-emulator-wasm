@@ -1,6 +1,14 @@
-// On-Chip GPIO Controller for ESP32 RISC-V (Pins 0..21)
+// On-Chip GPIO Controller for ESP32 RISC-V (per-chip pin count)
 // Provides per-pin listeners, direction detection, input injection,
 // and dynamic memory auto-calibration inside WASM linear memory.
+//
+// Pin counts are per-chip (datasheet + app.js CHIP_GPIO_COUNT):
+// esp32c3: 22, esp32c6: 30, esp32h2: 19, esp32c5: 29, esp32p4: 56,
+// esp32s31: 60. The controller models the low 32 mask bits; pins above 31
+// are accepted by the API (pin()/setInput()/listeners) but only contribute
+// to the raw masks until the core exposes wider GPIO words. Always construct
+// via ESP32C3 (which passes the chip) — never `new GPIOController()` bare
+// for a non-C3 target.
 
 export class GPIOPin {
     constructor(pinNumber, controller) {
@@ -45,12 +53,23 @@ export class GPIOPin {
     }
 }
 
+export const CHIP_GPIO_COUNT = {
+    esp32c3: 22,
+    esp32c6: 30,
+    esp32h2: 19,
+    esp32c5: 29,
+    esp32p4: 56,
+    esp32s31: 60,
+};
+
 export class GPIOController {
-    constructor() {
-        this.pins = Array.from({ length: 22 }, (_, i) => new GPIOPin(i, this));
+    constructor(chip = 'esp32c3') {
+        this.chip = chip;
+        this.pinCount = CHIP_GPIO_COUNT[chip] || 22;
+        this.pins = Array.from({ length: this.pinCount }, (_, i) => new GPIOPin(i, this));
         this._inputMask = 0;
-        this._lastOutMask = 0;
-        this._lastEnableMask = 0;
+        this._lastOutMask = -1;
+        this._lastEnableMask = -1;
         this._gpioOutAddr = null;
         this._gpioEnableAddr = null;
         this._gpioInAddr = null;
@@ -67,9 +86,9 @@ export class GPIOController {
     }
 
     /**
-     * Access a specific pin (0..21).
+     * Access a specific pin (0..pinCount-1).
      * @param {number} pinNumber
-     * @returns {GPIOPin}
+     * @returns {GPIOPin|undefined} undefined when out of range for this chip
      */
     pin(pinNumber) {
         return this.pins[pinNumber];
@@ -77,11 +96,11 @@ export class GPIOController {
 
     /**
      * Set the digital input state for a pin.
-     * @param {number} pin - GPIO pin number (0..21)
+     * @param {number} pin - GPIO pin number (0..pinCount-1)
      * @param {boolean | number} level - true/1 (HIGH) or false/0 (LOW)
      */
     setInput(pin, level) {
-        if (pin < 0 || pin >= 22) return;
+        if (pin < 0 || pin >= this.pinCount) return;
         const bit = 1 << pin;
         if (level) {
             this._inputMask |= bit;
@@ -109,7 +128,7 @@ export class GPIOController {
      * @returns {boolean}
      */
     getPinLevel(pin) {
-        if (pin < 0 || pin >= 22) return false;
+        if (pin < 0 || pin >= this.pinCount) return false;
         return this.pins[pin].value;
     }
 
@@ -119,7 +138,7 @@ export class GPIOController {
      * @returns {boolean}
      */
     isOutput(pin) {
-        if (pin < 0 || pin >= 22) return false;
+        if (pin < 0 || pin >= this.pinCount) return false;
         return this.pins[pin].isOutput;
     }
 
@@ -172,7 +191,7 @@ export class GPIOController {
             this._lastOutMask = outMask;
             this._lastEnableMask = enableMask;
 
-            for (let i = 0; i < 22; i++) {
+            for (let i = 0; i < this.pinCount; i++) {
                 const isOut = ((enableMask >> i) & 1) === 1;
                 const level = isOut ? ((outMask >> i) & 1) === 1 : ((this._inputMask >> i) & 1) === 1;
                 if (this.pins[i].value !== level || this.pins[i].isOutput !== isOut) {

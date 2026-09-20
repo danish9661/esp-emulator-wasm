@@ -38,8 +38,10 @@ export class ESP32C3 {
         this.chip = chip;
         this.running = false;
 
-        // On-chip peripheral controllers
-        this.gpio = new GPIOController();
+        // On-chip peripheral controllers (GPIO sized per-chip; the WASM
+        // core only exposes the low 32-bit GPIO words, so pins >31 track
+        // via API/masks until wider words land — see gpio.mjs header).
+        this.gpio = new GPIOController(chip);
         this.gpio.bindMemory(this.memory);
 
         this.i2c = new I2CBus();
@@ -329,5 +331,44 @@ export class ESP32C3 {
      */
     restart() {
         this.emu.restart();
+    }
+
+    // ---- OpenHW / component-host convenience (thin wrappers, no new logic) ----
+
+    /** WiFi STA config passthrough (native WASM glue; C3/C6 only). */
+    setWifi(ssid, password = '') {
+        this.emu.set_wifi_config(ssid, password);
+    }
+
+    /** Push one raw RX Ethernet/WiFi frame (gateway-shaped) into the guest. */
+    wifiRxPush(bytes) {
+        this.emu.wifi_rx_push(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+    }
+
+    /**
+     * Drain queued TX frames. Raw glue returns u32-LE-len-prefixed batches;
+     * this splits them into one Uint8Array per frame (gateway wire rule:
+     * one raw frame per WS message, no length prefix).
+     * @returns {Uint8Array[]}
+     */
+    wifiTxDrainSplit() {
+        const buf = this.emu.wifi_tx_drain();
+        const out = [];
+        let off = 0;
+        while (off + 4 <= buf.length) {
+            const len = buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24);
+            off += 4;
+            if (off + len > buf.length) break;
+            out.push(new Uint8Array(buf.buffer.slice(buf.byteOffset + off, buf.byteOffset + off + len)));
+            off += len;
+        }
+        return out;
+    }
+
+    /** Detach listeners/memory so a board runner can drop the instance. */
+    dispose() {
+        this.running = false;
+        this.emu = null;
+        this.memory = null;
     }
 }
