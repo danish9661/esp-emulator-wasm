@@ -43,6 +43,14 @@ export {
 export { PeripheralInspector, buildPeripheralReport, formatPeripheralReport, diffPeripheralReports, formatPeripheralDiff } from './spike/peripheral_inspector.mjs';
 export { BleInspector, parseLine } from './spike/ble_inspector.mjs';
 export { buildReport, formatReport, renderEvent, diffReports, formatDiff } from './spike/ble_report.mjs';
+// Shim internals for custom runners (advanced): BLE/Thread patch builders,
+// RV32I assembler, and the MicroPython REPL harness (bootMpy/replExec +
+// live GPIO calibration). Most hosts never need these (loadFirmware covers
+// it), but OpenHW-style runners that pre-inspect firmware do.
+export { BLE_SCRATCH, BLE_CB_OFF, BLE_FLAG_OFF, BLE_EVT_OFF, BLE_LEN_OFF, BLE_MAGIC1, BLE_MAGIC2, prepareBleShims } from './core/ble_shims.mjs';
+export { THREAD_HOOKS, prepareThreadShims } from './core/thread_shims.mjs';
+export { T0, T1, T2, T3, T4, T5, A0, A1, A2, A3, A4, A5, A6, A7, S0, S1, SP, RA, ZERO, lui, addi, sw, lw, sb, lbu, andi, srli, slli, beq, bne, bge, add, or, lb, jal, ret, jalr_ra, jalr, li, asm32, assemble } from './core/rvasm.mjs';
+export { bootMpy, calibrateGpioLive, replExec } from './spike/mpy_repl.mjs';
 
 // Board metadata for component hosts (mirrors app.js CHIP_GPIO_COUNT plus
 // wireless/capability flags from AGENT.md §1 / PROTOCOLS.md §2).
