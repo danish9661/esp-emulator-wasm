@@ -76,6 +76,8 @@ jobs:
           arduino-cli compile --fqbn esp32:esp32:esp32c3 --build-path "$GITHUB_WORKSPACE/spike/sketches/BLETest/build/esp32.esp32.esp32c3" "$GITHUB_WORKSPACE/spike/sketches/BLETest/BLETest.ino"
           arduino-cli compile --fqbn esp32:esp32:esp32c3 --build-path "$GITHUB_WORKSPACE/spike/sketches/BLEDetect/build/esp32.esp32.esp32c3" "$GITHUB_WORKSPACE/spike/sketches/BLEDetect/BLEDetect.ino"
           arduino-cli compile --fqbn esp32:esp32:esp32c3 --build-path /tmp/blebuild_esp32c3 "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/BLEDemo.ino"
+          # build/ dirs are gitignored, so they don't exist on a fresh runner — create before cp.
+          mkdir -p "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/"
           cp /tmp/blebuild_esp32c3/BLEDemo.ino.{elf,merged.bin,bin,bootloader.bin,partitions.bin,map} "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/"
 
       - name: Smoke UI assets (worker syntax + preset files present)

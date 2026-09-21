@@ -37,8 +37,11 @@ jobs:
           for chip in esp32c3 esp32c6 esp32h2 esp32c5; do
             short=${chip#esp32}
             arduino-cli compile --fqbn esp32:esp32:$chip --build-path /tmp/blebuild_$chip "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/BLEDemo.ino"
+            # build/ dirs are gitignored, so they don't exist on a fresh runner — create before cp.
+            mkdir -p "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build/esp32.esp32.$chip/"
             cp /tmp/blebuild_$chip/BLEDemo.ino.{elf,merged.bin,bin,bootloader.bin,partitions.bin,map} "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build/esp32.esp32.$chip/"
             if [ "$chip" != "esp32c3" ]; then
+              mkdir -p "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build_esp32$short/"
               cp /tmp/blebuild_$chip/BLEDemo.ino.{elf,merged.bin,bin,bootloader.bin,partitions.bin,map} "$GITHUB_WORKSPACE/spike/sketches/BLEDemo/build_esp32$short/"
             fi
           done
