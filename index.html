@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%233b82f6'/><text x='8' y='12' font-size='10' text-anchor='middle' fill='white' font-family='monospace'>E</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23d8a24a'/><text x='8' y='12' font-size='10' text-anchor='middle' fill='%2314120a' font-family='monospace'>E</text></svg>">
     <title>ESP-EMU — RISC-V WebAssembly Emulator with Virtual Peripherals</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -11,25 +11,29 @@
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-base: #0b0f19;
-            --bg-surface: #111827;
-            --bg-card: #1f2937;
-            --bg-card-hover: #374151;
-            --border-color: #2e3a4e;
-            --border-highlight: #3b82f6;
-            --text-main: #f3f4f6;
-            --text-muted: #9ca3af;
-            --text-dim: #6b7280;
-            --primary: #3b82f6;
-            --primary-hover: #2563eb;
-            --accent-green: #10b981;
-            --accent-green-glow: rgba(16, 185, 129, 0.4);
-            --accent-cyan: #06b6d4;
-            --accent-cyan-glow: rgba(6, 182, 212, 0.35);
-            --accent-amber: #f59e0b;
-            --accent-rose: #f43f5e;
-            --oled-pixel-on: #00ffff;
-            --oled-pixel-bg: #03080d;
+            /* Bench-room identity: deep enamel bench-top, warm tungsten task
+               light, phosphor-green sight-glass readouts. One memorable thing
+               (the glowing bench + sight-glass header); everything else quiet. */
+            --bg-base: #101311;
+            --bg-surface: #171b18;
+            --bg-card: #1e2420;
+            --bg-card-hover: #262e28;
+            --border-color: #2e362f;
+            --border-highlight: #d8a24a;
+            --text-main: #ece7d9;
+            --text-muted: #a8a294;
+            --text-dim: #6f6a5c;
+            --primary: #d8a24a;
+            --primary-hover: #c08f3c;
+            --accent-green: #7ee2a8;
+            --accent-green-glow: rgba(126, 226, 168, 0.35);
+            --accent-cyan: #8fd6c2;
+            --accent-cyan-glow: rgba(143, 214, 194, 0.3);
+            --accent-amber: #d8a24a;
+            --accent-rose: #e0605e;
+            --oled-pixel-on: #9df0c0;
+            --oled-pixel-bg: #0a0f0b;
+            --glass-green: #a7f3c7;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -45,9 +49,21 @@
             user-select: none;
         }
 
-        /* Top Header */
+        /* Bench-top strip: the one memorable element — a tungsten-lit rail
+           the whole lab bench sits under. Static (no animation budget spent
+           on chrome; motion belongs to the emulation). */
+        body::before {
+            content: '';
+            display: block;
+            height: 3px;
+            flex-shrink: 0;
+            background: linear-gradient(90deg, #5a4a26 0%, var(--primary) 18%, #f3d894 50%, var(--primary) 82%, #5a4a26 100%);
+            box-shadow: 0 1px 12px rgba(216, 162, 74, 0.35);
+        }
+
+        /* Top Header — the sight-glass: dark enamel, phosphor readouts */
         header {
-            background: var(--bg-surface);
+            background: linear-gradient(180deg, #141816 0%, var(--bg-surface) 100%);
             padding: 10px 18px;
             display: flex;
             align-items: center;
@@ -67,31 +83,31 @@
         .brand-icon {
             width: 28px;
             height: 28px;
-            background: linear-gradient(135deg, #3b82f6, #06b6d4);
+            background: linear-gradient(135deg, #8a6a2c, var(--primary));
             border-radius: 6px;
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 700;
             font-size: 14px;
-            color: white;
-            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+            color: #14120a;
+            box-shadow: 0 0 10px rgba(216, 162, 74, 0.45);
         }
 
         .brand h1 {
             font-size: 16px;
             font-weight: 700;
             letter-spacing: -0.3px;
-            color: #ffffff;
+            color: var(--text-main);
             display: flex;
             align-items: center;
             gap: 8px;
         }
 
         .chip-badge {
-            background: rgba(59, 130, 246, 0.15);
-            color: var(--accent-cyan);
-            border: 1px solid rgba(6, 182, 212, 0.3);
+            background: rgba(216, 162, 74, 0.12);
+            color: var(--primary);
+            border: 1px solid rgba(216, 162, 74, 0.35);
             font-size: 11px;
             font-weight: 600;
             padding: 2px 7px;
@@ -137,16 +153,16 @@
         }
 
         button.primary {
-            background: linear-gradient(135deg, var(--primary), #2563eb);
+            background: linear-gradient(135deg, var(--primary), #a87c33);
             border-color: var(--primary);
-            color: #ffffff;
+            color: #14120a;
             font-weight: 600;
-            box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+            box-shadow: 0 2px 8px rgba(216, 162, 74, 0.3);
         }
 
         button.primary:hover:not(:disabled) {
-            background: linear-gradient(135deg, #2563eb, #1d4ed8);
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.5);
+            background: linear-gradient(135deg, #e5b45c, var(--primary));
+            box-shadow: 0 4px 12px rgba(216, 162, 74, 0.45);
         }
 
         button.danger {
@@ -166,10 +182,11 @@
             gap: 16px;
             font-size: 12px;
             font-family: 'Fira Code', monospace;
-            background: rgba(0, 0, 0, 0.25);
+            background: #0a0d0a;
             padding: 4px 12px;
             border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.7);
         }
 
         .status-pill {
@@ -198,8 +215,9 @@
         }
 
         .mips {
-            color: var(--accent-cyan);
+            color: var(--glass-green);
             font-weight: 600;
+            text-shadow: 0 0 8px rgba(167, 243, 199, 0.4);
         }
 
         .cycles {
@@ -304,13 +322,13 @@
             display: flex;
             flex-direction: column;
             overflow: hidden;
-            background: #080c14;
+            background: #0c0f0c;
             min-width: 0;
         }
 
         /* Virtual Hardware / OLED Container */
         .oled-viewport {
-            background: #0d131f;
+            background: #121512;
             border-bottom: 1px solid var(--border-color);
             padding: 12px 16px;
             display: flex;
@@ -320,8 +338,8 @@
         }
 
         .oled-bezel {
-            background: #05080f;
-            border: 2px solid #1f293d;
+            background: #070907;
+            border: 2px solid #2b332c;
             border-radius: 8px;
             padding: 10px;
             box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.8), 0 4px 16px rgba(0, 0, 0, 0.4);
@@ -343,11 +361,11 @@
         }
 
         .oled-canvas-wrap {
-            border: 1px solid #142033;
+            border: 1px solid #243024;
             border-radius: 4px;
             overflow: hidden;
             background: var(--oled-pixel-bg);
-            box-shadow: 0 0 16px rgba(0, 255, 255, 0.05);
+            box-shadow: 0 0 16px rgba(157, 240, 192, 0.06);
         }
 
         #oled-canvas {
@@ -371,9 +389,9 @@
             font-family: 'Fira Code', monospace;
             font-size: 11px;
             padding: 3px 8px;
-            background: rgba(6, 182, 212, 0.1);
-            color: var(--accent-cyan);
-            border: 1px solid rgba(6, 182, 212, 0.25);
+            background: rgba(216, 162, 74, 0.1);
+            color: var(--primary);
+            border: 1px solid rgba(216, 162, 74, 0.3);
             border-radius: 4px;
             width: fit-content;
         }
@@ -403,7 +421,7 @@
 
         #terminal-container {
             flex: 1;
-            background: #05080f;
+            background: #070a07;
             border: 1px solid var(--border-color);
             border-radius: 6px;
             overflow: hidden;
@@ -431,14 +449,14 @@
         .gpio-pin {
             background: var(--bg-base);
             border: 1px solid var(--border-color);
-            border-radius: 6px;
+            border-radius: 4px;
             padding: 6px 4px;
             display: flex;
             flex-direction: column;
             align-items: center;
             gap: 2px;
             cursor: pointer;
-            transition: all 0.15s;
+            transition: border-color 0.15s;
         }
 
         .gpio-pin:hover {
@@ -457,9 +475,9 @@
             width: 10px;
             height: 10px;
             border-radius: 50%;
-            background: #222938;
-            border: 1px solid #374151;
-            transition: all 0.15s;
+            background: #232823;
+            border: 1px solid #3a423a;
+            transition: background 0.15s, box-shadow 0.15s;
         }
 
         .gpio-pin.high .pin-indicator {
@@ -499,7 +517,7 @@
         }
 
         .i2c-entry .op-write { color: #f43f5e; font-weight: 600; }
-        .i2c-entry .op-read { color: #10b981; font-weight: 600; }
+        .i2c-entry .op-read { color: #7ee2a8; font-weight: 600; }
         .i2c-entry .addr { color: var(--accent-cyan); }
         .i2c-entry .bytes { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -536,24 +554,26 @@
     <header>
         <div class="brand">
             <div class="brand-icon">E</div>
-            <h1>ESP-EMU <span>v0.39.0</span></h1>
+            <h1>ESP-EMU <span>v0.42.0</span></h1>
             <span class="chip-badge" id="chip-badge">ESP32-C3 (RV32)</span>
         </div>
 
         <div class="controls">
-            <button id="run-btn" class="primary" disabled>▶ Run</button>
-            <button id="pause-btn" disabled>⏸ Pause</button>
-            <button id="step-btn" disabled>⏯ Step</button>
-            <button id="reset-btn" class="danger" disabled>↺ Reset</button>
+            <button id="run-btn" class="primary" disabled>Run</button>
+            <button id="pause-btn" disabled>Pause</button>
+            <button id="step-btn" disabled>Step</button>
+            <button id="reset-btn" class="danger" disabled>Reset</button>
         </div>
 
-        <div class="status-bar">
+        <div class="status-bar" title="Guest-equivalent speed (capped at silicon max) · wall time per slice · wall rate + realtime factor">
             <div class="status-pill">
                 <div class="status-dot" id="status-dot"></div>
                 <span id="status-text">WASM Initializing...</span>
             </div>
-            <span class="mips" id="mips-display">0.0 MIPS</span>
-            <span class="cycles" id="cycle-display">0 cycles</span>
+            <span class="mips" id="mips-display" title="Guest-equivalent speed, capped at the chip's silicon max. Raw host burst in tooltip.">— MIPS</span>
+            <span class="cycles" id="cycle-display" title="Total guest steps requested (core retires exactly N per run_batch(N))">0 cycles</span>
+            <span class="cycles" id="mips-wall" title="Host wall-clock per emulator slice">— ms/slice</span>
+            <span class="cycles" id="mips-eff" title="Guest-equivalent wall rate (capped) + realtime factor vs silicon">— MHz eff</span>
         </div>
     </header>
 
@@ -565,8 +585,10 @@
                 <div class="field">
                     <label>Select Preset Firmware</label>
                     <select id="preset-select">
-                        <option value="neopixel_demo" selected>WS2812 NeoPixel Strip (8x RGB Rainbow)</option>
-                        <option value="adcpwm_demo">ADC & PWM Demo (analogRead + analogWrite)</option>
+                        <!-- Rebuilt by refreshPresetOptions() in app.js (per-chip builds).
+                             Static fallback = C3 set, so no-JS still works. -->
+                        <option value="neopixel_demo">WS2812 NeoPixel Strip (8x RGB Rainbow)</option>
+                        <option value="adcpwm_demo">ADC &amp; PWM Demo (analogRead + analogWrite)</option>
                         <option value="i2s_demo">I2S Digital Audio (16kHz 16-bit PCM)</option>
                         <option value="twai_demo">TWAI / CAN Bus (500 kbps ISO 11898-1)</option>
                         <option value="sdcard_demo">Virtual SD Card FAT16 (SPI CS=7)</option>
@@ -581,13 +603,13 @@
                         <option value="sdmmc_demo">SDMMC 4-bit Host (virtual)</option>
                         <option value="camera_demo">Camera Grayscale Frame (virtual)</option>
                         <option value="lcd_demo">LCD Panel RGB565 Blits (virtual)</option>
-                        <option value="bledemo">BLE Server Demo (NimBLE)</option>
-                        <option value="bledetect">BLE VHCI Detector</option>
-                        <option value="bletest">BLE VHCI Call Test</option>
+                        <option value="bledemo">BLE Server Demo (NimBLE) (local build)</option>
+                        <option value="bledetect">BLE VHCI Detector (local build)</option>
+                        <option value="bletest">BLE VHCI Call Test (local build)</option>
                     </select>
                 </div>
                 <button id="load-preset-btn" class="primary" style="width: 100%; justify-content: center;" disabled>
-                    ⚡ Load Demo Firmware
+                    Load Demo Firmware
                 </button>
             </div>
 
@@ -688,13 +710,13 @@
                 <!-- Virtual SD Card (SPI) Widget -->
                 <div class="sdcard-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between;">
                     <div style="display: flex; align-items: center; gap: 8px;">
-                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-amber); text-transform: uppercase; letter-spacing: 0.5px;">💾 Virtual SD Card</span>
+                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-amber); text-transform: uppercase; letter-spacing: 0.5px;">Virtual SD Card</span>
                         <div id="sd-act-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #374151; transition: all 0.15s;"></div>
                         <span class="oled-badge" id="sd-status-badge" style="font-size: 10px; padding: 2px 6px;">1.0 MB FAT16</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 6px;">
                         <span id="sd-last-op" style="font-size: 10px; font-family: 'Fira Code', monospace; color: var(--text-dim);">CS=7 Ready</span>
-                        <button id="sd-download-btn" style="padding: 2px 6px; font-size: 10px;" title="Export Disk Image (.img)">📥 Export .img</button>
+                        <button id="sd-download-btn" style="padding: 2px 6px; font-size: 10px;" title="Export Disk Image (.img)">Export .img</button>
                     </div>
                 </div>
             </div>
@@ -704,33 +726,33 @@
                 <!-- ADC Potentiometer Widget -->
                 <div class="adc-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
                     <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
-                        <span style="font-size: 11px; font-weight: 700; color: #a78bfa; text-transform: uppercase; letter-spacing: 0.5px;">🎛️ ADC1 (GPIO0)</span>
+                        <span style="font-size: 11px; font-weight: 700; color: #d8a24a; text-transform: uppercase; letter-spacing: 0.5px;">ADC1 (GPIO0)</span>
                         <span class="oled-badge" id="adc-val-badge" style="font-size: 10px; padding: 2px 6px;">1.65V (2048)</span>
                     </div>
-                    <input type="range" id="adc-slider" min="0" max="3.3" step="0.01" value="1.65" style="flex: 1; accent-color: #a78bfa; cursor: pointer;">
+                    <input type="range" id="adc-slider" min="0" max="3.3" step="0.01" value="1.65" style="flex: 1; accent-color: #d8a24a; cursor: pointer;">
                 </div>
 
                 <!-- PWM / LEDC Duty Visualizer Widget -->
                 <div class="pwm-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
                     <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
-                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 0.5px;">⚡ PWM / LEDC (GPIO2)</span>
+                        <span style="font-size: 11px; font-weight: 700; color: var(--accent-cyan); text-transform: uppercase; letter-spacing: 0.5px;">PWM / LEDC (GPIO2)</span>
                         <span class="oled-badge" id="pwm-val-badge" style="font-size: 10px; padding: 2px 6px;">0.0%</span>
                     </div>
-                    <div style="flex: 1; height: 10px; background: #1f2937; border-radius: 5px; overflow: hidden; border: 1px solid var(--border-color);">
-                        <div id="pwm-fill-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #06b6d4, #3b82f6); transition: width 0.1s ease;"></div>
+                    <div style="flex: 1; height: 10px; background: #1a1e1a; border-radius: 5px; overflow: hidden; border: 1px solid var(--border-color);">
+                        <div id="pwm-fill-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #8fd6c2, #d8a24a); transition: width 0.1s ease;"></div>
                     </div>
                 </div>
 
                 <!-- I2S Audio DAC & Web Audio Playback Widget -->
                 <div class="i2s-bar" style="flex: 1; min-width: 280px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
                     <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
-                        <span style="font-size: 11px; font-weight: 700; color: #ec4899; text-transform: uppercase; letter-spacing: 0.5px;">🔊 I2S Audio DAC</span>
+                        <span style="font-size: 11px; font-weight: 700; color: #ec4899; text-transform: uppercase; letter-spacing: 0.5px;">I2S Audio DAC</span>
                         <span class="oled-badge" id="i2s-vol-badge" style="font-size: 10px; padding: 2px 6px;">16kHz Stereo</span>
                     </div>
-                    <div style="flex: 1; height: 10px; background: #1f2937; border-radius: 5px; overflow: hidden; border: 1px solid var(--border-color);">
-                        <div id="i2s-vu-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #ec4899, #f43f5e); transition: width 0.05s ease;"></div>
+                    <div style="flex: 1; height: 10px; background: #1a1e1a; border-radius: 5px; overflow: hidden; border: 1px solid var(--border-color);">
+                        <div id="i2s-vu-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #d8a24a, #e0605e); transition: width 0.05s ease;"></div>
                     </div>
-                    <button id="i2s-audio-toggle" style="padding: 2px 8px; font-size: 10px; flex-shrink: 0;">🔇 Muted</button>
+                    <button id="i2s-audio-toggle" style="padding: 2px 8px; font-size: 10px; flex-shrink: 0;">Muted</button>
                 </div>
             </div>
 
@@ -785,7 +807,7 @@
                 <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;">
                     <span style="font-size: 10px; color: var(--text-dim);">Tags:</span>
                     <label style="font-size: 10px; color: var(--accent-cyan);"><input type="checkbox" id="ble-filt-ble" checked> BLE</label>
-                    <label style="font-size: 10px; color: #a78bfa;"><input type="checkbox" id="ble-filt-detect" checked> DETECT</label>
+                    <label style="font-size: 10px; color: #c9a8d8;"><input type="checkbox" id="ble-filt-detect" checked> DETECT</label>
                     <label style="font-size: 10px; color: #f59e0b;"><input type="checkbox" id="ble-filt-test" checked> TEST</label>
                 </div>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;">
@@ -887,7 +909,7 @@
                 <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
                     <label style="font-size: 10px; color: var(--text-dim);">Settle (ms)</label>
                     <input id="ab-settle" type="number" value="4000" min="500" step="500" style="width: 70px; font-size: 10px;">
-                    <button id="ab-run-btn" style="padding: 2px 8px; font-size: 10px;">▶ Run A→B</button>
+                    <button id="ab-run-btn" style="padding: 2px 8px; font-size: 10px;">Run A→B</button>
                     <button id="ab-export-btn" style="padding: 2px 8px; font-size: 10px;">Export</button>
                 </div>
                 <div id="ab-status" style="font-size: 10px; color: var(--text-dim); margin-bottom: 6px;">Pick A and B, then run. Both monitors are reset before each run.</div>

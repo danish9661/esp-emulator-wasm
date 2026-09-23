@@ -34,7 +34,9 @@
     // still counted in full in the report.
     const periHighFreq = { OLED: true, TFT: true, NEO: true, I2S: true, CAM: true, LCD: true };
     const periLogThrottle = {};
-    const periColor = { I2C: '#22d3ee', SPI: '#8b5cf6', TWAI: '#10b981', ADC: '#f59e0b', PWM: '#f472b6', I2S: '#38bdf8', NEO: '#34d399', OLED: '#a78bfa', TFT: '#fb7185', SD: '#facc15', GPIO: '#94a3b8', TOUCH: '#f97316', DAC: '#e879f9', SDMMC: '#fde047', CAM: '#7dd3fc', LCD: '#fda4af', BLE: '#5eead4', THREAD: '#a3e635' };
+    // Tag hues stay distinguishable (a monitor needs 18 separable colors),
+    // but pulled into the bench-room register: warm ambers/greens first.
+    const periColor = { I2C: '#8fd6c2', SPI: '#c9a8d8', TWAI: '#7ee2a8', ADC: '#d8a24a', PWM: '#e08e8e', I2S: '#9fc6c0', NEO: '#7ee2a8', OLED: '#c9a8d8', TFT: '#e08e8e', SD: '#d8c46a', GPIO: '#a8a294', TOUCH: '#d8954a', DAC: '#c9a8d8', SDMMC: '#d8c46a', CAM: '#9fc6c0', LCD: '#e08e8e', BLE: '#8fd6c2', THREAD: '#b8c46a' };
     const periColorOf = (p) => periColor[p] || '#94a3b8';
 
     // --- Unified Timeline: a single chronological stream of BLE + Peripheral events ---
@@ -68,14 +70,14 @@
         const srcBadge = document.createElement('span');
         const isBle = src === 'BLE';
         srcBadge.textContent = isBle ? 'BLE ' : 'PRF ';
-        srcBadge.style.color = isBle ? '#22d3ee' : '#a78bfa';
+        srcBadge.style.color = isBle ? '#8fd6c2' : '#c9a8d8';
         srcBadge.style.fontWeight = '700';
         const tag = document.createElement('span');
         const sum = document.createElement('span');
         if (isBle) {
             const type = ev.type || '';
             tag.textContent = type;
-            tag.style.color = type.startsWith('BLE') ? '#22d3ee' : type.startsWith('DETECT') ? '#a78bfa' : type.startsWith('TEST') ? '#f59e0b' : '#94a3b8';
+            tag.style.color = type.startsWith('BLE') ? '#8fd6c2' : type.startsWith('DETECT') ? '#c9a8d8' : type.startsWith('TEST') ? '#d8a24a' : '#a8a294';
             tag.style.fontWeight = '700';
             sum.textContent = '  ' + window.BleInspectorMod.renderEvent(ev);
             sum.style.color = 'var(--text-main)';
@@ -229,7 +231,7 @@
             c.width = 48; c.height = 14;
             c.style.verticalAlign = 'middle';
             const ctx = c.getContext('2d');
-            ctx.strokeStyle = '#38bdf8';
+            ctx.strokeStyle = '#9fc6c0';
             ctx.beginPath();
             const w = d.wave, n = w.length;
             for (let i = 0; i < n; i++) {
@@ -291,17 +293,17 @@
     function initTerminal() {
         terminal = new Terminal({
             theme: {
-                background: '#05080f',
-                foreground: '#f3f4f6',
-                cursor: '#3b82f6',
-                selectionBackground: '#1d4ed8',
+                background: '#070a07',
+                foreground: '#ece7d9',
+                cursor: '#d8a24a',
+                selectionBackground: '#4a3f22',
                 black: '#000000',
-                red: '#f43f5e',
-                green: '#10b981',
-                yellow: '#f59e0b',
-                blue: '#3b82f6',
-                magenta: '#8b5cf6',
-                cyan: '#06b6d4',
+                red: '#e0605e',
+                green: '#7ee2a8',
+                yellow: '#d8a24a',
+                blue: '#8fd6c2',
+                magenta: '#c9a8d8',
+                cyan: '#8fd6c2',
                 white: '#ffffff',
             },
             fontFamily: "'Fira Code', 'Menlo', 'Consolas', monospace",
@@ -332,9 +334,9 @@
         });
 
         terminal.writeln('\x1b[1;36m╔════════════════════════════════════════════════════════════════════════════╗');
-        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.39.0                                          ║');
+        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.42.0                                          ║');
         terminal.writeln('║   Virtual Peripherals: ST7789 TFT, SSD1306 OLED, WS2812 NeoPixels, SPI/I2C ║');
-        terminal.writeln('║   Dynamic GPIO Auto-Calibration • Load Demo Firmware to start              ║');
+        terminal.writeln('║   Nothing runs until you press Load Demo Firmware, then Run                ║');
         terminal.writeln('╚════════════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n');
     }
 
@@ -370,10 +372,10 @@
             led.style.width = '20px';
             led.style.height = '20px';
             led.style.borderRadius = '50%';
-            led.style.backgroundColor = '#111827';
-            led.style.border = '2px solid #374151';
+            led.style.backgroundColor = '#1a1e1a';
+            led.style.border = '2px solid #3a423a';
             led.style.boxShadow = '0 0 4px rgba(0, 0, 0, 0.5)';
-            led.style.transition = 'all 0.08s ease-out';
+            led.style.transition = 'background-color 0.08s ease-out, box-shadow 0.08s ease-out';
             led.title = `LED ${i}`;
             strip.appendChild(led);
         }
@@ -393,10 +395,10 @@
             const isLit = r > 10 || g > 10 || b > 10;
             if (isLit) {
                 led.style.boxShadow = `0 0 10px rgb(${r}, ${g}, ${b}), 0 0 20px rgba(${r}, ${g}, ${b}, 0.5)`;
-                led.style.borderColor = `rgba(255, 255, 255, 0.8)`;
+                led.style.borderColor = `rgba(236, 231, 217, 0.8)`;
             } else {
                 led.style.boxShadow = `0 0 4px rgba(0, 0, 0, 0.5)`;
-                led.style.borderColor = `#374151`;
+                led.style.borderColor = `#3a423a`;
             }
         }
     }
@@ -405,7 +407,7 @@
         if (!oledImageData || !oledCtx) return;
         const data = oledImageData.data;
         for (let i = 0; i < data.length; i += 4) {
-            data[i] = 3; data[i + 1] = 8; data[i + 2] = 13; data[i + 3] = 255;
+            data[i] = 10; data[i + 1] = 15; data[i + 2] = 11; data[i + 3] = 255;
         }
         oledCtx.putImageData(oledImageData, 0, 0);
     }
@@ -414,7 +416,7 @@
         if (!tftImageData || !tftCtx) return;
         const data = tftImageData.data;
         for (let i = 0; i < data.length; i += 4) {
-            data[i] = 10; data[i + 1] = 10; data[i + 2] = 15; data[i + 3] = 255;
+            data[i] = 14; data[i + 1] = 17; data[i + 2] = 14; data[i + 3] = 255;
         }
         tftCtx.putImageData(tftImageData, 0, 0);
     }
@@ -437,9 +439,9 @@
                     const isOn = (byte & (1 << bit)) !== 0;
 
                     if (isOn) {
-                        data[idx] = 0; data[idx + 1] = 255; data[idx + 2] = 255;
+                        data[idx] = 157; data[idx + 1] = 240; data[idx + 2] = 192;
                     } else {
-                        data[idx] = 3; data[idx + 1] = 8; data[idx + 2] = 13;
+                        data[idx] = 10; data[idx + 1] = 15; data[idx + 2] = 11;
                     }
                     data[idx + 3] = 255;
                 }
@@ -478,7 +480,7 @@
         const statusEl = document.getElementById('display-status');
         if (statusEl) {
             statusEl.textContent = 'ST7789 Color TFT ACTIVE';
-            statusEl.style.color = '#10b981';
+            statusEl.style.color = '#7ee2a8';
         }
     }
 
@@ -573,9 +575,26 @@
     }
 
     // --- I2C & SPI Activity Log ---
+    // Bus bursts (ST7789 splash = tens of thousands of 1-byte transfers;
+    // SSD1306 splash = 1024 px over ~10 I2C frames per display()) would flood
+    // this box with DOM rows and stall the tab. Sample the log at most ~1
+    // row / 200 ms per bus; the full stream still reaches the Peripheral
+    // Monitor report counters via emitPeripheral below.
+    let lastSpiLogT = 0;
+    let lastI2cLogT = 0;
     function logI2cActivity(act) {
         const box = document.getElementById('i2c-log');
         if (!box) return;
+        // Sample I2C rows like SPI: a display() burst is ~10 frames in one
+        // slice; unsampled rows would still cost a DOM node + scroll each.
+        const now = performance.now();
+        const hexAddrEarly = '0x' + act.addr.toString(16).toUpperCase().padStart(2, '0');
+        const hexBytesEarly = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        if (now - lastI2cLogT < 200) {
+            emitPeripheral('I2C', act.op, `[${act.op.toUpperCase()}] ${hexAddrEarly} ${hexBytesEarly}`, { addr: act.addr, op: act.op, data: act.data, reply: act.reply, __sampled: true });
+            return;
+        }
+        lastI2cLogT = now;
         if (box.children.length === 1 && box.children[0].textContent.includes('No transactions')) {
             box.innerHTML = '';
         }
@@ -635,7 +654,7 @@
         row.style.fontFamily = "'Fira Code', monospace";
         row.style.fontSize = '10px';
         row.style.whiteSpace = 'pre-wrap';
-        row.style.color = tag === 'BLE' ? '#22d3ee' : tag === 'DETECT' ? '#a78bfa' : tag === 'TEST' ? '#f59e0b' : '#94a3b8';
+        row.style.color = tag === 'BLE' ? '#8fd6c2' : tag === 'DETECT' ? '#c9a8d8' : tag === 'TEST' ? '#d8a24a' : '#a8a294';
         row.textContent = window.BleInspectorMod.renderEvent(ev);
         bleLogEl.appendChild(row);
         while (bleLogEl.children.length > 200) bleLogEl.removeChild(bleLogEl.firstChild);
@@ -698,7 +717,11 @@
         const now = Date.now();
         let show = true;
         let evtDetail = detail;
-        if (periHighFreq[proto]) {
+        // __sampled details (e.g. throttled SPI rows) never render.
+        if (detail && detail.__sampled) {
+            show = false;
+            evtDetail = { __sampled: true };
+        } else if (periHighFreq[proto]) {
             const last = periLogThrottle[proto] || 0;
             if (now - last < 400) {
                 show = false;
@@ -783,6 +806,13 @@
     function logSpiActivity(act) {
         const box = document.getElementById('i2c-log');
         if (!box) return;
+        // Sample SPI rows: 1-byte transfers arrive hundreds per frame.
+        const now = performance.now();
+        if (now - lastSpiLogT < 200) {
+            emitPeripheral('SPI', 'transfer', `[SPI] TX:${(act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}`, { data: act.data, reply: act.reply, __sampled: true });
+            return;
+        }
+        lastSpiLogT = now;
         if (box.children.length === 1 && box.children[0].textContent.includes('No transactions')) {
             box.innerHTML = '';
         }
@@ -791,7 +821,7 @@
         const hexData = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
         const hexReply = (act.reply || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
         row.innerHTML = `
-            <span style="color: #8b5cf6; font-weight: 600;">[SPI]</span>
+            <span style="color: #c9a8d8; font-weight: 600;">[SPI]</span>
             <span style="color: var(--accent-amber);">TX:${hexData.slice(0, 20)}</span>
             <span style="color: var(--accent-green);">RX:${hexReply.slice(0, 20)}</span>
         `;
@@ -854,7 +884,7 @@
         const row = document.createElement('div');
         row.className = 'i2c-entry';
         const isTx = act.type === 'tx';
-        const typeColor = isTx ? '#3b82f6' : '#10b981';
+        const typeColor = isTx ? '#8fd6c2' : '#7ee2a8';
         const typeText = isTx ? '[CAN:TX]' : '[CAN:RX]';
         const hexId = '0x' + (act.id || 0).toString(16).toUpperCase().padStart(3, '0');
         const hexData = (act.data || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
@@ -903,6 +933,69 @@
         }
     }
 
+    // --- Speed readout: guest-equivalent speed (capped at silicon) ---
+    // The WASM core retires exactly N cycles per run_batch(N), so raw host
+    // throughput is often thousands of MIPS — the laptop outruns the chip.
+    // Showing that raw number as "speed" reads as fake (a C3 tops out at
+    // 160 MHz), so both pills are capped at the selected chip's silicon max
+    // and the excess is reported honestly as faster-than-realtime virtual
+    // time: eff = wall-inclusive guest steps per second (1 s window, message
+    // + idle overhead included); x rt = eff / chip MHz (>1x = delay()s and
+    // animations run fast vs a wall clock; <1x = slower than hardware).
+    // Raw host burst lives in the MIPS tooltip for perf debugging.
+    const CHIP_MHZ = { 'esp32c3': 160, 'esp32c6': 160, 'esp32h2': 96, 'esp32c5': 240, 'esp32p4': 400, 'esp32s31': 320 };
+    let mipsWinStart = 0;
+    let mipsWinCycles = 0;
+    function renderMips(msg) {
+        const mipsEl = document.getElementById('mips-display');
+        const wallEl = document.getElementById('mips-wall');
+        const effEl = document.getElementById('mips-eff');
+        const now = performance.now();
+        if (!mipsWinStart) { mipsWinStart = now; mipsWinCycles = 0; }
+        const prevCycles = renderMips._lastCycles || 0;
+        const dCycles = Math.max(0, Math.floor(msg.cycles) - prevCycles);
+        renderMips._lastCycles = Math.floor(msg.cycles);
+        mipsWinCycles += dCycles;
+        const winMs = now - mipsWinStart;
+        const chipSel = document.getElementById('chip-select');
+        const mhz = (chipSel && CHIP_MHZ[chipSel.value]) || 160;
+        // Guest-equivalent burst rate, capped at silicon: the guest can
+        // never observe more than its own clock, so anything above the max
+        // is host burst, not chip speed. Raw value stays in the tooltip.
+        const rawInst = parseFloat(msg.mips) || 0;
+        const inst = Math.min(rawInst, mhz);
+        if (mipsEl) {
+            mipsEl.textContent = `${inst.toFixed(1)} MIPS`;
+            mipsEl.title = `Guest-equivalent speed (capped at the ${mhz} MHz silicon max). Raw host burst this slice: ${rawInst.toFixed(1)} MIPS — the laptop outruns the chip; the excess is virtual-time drift, not chip speed.`;
+        }
+        if (wallEl && typeof msg.wallMs === 'number') wallEl.textContent = `${msg.wallMs} ms/slice`;
+        if (winMs >= 1000) {
+            const rawEff = mipsWinCycles / Math.max(winMs, 1) / 1000;
+            const eff = Math.min(rawEff, mhz);
+            const xrt = eff / mhz;
+            if (effEl) {
+                effEl.textContent = `${eff.toFixed(1)} MHz eff · ${xrt.toFixed(1)}x rt`;
+                effEl.title = `Guest-equivalent wall rate, capped at ${mhz} MHz (raw ${rawEff.toFixed(1)} MHz incl. host burst). ${xrt.toFixed(2)}x realtime vs silicon: virtual time runs ${xrt >= 1 ? 'FASTER' : 'SLOWER'} than a wall clock — delay()/animations drift by this factor.`;
+            }
+            mipsWinStart = now;
+            mipsWinCycles = 0;
+        } else if (effEl && !effEl.textContent) {
+            effEl.textContent = '— MHz eff';
+        }
+    }
+
+    function resetMips() {
+        mipsWinStart = 0;
+        mipsWinCycles = 0;
+        renderMips._lastCycles = 0;
+        const mipsEl = document.getElementById('mips-display');
+        const wallEl = document.getElementById('mips-wall');
+        const effEl = document.getElementById('mips-eff');
+        if (mipsEl) mipsEl.textContent = '— MIPS';
+        if (wallEl) wallEl.textContent = '— ms/slice';
+        if (effEl) effEl.textContent = '— MHz eff';
+    }
+
     // --- Initialize Web Worker ---
     function initWorker() {
         try {
@@ -921,11 +1014,12 @@
             switch (msg.type) {
                 case 'ready':
                     wasmReady = true;
-                    document.getElementById('status-text').textContent = 'WASM Ready';
+                    document.getElementById('status-text').textContent = 'WASM Ready — pick a demo, then Load';
                     document.getElementById('load-preset-btn').disabled = false;
                     terminal.writeln('\x1b[32m[System] WASM Emulator Core initialized.\x1b[0m');
-                    // Automatically load NeoPixel Demo on launch!
-                    loadPresetFirmware('neopixel_demo');
+                    terminal.writeln('\x1b[2m[System] Idle: no firmware loaded. Pick a demo on the left, press "Load Demo Firmware", then Run.\x1b[0m');
+                    // No autostart: the bench stays stopped until the user
+                    // explicitly loads firmware and presses Run.
                     break;
 
                 case 'calibrated':
@@ -940,6 +1034,7 @@
                     firmwareLoaded = true;
                     isRunning = false;
                     updateButtons();
+                    resetMips();
                     document.getElementById('status-dot').className = 'status-dot';
                     document.getElementById('status-text').textContent = 'Loaded (Ready)';
                     terminal.writeln(`\x1b[32m[System] Firmware loaded successfully, initial PC = 0x${msg.pc.toString(16)}\x1b[0m\r\n`);
@@ -956,8 +1051,8 @@
                         const idfWarn = [msg.plan?.i2c?.tier, msg.plan?.spi?.tier].some(t => t && t.startsWith('idf-'))
                             ? `<div style="color: #f59e0b;">⚠ IDF I2C/SPI tier has no shim bytecode — running unpatched (Arduino HAL preferred)</div>` : '';
                         statusEl.innerHTML = `
-                            <div style="color: #10b981; margin-bottom: 2px;">✓ Tiers: I2C (${i2cTier}), SPI (${spiTier}), NeoPixel (${neoTier})${bleCount ? `, BLE (${bleCount})` : ''}</div>
-                            <div style="color: #06b6d4;">Shims: ${syms}</div>
+                            <div style="color: #7ee2a8; margin-bottom: 2px;">✓ Tiers: I2C (${i2cTier}), SPI (${spiTier}), NeoPixel (${neoTier})${bleCount ? `, BLE (${bleCount})` : ''}</div>
+                            <div style="color: #8fd6c2;">Shims: ${syms}</div>
                             ${idfWarn}
                         `;
                         terminal.writeln(`\x1b[36m[Patcher] Applied RISC-V shims: ${syms}\x1b[0m`);
@@ -1003,7 +1098,7 @@
                 case 'sd_activity': {
                     const dot = document.getElementById('sd-act-dot');
                     if (dot) {
-                        dot.style.background = '#10b981';
+                        dot.style.background = '#7ee2a8';
                         dot.style.boxShadow = '0 0 8px rgba(16, 185, 129, 0.6)';
                         setTimeout(() => {
                             dot.style.background = '#374151';
@@ -1122,7 +1217,7 @@
                             ? (msg.connected ? 'real radio: connected' : 'real radio: connecting…')
                             : 'local stub';
                         el.style.color = msg.mode === 'bumble'
-                            ? (msg.connected ? '#10b981' : '#f59e0b')
+                            ? (msg.connected ? '#7ee2a8' : '#d8a24a')
                             : 'var(--text-dim)';
                     }
                     break;
@@ -1142,7 +1237,7 @@
                 }
 
                 case 'status':
-                    document.getElementById('mips-display').textContent = `${msg.mips} MIPS`;
+                    renderMips(msg);
                     document.getElementById('cycle-display').textContent = `${Math.floor(msg.cycles)} cycles`;
                     break;
 
@@ -1167,6 +1262,7 @@
                     initNeoPixels();
                     resetBleMonitor();
                     resetPeripheralMonitor();
+                    resetMips();
                     if (msg.reloaded) {
                         terminal.writeln('\x1b[33m[System] Emulator reset completed\x1b[0m');
                         firmwareLoaded = true;
@@ -1205,35 +1301,125 @@
     }
 
     // --- Load Preset Firmware Demo ---
+    // Per-chip firmware: samples/<chip>/ for C6/H2/C5/P4, samples/ root
+    // for C3 (legacy flat names). S31 has no toolchain builds yet.
+    // Canonical demo keys (stable across chips — the dropdown value never
+    // changes, only the resolved file path does).
+    const PRESET_DEMOS = [
+        { key: 'neopixel_demo', flat: 'neopixel_demo', titled: 'NeoPixelDemo', title: 'WS2812 NeoPixel Strip (8x RGB Rainbow)' },
+        { key: 'adcpwm_demo', flat: 'adcpwm_demo', titled: 'ADCPWMDemo', title: 'ADC & PWM Demo (analogRead + analogWrite)' },
+        { key: 'i2s_demo', flat: 'i2s_demo', titled: 'I2SDemo', title: 'I2S Digital Audio (16kHz 16-bit PCM)' },
+        { key: 'twai_demo', flat: 'twai_demo', titled: 'TWAIDemo', title: 'TWAI / CAN Bus (500 kbps ISO 11898-1)', skipChips: ['esp32c5'] },
+        { key: 'sdcard_demo', flat: 'sdcard_demo', titled: 'SDCardDemo', title: 'Virtual SD Card FAT16 (SPI CS=7)' },
+        { key: 'st7789_demo', flat: 'st7789_demo', titled: 'ST7789Demo', title: 'ST7789 Color TFT Graphics (240x240)' },
+        { key: 'oled_demo', flat: 'oled_demo', titled: 'OLEDDemo', title: 'SSD1306 OLED Graphics (128x64)' },
+        { key: 'blink', flat: 'blink', titled: 'Blink', title: 'Blink LED (GPIO2 Output)' },
+        { key: 'i2cread', flat: 'i2cread', titled: 'I2CRead', title: 'I2C Sensor Read (0x68 IMU)' },
+        { key: 'spidemo', flat: 'spidemo', titled: 'SPIDemo', title: 'SPI Master Transfer (Full Duplex)' },
+        { key: 'busprobe', flat: 'busprobe', titled: null, title: 'Dual Bus Probe (I2C + SPI)', c3onlyFiles: true },
+        { key: 'touch_demo', flat: 'touch_demo', titled: 'TouchDemo', title: 'Touch Pad Sensor (virtual)' },
+        { key: 'dac_demo', flat: 'dac_demo', titled: 'DACDemo', title: 'DAC Output 8-bit (virtual)' },
+        { key: 'sdmmc_demo', flat: 'sdmmc_demo', titled: 'SDMMCDemo', title: 'SDMMC 4-bit Host (virtual)' },
+        { key: 'camera_demo', flat: 'camera_demo', titled: 'CameraDemo', title: 'Camera Grayscale Frame (virtual)' },
+        { key: 'lcd_demo', flat: 'lcd_demo', titled: 'LCDDemo', title: 'LCD Panel RGB565 Blits (virtual)' },
+    ];
+    const PRESET_BLE = [
+        { key: 'bledemo', title: 'BLE Server Demo (NimBLE)' },
+        { key: 'bledetect', title: 'BLE VHCI Detector' },
+        { key: 'bletest', title: 'BLE VHCI Call Test' },
+    ];
+    const CHIP_SUBDIR = { esp32c6: 'c6', esp32h2: 'h2', esp32c5: 'c5', esp32p4: 'p4' };
+
+    // Resolve a demo key to fetchable paths for the given chip.
+    // Returns { bin, elf, title } or { missing, title } when the chip has
+    // no build (S31, TWAI-on-C5, busprobe off-C3).
+    function resolvePreset(key, chip) {
+        const sub = CHIP_SUBDIR[chip];
+        const d = PRESET_DEMOS.find(x => x.key === key);
+        if (d) {
+            if ((d.skipChips || []).includes(chip)) return { missing: `no ${d.title} build for ${chip} (no TWAI on silicon)`, title: d.title };
+            if (d.c3onlyFiles && sub) return { missing: `no ${d.title} build for ${chip} (C3-only)`, title: d.title };
+            const base = sub && d.titled ? `samples/${sub}/${d.titled}` : `samples/${d.flat}`;
+            return { bin: `${base}.merged.bin`, elf: `${base}.elf`, title: `${d.title} [${chip}]` };
+        }
+        // BLE presets are C3-only local builds (gitignored); never resolve
+        // off-C3, and on C3 they may still be absent in a fresh checkout.
+        const b = PRESET_BLE.find(x => x.key === key);
+        if (b) {
+            const name = { bledemo: 'BLEDemo', bledetect: 'BLEDetect', bletest: 'BLETest' }[key];
+            return {
+                bin: `spike/sketches/${name}/build/esp32.esp32.esp32c3/${name}.ino.merged.bin`,
+                elf: `spike/sketches/${name}/build/esp32.esp32.esp32c3/${name}.ino.elf`,
+                title: `${b.title} [C3-only local build]`,
+                c3only: true,
+            };
+        }
+        return { missing: `unknown preset ${key}`, title: key };
+    }
+
+    // Rebuild the preset dropdown for the selected chip: per-chip builds
+    // stay selectable, unavailable ones are marked, BLE stays C3-only.
+    function refreshPresetOptions() {
+        const sel = document.getElementById('preset-select');
+        const chipNow = (document.getElementById('chip-select') || {}).value || 'esp32c3';
+        if (!sel) return;
+        const cur = sel.value;
+        sel.innerHTML = '';
+        for (const d of PRESET_DEMOS) {
+            const r = resolvePreset(d.key, chipNow);
+            const opt = document.createElement('option');
+            opt.value = d.key;
+            opt.textContent = r.missing ? `${d.title} (no ${chipNow} build)` : d.title;
+            if (r.missing) opt.disabled = true;
+            sel.appendChild(opt);
+        }
+        if (chipNow === 'esp32c3') {
+            for (const b of PRESET_BLE) {
+                const opt = document.createElement('option');
+                opt.value = b.key;
+                opt.textContent = `${b.title} (local build)`;
+                sel.appendChild(opt);
+            }
+        }
+        if ([...sel.options].some(o => o.value === cur && !o.disabled)) sel.value = cur;
+    }
+
     async function loadPresetFirmware(key) {
         if (!worker || !wasmReady) return;
         const btn = document.getElementById('load-preset-btn');
         btn.disabled = true;
         btn.textContent = '⏳ Loading Demo...';
 
-        const filenames = {
-            neopixel_demo: { bin: 'samples/neopixel_demo.merged.bin', elf: 'samples/neopixel_demo.elf', title: 'Adafruit NeoPixel 8-LED Strip' },
-            adcpwm_demo: { bin: 'samples/adcpwm_demo.merged.bin', elf: 'samples/adcpwm_demo.elf', title: 'ADC & PWM Demo (analogRead + analogWrite)' },
-            i2s_demo: { bin: 'samples/i2s_demo.merged.bin', elf: 'samples/i2s_demo.elf', title: 'I2S Digital Audio Demo (16kHz Stereo PCM)' },
-            twai_demo: { bin: 'samples/twai_demo.merged.bin', elf: 'samples/twai_demo.elf', title: 'TWAI / CAN Bus Controller Demo (500 kbps)' },
-            sdcard_demo: { bin: 'samples/sdcard_demo.merged.bin', elf: 'samples/sdcard_demo.elf', title: 'Virtual SD Card FAT16 (SPI CS=7)' },
-            st7789_demo: { bin: 'samples/st7789_demo.merged.bin', elf: 'samples/st7789_demo.elf', title: 'Adafruit ST7789 Color TFT Demo (240x240)' },
-            oled_demo: { bin: 'samples/oled_demo.merged.bin', elf: 'samples/oled_demo.elf', title: 'Adafruit SSD1306 OLED Demo (128x64)' },
-            blink: { bin: 'samples/blink.merged.bin', elf: 'samples/blink.elf', title: 'Blink GPIO2 Demo' },
-            i2cread: { bin: 'samples/i2cread.merged.bin', elf: 'samples/i2cread.elf', title: 'I2C Sensor Read (0x68)' },
-            spidemo: { bin: 'samples/spidemo.merged.bin', elf: 'samples/spidemo.elf', title: 'SPI Master Transfer' },
-            busprobe: { bin: 'samples/busprobe.merged.bin', elf: 'samples/busprobe.elf', title: 'Dual Bus Probe (I2C + SPI)' },
-            touch_demo: { bin: 'samples/touch_demo.merged.bin', elf: 'samples/touch_demo.elf', title: 'Touch Pad Sensor (virtual)' },
-            dac_demo: { bin: 'samples/dac_demo.merged.bin', elf: 'samples/dac_demo.elf', title: 'DAC Output 8-bit (virtual)' },
-            sdmmc_demo: { bin: 'samples/sdmmc_demo.merged.bin', elf: 'samples/sdmmc_demo.elf', title: 'SDMMC 4-bit Host (virtual)' },
-            camera_demo: { bin: 'samples/camera_demo.merged.bin', elf: 'samples/camera_demo.elf', title: 'Camera Grayscale Frame (virtual)' },
-            lcd_demo: { bin: 'samples/lcd_demo.merged.bin', elf: 'samples/lcd_demo.elf', title: 'LCD Panel RGB565 Blits (virtual)' },
-            bledemo: { bin: 'spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/BLEDemo.ino.merged.bin', elf: 'spike/sketches/BLEDemo/build/esp32.esp32.esp32c3/BLEDemo.ino.elf', title: 'BLE Server Demo (NimBLE)' },
-            bledetect: { bin: 'spike/sketches/BLEDetect/build/esp32.esp32.esp32c3/BLEDetect.ino.merged.bin', elf: 'spike/sketches/BLEDetect/build/esp32.esp32.esp32c3/BLEDetect.ino.elf', title: 'BLE VHCI Detector' },
-            bletest: { bin: 'spike/sketches/BLETest/build/esp32.esp32.esp32c3/BLETest.ino.merged.bin', elf: 'spike/sketches/BLETest/build/esp32.esp32.esp32c3/BLETest.ino.elf', title: 'BLE VHCI Call Test' },
-        };
+        const chipNow = (document.getElementById('chip-select') || {}).value || 'esp32c3';
+        let target = resolvePreset(key, chipNow);
+        // Unavailable for this chip: fall back to blink on the same chip
+        // so the click always does something useful.
+        if (target.missing) {
+            terminal.writeln(`\x1b[33m[Preset] ${target.missing} — loading Blink instead.\x1b[0m`);
+            target = resolvePreset('blink', chipNow);
+            key = 'blink';
+        }
 
-        const target = filenames[key] || filenames.neopixel_demo;
+        if (target.c3only && chipNow !== 'esp32c3') {
+            terminal.writeln(`\x1b[33m[Preset] ${target.title} is a C3-only build — switch Target Chip to ESP32-C3 first.\x1b[0m`);
+            btn.disabled = false;
+            btn.textContent = 'Load Demo Firmware';
+            return;
+        }
+        // C3-only local BLE builds may be absent in a fresh checkout
+        // (gitignored build dirs): fail fast with a clear message instead
+        // of a generic fetch error.
+        if (target.c3only) {
+            try {
+                const head = await fetch(target.bin, { method: 'HEAD' });
+                if (!head.ok) throw new Error('absent');
+            } catch (_) {
+                terminal.writeln(`\x1b[33m[Preset] ${target.title}: no local build found (spike/sketches/*/build is gitignored — build the sketch with arduino-cli first).\x1b[0m`);
+                btn.disabled = false;
+                btn.textContent = 'Load Demo Firmware';
+                return;
+            }
+        }
         terminal.writeln(`\x1b[35m[Preset] Fetching ${target.title}...\x1b[0m`);
 
         try {
@@ -1265,17 +1451,15 @@
 
             applyPresetTags(key);
 
-            setTimeout(() => {
-                if (firmwareLoaded && !isRunning) {
-                    startExecution();
-                }
-            }, 300);
+            // No autostart: loading stages the firmware and leaves the bench
+            // stopped. The user presses Run when ready (explicit > magic).
+            terminal.writeln('\x1b[2m[System] Firmware staged — press Run to start the emulator.\x1b[0m');
 
         } catch (err) {
             terminal.writeln(`\x1b[31m[Error] Failed to load preset: ${err.message}\x1b[0m`);
         } finally {
             btn.disabled = false;
-            btn.textContent = '⚡ Load Demo Firmware';
+            btn.textContent = 'Load Demo Firmware';
         }
     }
 
@@ -1312,7 +1496,10 @@
         });
 
         const chipSel = document.getElementById('chip-select');
-        if (chipSel) chipSel.addEventListener('change', () => setGpioChip(chipSel.value));
+        if (chipSel) chipSel.addEventListener('change', () => {
+            setGpioChip(chipSel.value);
+            refreshPresetOptions();
+        });
 
         document.getElementById('firmware-file').addEventListener('change', async (e) => {
             const file = e.target.files[0];
@@ -1605,8 +1792,8 @@
                 if (!audioMuted && !audioCtx) {
                     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
                 }
-                audioBtn.textContent = audioMuted ? '🔇 Muted' : '🔊 Playing';
-                audioBtn.style.color = audioMuted ? 'var(--text-muted)' : '#10b981';
+                audioBtn.textContent = audioMuted ? 'Muted' : 'Playing';
+                audioBtn.style.color = audioMuted ? 'var(--text-muted)' : '#7ee2a8';
             });
         }
 
@@ -1663,6 +1850,7 @@
         setupControls();
         const sel = document.getElementById('chip-select');
         if (sel) setGpioChip(sel.value);
+        refreshPresetOptions();
         initWorker();
     });
 })();

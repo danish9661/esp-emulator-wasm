@@ -173,10 +173,19 @@ export class NeoPixelStrip {
  * Emulates the ST7789 240x240 16-bit RGB565 Color TFT Display Controller.
  */
 export class ST7789Device {
-    constructor(width = 240, height = 240) {
+    constructor(width = 240, height = 240, { dcPin = null, gpio = null } = {}) {
         this.width = width;
         this.height = height;
         this.rgbaBuffer = new Uint8Array(width * height * 4);
+        // Data/Command select: Adafruit drives a DC gpio per byte
+        // (TFT_DC=2 in our ST7789Demo). When dcPin+gpio are bound, DC level
+        // sampled per byte routes command bytes vs pixel bytes; without it
+        // (legacy) we keep the old byte-sniffing behavior.
+        this.dcPin = dcPin;
+        this._gpio = null;
+        this._dcListenerOff = null;
+        this.dcLevel = true; // data by default
+        if (gpio) this.bindDcGpio(gpio);
 
         this.colStart = 0;
         this.colEnd = width - 1;
@@ -193,13 +202,37 @@ export class ST7789Device {
 
         this.onFrameCallback = null;
         this.dirty = false;
+        // Coalesced frame emission: pixel bursts (fillScreen = 115200 px)
+        // set dirty per pixel; the frame is cloned + posted at most once per
+        // JS turn via flushFrame(). Sync paths (headless tests, reset) can
+        // still force delivery with flushFrame().
+        this._frameQueued = false;
     }
 
     onFrame(cb) {
         this.onFrameCallback = cb;
     }
 
+    /** Bind the DC gpio controller (tracks pin level per SPI byte). */
+    bindDcGpio(gpio, dcPin = this.dcPin) {
+        if (this._dcListenerOff) { try { this._dcListenerOff(); } catch (_) {} this._dcListenerOff = null; }
+        this._gpio = gpio || null;
+        if (dcPin !== undefined && dcPin !== null) this.dcPin = dcPin;
+        if (gpio && this.dcPin !== null && this.dcPin !== undefined &&
+            typeof gpio.pin === 'function' && gpio.pin(this.dcPin)) {
+            const pin = gpio.pin(this.dcPin);
+            this.dcLevel = !!pin.value;
+            this._dcListenerOff = pin.addListener((level) => { this.dcLevel = !!level; });
+        }
+        return () => { if (this._dcListenerOff) { try { this._dcListenerOff(); } catch (_) {} this._dcListenerOff = null; } };
+    }
+
     notifyFrame() {
+        // Direct control events only (display on/off): deliver now.
+        this._emitFrame();
+    }
+
+    _emitFrame() {
         if (this.onFrameCallback) {
             this.onFrameCallback({
                 width: this.width,
@@ -209,13 +242,27 @@ export class ST7789Device {
             });
         }
         this.dirty = false;
+        this._frameQueued = false;
+    }
+
+    _markDirty() {
+        this.dirty = true;
+        if (this._frameQueued) return;
+        this._frameQueued = true;
+        queueMicrotask(() => {
+            if (this.dirty) this._emitFrame();
+            else this._frameQueued = false;
+        });
+    }
+
+    /** Force-deliver a pending coalesced frame (tests, reset paths). */
+    flushFrame() {
+        if (this.dirty) this._emitFrame();
+        else this._frameQueued = false;
     }
 
     onTransferByte(b) {
         this.#processByte(b);
-        if (this.dirty) {
-            this.notifyFrame();
-        }
         return 0x00;
     }
 
@@ -224,12 +271,30 @@ export class ST7789Device {
         for (let i = 0; i < bytes.length; i++) {
             this.#processByte(bytes[i]);
         }
-        if (this.dirty) {
-            this.notifyFrame();
+    }
+
+    // Sample the DC line for this byte. Returns 'cmd' | 'data' | null
+    // (null = no DC info, caller falls back to byte-sniffing).
+    // Priority: (1) dcLevel override stamped per byte by the worker's DC
+    // mirror (fresh OUT read before each SPI frame); (2) live gpio pin
+    // (headless core path, gpio.sync runs before APC routing).
+    #dcMode() {
+        if (this._dcStamped === true && typeof this.dcLevel === 'boolean') {
+            return this.dcLevel ? 'data' : 'cmd';
         }
+        if (this.dcPin === null || this.dcPin === undefined || !this._gpio) return null;
+        try {
+            const pin = this._gpio.pin(this.dcPin);
+            if (!pin) return null;
+            return pin.value ? 'data' : 'cmd';
+        } catch (_) { return null; }
     }
 
     #processByte(b) {
+        const mode = this.#dcMode();
+        if (mode === 'cmd') { this.#processCommandByte(b); return; }
+        if (mode === 'data') { this.#processDataByte(b); return; }
+        // Legacy path (no DC binding): old byte-sniffing behavior.
         if (this.paramQueue.length > 0) {
             const handler = this.paramQueue.shift();
             handler(b);
@@ -243,11 +308,44 @@ export class ST7789Device {
                 const rgb565 = (this.highByte << 8) | b;
                 this.highByte = null;
                 this.#writePixelRgb565(rgb565);
-                this.dirty = true;
+                this._markDirty();
             }
             return;
         }
 
+        this.#processCommandByte(b);
+    }
+
+    #processDataByte(b) {
+        // DC=high: everything is payload — command params OR pixel data.
+        if (this.paramQueue.length > 0) {
+            const handler = this.paramQueue.shift();
+            handler(b);
+            return;
+        }
+        if (this.inRamWrite) {
+            if (this.highByte === null) {
+                this.highByte = b;
+            } else {
+                const rgb565 = (this.highByte << 8) | b;
+                this.highByte = null;
+                this.#writePixelRgb565(rgb565);
+                this._markDirty();
+            }
+            return;
+        }
+        // Data outside RAMWR with no pending params: stray byte, ignore
+        // (legacy path would misread it as a command — e.g. pixel 0x2C
+        // re-entering RAMWR — which is the torn-display bug).
+    }
+
+    #processCommandByte(b) {
+        // DC=low (or legacy sniffing): every byte is a command/register.
+        if (this.paramQueue.length > 0) {
+            const handler = this.paramQueue.shift();
+            handler(b);
+            return;
+        }
         // Parse commands
         if (b === 0x01) {
             this.inRamWrite = false;
@@ -255,10 +353,13 @@ export class ST7789Device {
         } else if (b === 0x11) {
             this.inRamWrite = false;
         } else if (b === 0x29) {
+            // Display-ON: set the flag directly and deliver the frame now.
+            // (Do NOT route through _markDirty(): the queued microtask would
+            // fire later and emit a duplicate empty frame.)
             this.displayOn = true;
             this.inRamWrite = false;
             this.dirty = true;
-            this.notifyFrame();
+            this._emitFrame();
         } else if (b === 0x28) {
             this.displayOn = false;
             this.inRamWrite = false;
@@ -346,8 +447,25 @@ export class SSD1306Device {
         this.contrast = 0x7f;
 
         this.cmdQueue = [];
+        // Bare-param routing for window/contrast commands whose params
+        // arrive as bare bytes across split I2C frames (see #processCommand).
+        this._bareParam = null;
         this.onFrameCallback = null;
         this.dirty = false;
+        // Same coalescing as ST7789: a display() burst is 1024 data bytes
+        // split across several I2C W frames; emit at most one frame per JS
+        // turn. flushFrame() forces delivery (tests, reset paths).
+        this._frameQueued = false;
+        // Sticky data continuation: Adafruit sends the 0x40 control byte
+        // once, then streams raw data across SEPARATE I2C transactions. A
+        // frame that arrives with no control byte continues the previous
+        // data run instead of being misread as control bytes.
+        this._inDataRun = false;
+        // Burst accounting for exact frame-boundary flush (see onWrite
+        // tail): armed by the 0x21 column-window command that opens each
+        // display() burst, counts data-fill bytes until 1024 = one frame.
+        this._newBurstArmed = false;
+        this._burstBytes = 0;
     }
 
     onFrame(cb) {
@@ -355,6 +473,10 @@ export class SSD1306Device {
     }
 
     notifyFrame() {
+        this._emitFrame();
+    }
+
+    _emitFrame() {
         if (this.onFrameCallback) {
             this.onFrameCallback({
                 width: this.width,
@@ -363,38 +485,199 @@ export class SSD1306Device {
                 inverted: this.inverted,
                 displayOn: this.displayOn,
             });
+            this._framesOut = (this._framesOut || 0) + 1;
         }
         this.dirty = false;
+        this._frameQueued = false;
+    }
+
+    _markDirty() {
+        this.dirty = true;
+        if (this._frameQueued) return;
+        this._frameQueued = true;
+        queueMicrotask(() => {
+            if (this.dirty) this._emitFrame();
+            else this._frameQueued = false;
+        });
+    }
+
+    /** Force-deliver a pending coalesced frame (tests, reset paths). */
+    flushFrame() {
+        if (this.dirty) this._emitFrame();
+        else this._frameQueued = false;
+    }
+
+    // Single-param commands: contrast/timing/charge-pump/multiplex (param
+    // inline when present, else next frame's [0x00, PARAM] via _bareParam).
+    #takesInlineParam(cmd) {
+        return cmd === 0x81 || cmd === 0xD5 || cmd === 0xD3 || cmd === 0x8D ||
+            cmd === 0xDA || cmd === 0xD9 || cmd === 0xDB || cmd === 0xA8;
+    }
+
+    // Bare command openers: bytes that can start a command outside a
+    // Co=1 [0x80,cmd] pair. ONLY the column/page window commands qualify
+    // (0x21/0x22): Adafruit calls those via ssd1306_commandList (bare bytes
+    // that can split across 32-byte Wire frames), while every OTHER command
+    // in the init sequence goes through ssd1306_command1 (framed Co=1
+    // [0x80,cmd] pairs — see the trace: [00 81 CF] works because 0x00 is
+    // Co=0-command and 0x81 decodes as a COMMAND, not data). Pixel data
+    // collides with every other value constantly (0xD9 precharge level, or
+    // any bitmap byte), so those must never abort the data run.
+    #looksLikeBareCommand(b) {
+        return b === 0x21 || b === 0x22;
     }
 
     onWrite(bytes) {
         if (!bytes || bytes.length === 0) return true;
 
         let i = 0;
+        // Raw continuation (no control byte): safety net only. Real firmware
+        // prefixes EVERY transaction with a control byte (command frames with
+        // 0x00/0x80, data chunks with 0x40 — verified on the wire), so a
+        // frame starting with any control byte always goes to the parser
+        // below, even inside a data run. Otherwise display()'s command
+        // preamble ([00 22 00 FF 21]...) would be eaten as pixels and shift
+        // the whole image — the torn-OLED bug. Bare 0x21/0x22 window openers
+        // (no per-byte control) still parse as commands via the heuristic.
+        if (this._inDataRun && (this._bareParam === null || this._bareParam === undefined) &&
+            this.cmdQueue.length === 0 && bytes.length > 1 &&
+            bytes[0] !== 0x00 && bytes[0] !== 0x80 &&
+            bytes[0] !== 0x40 && bytes[0] !== 0xC0 &&
+            !this.#looksLikeBareCommand(bytes[0])) {
+            for (const b of bytes) this.#writeDataByte(b);
+            this._markDirty();
+            return true;
+        }
+
+        // Split-transaction params: every I2C transaction starts with a
+        // control byte, so when a multi-byte command's param lands in the
+        // next transaction the frame looks like [0x00, PARAM] — skip the
+        // frame control, the pending handler eats the param positionally.
+        // (Within a frame, params are already positional — no skipping.
+        // Without this, [00 14] after 0x8D eats 0x00 as the param and the
+        // real 0x14 corrupts the column pointer — the torn-OLED bug.)
+        // GUARD: only skip when the second byte is NOT itself a plausible
+        // command opener. A new command frame [0x00, CMD] (e.g. [00 AE]
+        // display-off, or [00 00] which is a page-0/col-0 setter pair) must
+        // parse normally. Exception: the byte IS the awaited param type —
+        // a column/page window start/end (0x00/0x7F/...) or a timing value
+        // like 0x14 following 0x8D. Heuristic: skip only if byte[1] is NOT
+        // a known no-param command AND no window is currently mid-take...
+        // Simpler correct rule: the pending handler ALWAYS wins — a stale
+        // _bareParam cannot exist because every arming command completes
+        // within its frame except split windows, and a split window's next
+        // frame is BY CONSTRUCTION its param ([00 00] after [..21] is the
+        // start=0x00, not a col-setter). So: pending handler wins, always.
+        if ((this._bareParam !== null && this._bareParam !== undefined) &&
+            bytes.length > 1 && (bytes[0] === 0x00 || bytes[0] === 0x80)) {
+            i = 1;
+        }
+
+        // Command/data mode for the REST of this frame. The FIRST byte of a
+        // frame is always a control byte (Co/D-C bits live ONLY there):
+        //   0x00 = command stream (Co=0,D/C=0): EVERY following byte is a
+        //          command or a positional param until frame end.
+        //   0x80 = single command (Co=1,D/C=0): next byte is ONE command.
+        //   0x40 = data fill (Co=0,D/C=1): every following byte is a pixel.
+        //   0xC0 = single data (Co=1,D/C=1): next byte is ONE pixel.
+        // Continuation frames inside a display() burst carry NO control byte
+        // (raw continuation path above). This replaces the old per-byte
+        // control-bit test, which misread command bytes like 0xD5 (bit 6
+        // set) as data controls — the col=1 corruption.
+        let mode = null; // 'cmd-stream' | 'cmd-once' | 'data-fill' | 'data-once'
+        let cmdOnceUsed = false;
+        let dataOnceUsed = false;
+
         while (i < bytes.length) {
-            const ctrl = bytes[i++];
-            if (i >= bytes.length) break;
-
-            const isData = (ctrl & 0x40) !== 0;
-            const isContinuation = (ctrl & 0x80) === 0;
-
-            if (isData) {
-                const chunk = isContinuation ? [bytes[i++]] : bytes.slice(i);
-                if (!isContinuation) i = bytes.length;
-
-                for (const b of chunk) {
-                    this.#writeDataByte(b);
-                }
-                this.dirty = true;
-            } else {
-                const cmd = bytes[i++];
-                this.#processCommand(cmd);
+            // Bare command parameter: a pending window/contrast command
+            // eats the next byte positionally, whatever it is (0x00..0xFF —
+            // NOT a new control byte). Checked BEFORE mode decoding.
+            if (this._bareParam !== null && this._bareParam !== undefined) {
+                const fn = this._bareParam;
+                this._bareParam = null;
+                fn(bytes[i++]);
+                continue;
             }
+
+            // First byte of the frame selects the mode (control byte).
+            if (mode === null) {
+                const ctrl = bytes[i++];
+                if (ctrl === 0x00) { mode = 'cmd-stream'; continue; }
+                if (ctrl === 0x80) { mode = 'cmd-once'; cmdOnceUsed = false; continue; }
+                if (ctrl === 0x40) {
+                    mode = 'data-fill';
+                    this._inDataRun = false;
+                    continue;
+                }
+                if (ctrl === 0xC0) { mode = 'data-once'; dataOnceUsed = false; continue; }
+                // Unknown first byte + open data run = raw continuation
+                // (covered above, but double-guard for single-byte frames).
+                // Otherwise treat as a bare command byte (init windows).
+                if (this._inDataRun && (this._bareParam === null || this._bareParam === undefined) &&
+                    this.cmdQueue.length === 0) {
+                    this.#writeDataByte(ctrl);
+                    this._markDirty();
+                    mode = 'data-fill';
+                    continue;
+                }
+                mode = 'cmd-stream';
+                this.#processCommand(ctrl);
+                continue;
+            }
+
+            if (mode === 'data-fill') {
+                this.#writeDataByte(bytes[i++]);
+                this._markDirty();
+                if (this._newBurstArmed) this._burstBytes++;
+                continue;
+            }
+            if (mode === 'data-once') {
+                if (!dataOnceUsed) {
+                    this.#writeDataByte(bytes[i++]);
+                    this._markDirty();
+                    dataOnceUsed = true;
+                } else {
+                    // Trailing bytes after single-data: re-parse as a new
+                    // frame segment (defensive; should not happen).
+                    mode = null;
+                }
+                continue;
+            }
+            if (mode === 'cmd-once') {
+                if (!cmdOnceUsed) {
+                    this._inDataRun = false;
+                    this.#processCommand(bytes[i++]);
+                    cmdOnceUsed = true;
+                } else {
+                    mode = null;
+                }
+                continue;
+            }
+            // cmd-stream: every byte is a command or positional param.
+            this._inDataRun = false;
+            this.#processCommand(bytes[i++]);
         }
 
-        if (this.dirty) {
-            this.notifyFrame();
+        // A data-fill frame keeps the run open for raw continuation frames
+        // (display() burst across Wire splits) only when it delivered a full
+        // quantum: fills are 16+/32B frames; command streams are <= 6B
+        // (longest observed [00 db 40 a4 a6 2e]).
+        if (mode === 'data-fill') {
+            if (bytes.length >= 9) this._inDataRun = true;
+            else this._inDataRun = false;
         }
+
+        // End of a full display() burst: Adafruit always writes exactly
+        // WIDTH*PAGES (1024) pixel bytes per display() call. Once 1024 burst
+        // bytes have landed, the frame is COMPLETE — flush it immediately so
+        // the viewer shows exact frame boundaries instead of a time-sliced
+        // coalesced frame (half of frame N + head of frame N+1 = tear).
+        if (this._newBurstArmed && this._burstBytes >= this.width * this.pages) {
+            this._newBurstArmed = false;
+            this._burstBytes = 0;
+            this.flushFrame();
+        }
+
         return true;
     }
 
@@ -431,30 +714,58 @@ export class SSD1306Device {
     }
 
     #processCommand(cmd) {
+        // Bare-param fast path (see onWrite head): a pending window/contrast
+        // param eats the next byte positionally. Only reached for framed
+        // [0x80,cmd] pairs — the onWrite fast path handles bare bytes first.
+        if (this._bareParam !== null && this._bareParam !== undefined) {
+            const fn = this._bareParam;
+            this._bareParam = null;
+            fn(cmd);
+            return;
+        }
         if (this.cmdQueue.length > 0) {
             const pending = this.cmdQueue.shift();
             pending(cmd);
             return;
         }
 
+        // Param commands arm _bareParam ONLY (no cmdQueue twin): a bare
+        // param byte arriving via the onWrite fast path is consumed
+        // positionally; a framed [0x80,param] pair routes through the normal
+        // #processCommand control flow below, which checks _bareParam first
+        // (twin rule at the head). This avoids the stale-closure leak where
+        // the queue twin survived the bare path and ate the NEXT command.
         if (cmd === 0x20) {
-            this.cmdQueue.push((val) => { this.addressingMode = val & 0x03; });
+            // Single-param (addressing mode): same bare-param split risk.
+            this._bareParam = (val) => { this.addressingMode = val & 0x03; };
         } else if (cmd === 0x21) {
-            this.cmdQueue.push((start) => {
-                this.cmdQueue.push((end) => {
+            // Set-column-window 0x21 start end: params may arrive as bare
+            // bytes across split I2C frames (no per-byte control). _bareParam
+            // routes the next TWO bare bytes here regardless of framing.
+            // FRAME BOUNDARY: a new display() burst starts with the command
+            // preamble 22..21 (page window, then column window). Seeing 0x21
+            // while a previous frame is still dirty means the firmware has
+            // moved on — flush the completed frame FIRST so the viewer never
+            // shows frame N+1's first bytes inside frame N (the OLED tear).
+            if (this.dirty) this.flushFrame();
+            this._newBurstArmed = true;
+            this._burstBytes = 0;
+            this._bareParam = (start) => {
+                this._bareParam = (end) => {
                     this.colStart = Math.min(start, this.width - 1);
                     this.colEnd = Math.min(end, this.width - 1);
                     this.colPtr = this.colStart;
-                });
-            });
+                };
+            };
         } else if (cmd === 0x22) {
-            this.cmdQueue.push((start) => {
-                this.cmdQueue.push((end) => {
+            // Set-page-window 0x22 start end: same bare-param note as 0x21.
+            this._bareParam = (start) => {
+                this._bareParam = (end) => {
                     this.pageStart = Math.min(start, this.pages - 1);
                     this.pageEnd = Math.min(end, this.pages - 1);
                     this.pagePtr = this.pageStart;
-                });
-            });
+                };
+            };
         } else if (cmd >= 0xb0 && cmd <= 0xb7) {
             this.pagePtr = Math.min(cmd & 0x07, this.pages - 1);
         } else if ((cmd & 0xf0) === 0x00) {
@@ -462,18 +773,21 @@ export class SSD1306Device {
         } else if ((cmd & 0xf0) === 0x10) {
             this.colPtr = (this.colPtr & 0x0f) | ((cmd & 0x0f) << 4);
         } else if (cmd === 0x81) {
-            this.cmdQueue.push((val) => { this.contrast = val; });
+            // Single-param command (contrast): _bareParam only (see note).
+            this._bareParam = (val) => { this.contrast = val; };
         } else if (cmd === 0xa6) {
             this.inverted = false;
         } else if (cmd === 0xa7) {
             this.inverted = true;
         } else if (cmd === 0xae) {
             this.displayOn = false;
+            this._inDataRun = false;
         } else if (cmd === 0xaf) {
             this.displayOn = true;
-            this.dirty = true;
+            this._markDirty();
         } else if (cmd === 0x8d || cmd === 0xd5 || cmd === 0xd9 || cmd === 0xda || cmd === 0xdb || cmd === 0xd3) {
-            this.cmdQueue.push(() => {});
+            // Single-param (timing/charge-pump): _bareParam only (see note).
+            this._bareParam = () => {};
         }
     }
 

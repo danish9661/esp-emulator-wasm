@@ -253,9 +253,13 @@ export class ESP32C3 {
      */
     step(instructionCount = 100000) {
         const rawOutput = this.emu.run_batch(instructionCount);
+        // gpio.sync() BEFORE the APC stream: the TFT DC line (TFT_DC=2 on
+        // our ST7789Demo) is sampled per SPI byte, so pin levels must be
+        // current before the first spiByte of this batch is routed.
         this.gpio.sync();
 
         return this.uart0.processOutputChunk(rawOutput, {
+            gpio: this.gpio,
             i2c: this.i2c,
             spi: this.spi,
             neopixel: this.neopixel,

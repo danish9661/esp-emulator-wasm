@@ -107,7 +107,7 @@ export class UARTController {
         return cleanText;
     }
 
-    _routeApcFrame(kind, body, { i2c, spi, neopixel, adc, pwm, i2s, twai, ble, touch, dac, sdmmc, camera, lcd, thread }) {
+    _routeApcFrame(kind, body, { i2c, spi, gpio, neopixel, adc, pwm, i2s, twai, ble, touch, dac, sdmmc, camera, lcd, thread }) {
         switch (kind) {
             case 'B': { // BLE HCI command -> virtual controller -> event
                 if (!ble) break;
@@ -154,6 +154,17 @@ export class UARTController {
             }
             case 'S': { // SPI Transfer
                 if (!spi) break;
+                // Keep TFT DC tracking live: a DC change (gpio.sync) can land
+                // after the SPI bytes in the same batch were queued, so route
+                // every device's bytes through the current DC level here.
+                // (DC is sampled per byte inside ST7789 via the gpio binding.)
+                if (gpio && spi.devices) {
+                    for (const dev of spi.devices.values()) {
+                        if (dev && typeof dev.bindDcGpio === 'function' && !dev._gpio) {
+                            try { dev.bindDcGpio(gpio, dev.dcPin ?? 2); } catch (_) {}
+                        }
+                    }
+                }
                 if (body[0] === 'W') {
                     const len = body.charCodeAt(1) & 0x7F;
                     const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
@@ -172,11 +183,17 @@ export class UARTController {
                     for (const b of bytes) replies.push(spi.transferByte(b));
                     this.write(new Uint8Array(replies));
                 } else {
-                    const hi = body.charCodeAt(0) - 97;
-                    const lo = body.charCodeAt(1) - 97;
-                    const txByte = ((hi & 15) << 4) | (lo & 15);
-                    const reply = spi.transferByte(txByte);
-                    this.write(new Uint8Array([reply]));
+                    // Single-TX-byte poll frames (spiTransferShortNL emits one
+                    // `S<xx>` frame per byte and polls RX for each; longer
+                    // frames are multi-byte `SX`). Reply per byte keeps the
+                    // guest's poll loop moving (ST7789 stalled here: its 2-byte
+                    // write16 path got 1 reply byte and spun forever).
+                    const hex = [...body].map(c => c.charCodeAt(0) - 97);
+                    const replies = [];
+                    for (let j = 0; j + 1 < hex.length; j += 2) {
+                        replies.push(spi.transferByte(((hex[j] & 15) << 4) | (hex[j + 1] & 15)));
+                    }
+                    this.write(new Uint8Array(replies));
                 }
                 break;
             }

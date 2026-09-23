@@ -176,25 +176,21 @@ threadController.onActivity((act) => {
     postMessage({ type: 'thread_activity', ...act });
 });
 
+// Same coalescing gate as TFT: the device now flushes at exact frame
+// boundaries, but several frames can still land per runLoop slice; forward
+// at most one (latest) per slice so the UI thread never queues clones.
+let oledFramePending = null;
 oledDevice.onFrame((frame) => {
-    postMessage({
-        type: 'oled_frame',
-        width: frame.width,
-        height: frame.height,
-        buffer: frame.buffer,
-        inverted: frame.inverted,
-        displayOn: frame.displayOn,
-    });
+    oledFramePending = frame;
 });
 
+// Coalescing gate: per-pixel frames are now coalesced in the device, but a
+// full splash still emits several frames per runLoop slice and each is a
+// 230400-byte clone + structured-clone post. Forward at most one TFT frame
+// per slice; the canvas always converges to the latest pixels.
+let tftFramePending = null;
 tftDevice.onFrame((frame) => {
-    postMessage({
-        type: 'tft_frame',
-        width: frame.width,
-        height: frame.height,
-        buffer: frame.buffer,
-        displayOn: frame.displayOn,
-    });
+    tftFramePending = frame;
 });
 
 neoPixel.onFrame((frame) => {
@@ -468,6 +464,8 @@ async function handleLoad(msg) {
         threadController.reset();
         lastGpioOut = -1n;
         lastGpioEn = -1n;
+        tftFramePending = null;
+        oledFramePending = null;
 
         postMessage({ type: 'loaded', pc: emulator.pc() });
     } catch (err) {
@@ -638,7 +636,11 @@ function handleApcFrame(kind, body) {
             emulator.uart_input(new Uint8Array(data));
         }
     } else if (kind === 'S') {
-        // SPI Transfer
+        // SPI Transfer. Refresh the DC mirror BEFORE routing bytes: the
+        // guest toggles TFT_DC (GPIO2) between transactions and gpio.sync
+        // only runs after the batch — mirrorDcState() re-reads OUT now so
+        // each byte is classified cmd vs data at its true level.
+        mirrorDcState();
         if (body[0] === 'W') {
             const len = body.charCodeAt(1) & 0x7f;
             const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
@@ -661,18 +663,30 @@ function handleApcFrame(kind, body) {
             }
             const replies = [];
             for (const b of bytes) {
+                tftDevice.dcLevel = dcLevel();
+                tftDevice._dcStamped = true;
                 replies.push(spiBus.transferByte(b));
             }
+            tftDevice._dcStamped = false;
             if (emulator && replies.length > 0) {
                 emulator.uart_input(new Uint8Array(replies));
             }
         } else {
-            const hi = body.charCodeAt(0) - 97;
-            const lo = body.charCodeAt(1) - 97;
-            const txByte = ((hi & 15) << 4) | (lo & 15);
-            const reply = spiBus.transferByte(txByte);
-            if (emulator) {
-                emulator.uart_input(new Uint8Array([reply]));
+            // Single-TX-byte poll frames (spiTransferShortNL emits one
+            // `S<xx>` frame per byte and polls RX for each; longer frames are
+            // multi-byte `SX`). Reply per byte keeps the guest's poll loop
+            // moving (ST7789 stalled here: its 2-byte write16 path got 1
+            // reply byte and spun forever). Mirrors core/uart.mjs.
+            const hex = [...body].map(c => c.charCodeAt(0) - 97);
+            const replies = [];
+            for (let j = 0; j + 1 < hex.length; j += 2) {
+                tftDevice.dcLevel = dcLevel();
+                tftDevice._dcStamped = true;
+                replies.push(spiBus.transferByte(((hex[j] & 15) << 4) | (hex[j + 1] & 15)));
+            }
+            tftDevice._dcStamped = false;
+            if (emulator && replies.length > 0) {
+                emulator.uart_input(new Uint8Array(replies));
             }
         }
     } else if (kind === 'N') {
@@ -823,12 +837,34 @@ function handleApcFrame(kind, body) {
     }
 }
 
+// Mirror of the worker's GPIO register view, so the TFT DC line can be
+// sampled per SPI byte (ST7789Demo: TFT_DC=2). pollGpio() keeps the UI
+// posted copy; mirrorDcState() keeps this in-step even when OUT/EN are
+// unchanged for the UI (DC toggles every byte inside one OUT word).
+let dcMirrorOut = 0n;
+let dcMirrorEn = 0n;
+function mirrorDcState() {
+    if (!wasmExports?.memory) return;
+    try {
+        const view = new DataView(wasmExports.memory.buffer);
+        dcMirrorOut = view.getBigUint64(gpioOutOffset, true);
+        dcMirrorEn = view.getBigUint64(gpioEnableOffset, true);
+    } catch (_) {}
+}
+function dcLevel() {
+    // DC pin 2 driven as output: level = OUT bit. Not-yet-enabled (early
+    // init): fall back to OUT bit so commands still parse as commands.
+    return ((dcMirrorOut >> 2n) & 1n) === 1n;
+}
+
 function pollGpio() {
     if (!wasmExports?.memory) return;
     try {
         const view = new DataView(wasmExports.memory.buffer);
         const outVal = view.getBigUint64(gpioOutOffset, true);
         const enVal = view.getBigUint64(gpioEnableOffset, true);
+        dcMirrorOut = outVal;
+        dcMirrorEn = enVal;
 
         if (outVal !== lastGpioOut || enVal !== lastGpioEn) {
             lastGpioOut = outVal;
@@ -879,6 +915,7 @@ onmessage = async function(e) {
 
         case 'step': {
             if (!emulator) break;
+            const stepT0 = performance.now();
             let output = emulator.run_batch(1);
             if (emulator.needs_restart()) {
                 if (output) {
@@ -904,6 +941,7 @@ onmessage = async function(e) {
                 output: output,
                 pc: emulator.pc(),
                 cycles: emulator.cycles(),
+                wallMs: +(performance.now() - stepT0).toFixed(2),
             });
             sendRegisters();
             break;
@@ -920,6 +958,8 @@ onmessage = async function(e) {
                     threadController.reset();
                     lastGpioOut = -1n;
                     lastGpioEn = -1n;
+                    tftFramePending = null;
+                    oledFramePending = null;
                     postMessage({ type: 'reset', reloaded: true, pc: emulator.pc() });
                 } catch (err) {
                     postMessage({ type: 'error', message: `Reset failed: ${err}` });
@@ -1036,17 +1076,17 @@ function runLoop() {
     if (!running || !emulator) return;
 
     const startTime = performance.now();
-    let totalCycles = 0;
+    let batchCountThisSlice = 0;
     let accumulatedOutput = '';
 
     while (running) {
+        batchCountThisSlice++;
         const rawOutput = emulator.run_batch(batchSize);
         if (rawOutput) {
             accumulatedOutput += processStream(rawOutput);
         } else {
             pumpReplies(); // keep dribbled replies flowing on silent batches
         }
-        totalCycles += batchSize;
 
         if (emulator.needs_restart()) {
             if (accumulatedOutput.length > 0) {
@@ -1073,13 +1113,51 @@ function runLoop() {
         postMessage({ type: 'uart_output', data: accumulatedOutput });
     }
 
+    if (tftFramePending) {
+        const frame = tftFramePending;
+        tftFramePending = null;
+        postMessage({
+            type: 'tft_frame',
+            width: frame.width,
+            height: frame.height,
+            buffer: frame.buffer,
+            displayOn: frame.displayOn,
+        });
+    }
+
+    if (oledFramePending) {
+        const frame = oledFramePending;
+        oledFramePending = null;
+        postMessage({
+            type: 'oled_frame',
+            width: frame.width,
+            height: frame.height,
+            buffer: frame.buffer,
+            inverted: frame.inverted,
+            displayOn: frame.displayOn,
+        });
+    }
+
     pollGpio();
 
+    // Speed, measured honestly. Calibration (blink.merged.bin, C3):
+    //   run_batch(N) retires EXACTLY N cycles (1 instruction = 1 cycle —
+    //   the core counts requested steps, not silicon retire). So MIPS here
+    //   = requested guest steps per host ms = HOST EXECUTION SPEED, i.e.
+    //   how fast your laptop runs the emulator — NOT the chip's clock.
+    // Real silicon also stalls (flash wait-states, BT/WiFi steals); this
+    // number has none of that. eff-MHz (1 s window, incl. message/idle
+    // overhead) is the rate the guest plausibly experiences; both are
+    // reported raw, uncapped — 2900 MIPS only ever means "host is fast".
+    const endCycles = emulator.cycles();
+    const wallMs = performance.now() - startTime;
+    const requested = batchCountThisSlice * batchSize;
     postMessage({
         type: 'status',
         pc: emulator.pc(),
-        cycles: emulator.cycles(),
-        mips: (totalCycles / (performance.now() - startTime) / 1000).toFixed(1),
+        cycles: endCycles,
+        mips: (requested / Math.max(wallMs, 0.01) / 1000).toFixed(1),
+        wallMs: +wallMs.toFixed(2),
     });
 
     if (running) {
