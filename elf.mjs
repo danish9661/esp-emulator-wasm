@@ -125,6 +125,20 @@ export class Elf32 {
 
 // Driver entry points the shim can intercept (AGENT.md §7).
 //
+// LIVING LIST — when a new Arduino/IDF release renames a symbol, add a tier
+// entry here (5-minute patch, no loader changes):
+//   1. `llvm-objdump -t app.elf | grep -i <peripheral>` → find the new name.
+//   2. Add the name to the matching tier array below (or add a new
+//      `'arduino-foo-v2'` / `'idf-foo-v2'` array + a `pick([...])` entry in
+//      planHooks() — tiers union, so old + new names patch together).
+//   3. If the new symbol needs different shim bytes, add a generator in
+//      spike/gen_spi_shims.py and regenerate shims.mjs (`python3
+//      spike/gen_spi_shims.py`); same-signature renames reuse the existing
+//      shim untouched.
+//   4. Verify: `node spike/18-verify-all.mjs` (C3) + the per-chip suite.
+// Drill: rename detected = "firmware boots, peripheral silent, symbol in
+// ELF but tier shows no hooks" → step 2 above fixes it.
+//
 // Two tiers exist, and the Arduino tier is strongly preferred where present:
 //
 //   arduino-*  esp32-hal-i2c.c / esp32-hal-spi.c. Flat C signatures that carry the

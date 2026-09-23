@@ -1,9 +1,9 @@
-# Upstream issue packet (esp-emu 0.42.0)
+# Upstream issue packet (esp-emu 0.43.0)
 
-Five ready-to-paste issues (was four at 0.41.0). Issues 1–3 and 5 go to
+Six ready-to-paste issues (was five at 0.42.0). Issues 1–3, 5 and 6 go to
 `espressif/esp-emulator`; issue 4 goes to `arduino-esp32` (with an
 `esp-idf` counterpart for the toolchain half). Environment: `pkg/`
-esp-emu 0.42.0 (JS API byte-identical to 0.41.0 — all changes are inside
+esp-emu 0.43.0 (JS API byte-identical to 0.42.0 — all changes are inside
 the `.wasm`), `esp32:esp32` Arduino core 3.3.10, no `idf.py` toolchain
 installed.
 
@@ -189,3 +189,33 @@ keeping this record for the recipe.
 **Expected:** ROM-model boot accepts standard multi-segment app images on P4/C5
 (partition-declared app offset, XIP segments), as it does for Arduino-shaped
 images — or documentation of the exact image constraints the model enforces.
+
+---
+
+## Issue 6 → `espressif/esp-emulator`: MMIO trap / watchpoint API in the WASM build (bit-banged firmware)
+
+**Observed:** This project patches peripherals at the DRIVER SYMBOL level
+(load-time RV32 shims over HAL entry points — `HOOK_TARGETS` in `elf.mjs`).
+Firmware that drives GPIO/SPI/I2C through the standard Arduino/IDF HAL works
+unmodified; firmware that bit-bangs the bus (direct GPIO MMIO, software SPI/
+I2C, custom drivers bypassing the HAL) cannot be intercepted from JS — there
+is no way to trap a guest MMIO read/write from the WASM JS API. The five
+virtual peripherals with no silicon (touch/DAC/SDMMC/camera/LCD) additionally
+need an `emu_api.h` helper in the source for the same reason (no vendor HAL
+symbol exists to patch).
+
+**Expected:** A watchpoint/MMIO-trap hook in the WASM JS API, e.g.
+`on_mmio_write(addr, len, cb)` / `on_mmio_read(addr, len, cb)` (or a
+pre/post-step memory-diff hook scoped to the GPIO/peripheral windows), so a
+JS host can observe bit-banged bus traffic without HAL symbols. QEMU's
+`--thread-sim`-style frame bridge shows the pattern exists natively; only
+the JS projection is missing (same gap as issue #1's ETH/15.4/USB exports).
+
+**Workaround (documented, no emulator change):** use the standard HAL —
+`HOOK_TARGETS` is a living list (`planHooks()` unions all matching tiers per
+bus, so an Arduino/IDF rename is a 5-minute tier entry) and virtual
+peripherals expose patch targets via `spike/sketches/emu_api/emu_api.h`
+(two honest modes: unmodified firmware for everything on real silicon;
+helper firmware adding the virtual targets — see `PROTOCOLS.md` §1). This
+covers all vendor-supported drivers; only hand-rolled bit-bang drivers stay
+out of reach pending the trap API above.
