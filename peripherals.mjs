@@ -199,6 +199,8 @@ export class ST7789Device {
         this.paramQueue = [];
         this.inRamWrite = false;
         this.highByte = null;
+        // Pre-RAMWR burst pixel staging (see #processDataByte / 0x2C).
+        this._pendingPixels = [];
 
         this.onFrameCallback = null;
         this.dirty = false;
@@ -268,9 +270,37 @@ export class ST7789Device {
 
     onWrite(bytes) {
         if (!bytes || bytes.length === 0) return;
-        for (let i = 0; i < bytes.length; i++) {
-            this.#processByte(bytes[i]);
+        // Write-burst frames (Adafruit fillScreen/fillRect/pixel runs via
+        // spiWriteNL/spiWritePixelsNL): the whole frame went out with DC
+        // HIGH (one gpio transaction for command, another for the data
+        // burst), so every byte here is pixelOrParam payload — route the
+        // whole frame through the data path. Per-byte DC sampling AND
+        // command sniffing both misfire here: e.g. pixel byte 0x2C
+        // re-enters RAMWR and resets the cursor (torn display, and on the
+        // 0.43 stream the window never opens so zero pixels paint).
+        // Guard: only when NOT inside a command preamble — a window command
+        // (CASET/RASET/RAMWR) always arrives via transferByte (DC toggled
+        // per byte), never via a burst write, so a burst frame is never a
+        // command. The DC-sent 0x2C/0x2A/0x2B bytes take the transfer path.
+        for (let i = 0; i < bytes.length; i++) this.#processDataByte(bytes[i]);
+    }
+
+    // Fill heuristic: frames of >= 8 bytes where one value dominates the
+    // head sample (fillScreen = 64B of 0x00/0xFF; RGB565 solid colors are
+    // 2-byte repeats like 1F 00 1F 00, so test even AND odd phases).
+    // Command frames are short and varied; pixel bursts are long runs of
+    // the same color bytes.
+    #looksLikeFill(bytes) {
+        let sameEven = 0, sameOdd = 0;
+        const n = Math.min(bytes.length, 16);
+        const firstEven = bytes[0], firstOdd = n > 1 ? bytes[1] : bytes[0];
+        for (let i = 0; i < n; i++) {
+            if (bytes[i] === (i % 2 === 0 ? firstEven : firstOdd)) {
+                if (i % 2 === 0) sameEven++;
+                else sameOdd++;
+            }
         }
+        return (sameEven + sameOdd) >= Math.min(8, n);
     }
 
     // Sample the DC line for this byte. Returns 'cmd' | 'data' | null
@@ -334,9 +364,14 @@ export class ST7789Device {
             }
             return;
         }
-        // Data outside RAMWR with no pending params: stray byte, ignore
-        // (legacy path would misread it as a command — e.g. pixel 0x2C
-        // re-entering RAMWR — which is the torn-display bug).
+        // Data outside RAMWR with no pending params: on the WRITE-BURST
+        // path (whole-frame DC-high, see onWrite) this is burst pixel data
+        // arriving BEFORE the RAMWR command was seen — can happen when the
+        // command went through a different channel/timing. Buffer it: the
+        // next RAMWR opens the window and #drainPendingPixels paints it.
+        // (The per-byte transfer path never lands here with real pixels —
+        // DC would have routed them as commands instead.)
+        this._pendingPixels.push(b);
     }
 
     #processCommandByte(b) {
@@ -394,6 +429,17 @@ export class ST7789Device {
             this.highByte = null;
             this.colPtr = this.colStart;
             this.rowPtr = this.rowStart;
+            // Paint any burst pixels that arrived before RAMWR opened
+            // (write-burst path, see #processDataByte): drain the pending
+            // buffer as big-endian RGB565 pairs at the now-open cursor.
+            if (this._pendingPixels.length > 0) {
+                const pend = this._pendingPixels;
+                this._pendingPixels = [];
+                for (let k = 0; k + 1 < pend.length; k += 2) {
+                    this.#writePixelRgb565((pend[k] << 8) | pend[k + 1]);
+                }
+                if (pend.length > 0) this._markDirty();
+            }
         } else if (b === 0x36 || b === 0x3a) {
             this.inRamWrite = false;
             this.paramQueue.push(() => {});

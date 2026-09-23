@@ -2,7 +2,7 @@
 
 > **Copy-paste this whole file into a new session / agent to resume work.**
 > Last update: **2026-09-10**, branch `main` @ `ef37025` + Waves E/F/G/H uncommitted (Thread Phase 1a→1b→1c→1d + BLE pump + CI; all suites green, see §2 Waves E/F/G/H).
-> WASM core: **0.42.0** live in `pkg/` (`pkg.prev/` is 0.41.0, `pkg.prev-0.39/` kept for bisection). All suites listed below are **green** on this commit except where noted SKIP.
+> WASM core: **0.43.0** live in `pkg/` (`pkg.prev-0.42/` is 0.42.0, `pkg.prev/` is 0.41.0, `pkg.prev-0.39/` kept for bisection). All suites listed below are **green** on this commit except where noted SKIP.
 
 ---
 
@@ -10,7 +10,7 @@
 
 **Repo:** `espc3 wasm` — blazing-fast **in-browser WebAssembly RV32 emulator** for Espressif ESP32-C3 / C6 / H2 / P4 / C5 (+ S31 smoke).
 
-**WASM core:** `pkg/esp_emu_bg.wasm` + `pkg/esp_emu.js` compiled from `espressif/esp-emulator` **0.42.0** (`pkg.prev` is 0.41.0; see `core/esp32c3.mjs:74` per-instance isolation fix for 0.42 H2 regression).
+**WASM core:** `pkg/esp_emu_bg.wasm` + `pkg/esp_emu.js` compiled from `espressif/esp-emulator` **0.43.0** (`pkg.prev-0.42` is 0.42.0, `pkg.prev` is 0.41.0; see `core/esp32c3.mjs:74` per-instance isolation fix for 0.42 H2 regression).
 
 **Frontend:** `index.html` + `app.js` (XTerm.js, OLED/TFT canvases, GPIO grid) + `worker.js` (WASM instance, UART/APC routing, WiFi glue).  
 **SDK:** `index.mjs` re-exports `core/esp32c3.mjs` (`ESP32C3.create({chip})`, `loadFirmware(flash,elf)`, `step(n)`, `gpio/i2c/spi/adc/pwm/i2s/twai/touch/dac/sdmmc/camera/lcd/uart0` controllers) — `rp2040js`-style, works in browser & Node.  
@@ -170,7 +170,7 @@ samples/                prebuilt .merged.bin + .elf (top-level + c5/c6/h2/p4)
 samples/mpy/            MPY v1.29.0 .bin+.elf per chip + composed flashes mpy_*_flash.bin
 spike/mpy_repl.mjs      MP REPL harness (bootMpy/replExec/calibrateGpioLive)
 spike/mk_mpy_p4c5.py    composes P4/C5 bootable flashes (bootloader + factory + SHA)
-pkg/esp_emu.{js,wasm}   0.42.0 (pkg.prev 0.41.0, pkg.prev-0.39 kept)
+pkg/esp_emu.{js,wasm}   0.43.0 (pkg.prev-0.42 is 0.42.0, pkg.prev 0.41.0, pkg.prev-0.39 kept)
 
 Spike suites (all green on ef37025):
   18-verify-all.mjs     C3 15 (all protocols)               24-verify-new.mjs  C3 5 virtual
@@ -371,7 +371,7 @@ Matter: needs Thread-operational (above) or WiFi-operational (works) + BLE commi
 
 ## 8. WASM upkeep notes
 
-- 0.42.0 intake done (`pkg.prev/` keeps 0.41.0, `pkg.prev-0.39` kept). Next drop: re-run full battery, `grep -n "^    [a-z_]*(" pkg/esp_emu.js` for new exports (BLE HCI / 802.15.4 / Ethernet / USB would flip ❌ rows), keep old `pkg/` in `pkg.prev/`.
+- 0.43.0 intake done (`pkg.prev-0.42/` keeps 0.42.0, `pkg.prev/` 0.41.0, `pkg.prev-0.39` kept). Next drop: re-run full battery, `grep -n "^    [a-z_]*(" pkg/esp_emu.js` for new exports (BLE HCI / 802.15.4 / Ethernet / USB would flip ❌ rows), keep old `pkg/` in `pkg.prev-0.4X/`.
 - `CHIP_GPIO_COUNT` + badge (`app.js`/`index.html`), ROM override, dropdown option, `samples/<chip>/` + verify suite per new chip.
 - `spike/sketches/ThreadDemo/` is the 15.4 bring-up fixture (kept for next phase even though its radio is currently a no-op).
 

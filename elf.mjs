@@ -258,25 +258,44 @@ export function prepareSpiShims(elf, shims) {
     for (const s of syms.found) map[s.name] = s;
     const effectiveShims = { ...shims };
 
+    // Pair two same-signature twins (e.g. spiWriteByte + spiWriteByteNL):
+    // each twin is patched INDEPENDENTLY when it fits, else JAL-linked to
+    // the twin that did fit. Falls back to whichever twin fits.
+    // 0.43 guard: the JAL target must be the shim that is ACTUALLY WRITTEN.
+    // writeAtVaddr only writes when shim.length <= func size (worker.js,
+    // core/esp32c3.mjs), so a JAL into a twin whose shim did NOT fit would
+    // execute the ORIGINAL half of the HAL — 0.43 Load-fault at
+    // spiWriteByteNL+8 (JAL into 64B func holding a 100B shim slot).
     const pair = (symA, symB, defaultShim) => {
         const a = map[symA];
         const b = map[symB];
         const shim = defaultShim;
         if (!shim) return;
 
-        if (a && b) {
-            if (b.size >= shim.length) {
-                effectiveShims[symB] = shim;
-                effectiveShims[symA] = makeJal(a.addr, b.addr);
-            } else if (a.size >= shim.length) {
-                effectiveShims[symA] = shim;
-                effectiveShims[symB] = makeJal(b.addr, a.addr);
-            }
-        } else if (a && a.size >= shim.length) {
-            effectiveShims[symA] = shim;
-        } else if (b && b.size >= shim.length) {
+        const aFits = !!(a && a.size >= shim.length);
+        const bFits = !!(b && b.size >= shim.length);
+
+        if (aFits && bFits) {
+            // Both fit: patch the NL twin (the hot path), JAL the other in.
             effectiveShims[symB] = shim;
+            effectiveShims[symA] = makeJal(a.addr, b.addr);
+            return;
         }
+        if (aFits) {
+            effectiveShims[symA] = shim;
+            if (b) effectiveShims[symB] = makeJal(b.addr, a.addr);
+            return;
+        }
+        if (bFits) {
+            effectiveShims[symB] = shim;
+            if (a) effectiveShims[symA] = makeJal(a.addr, b.addr);
+            return;
+        }
+        // Neither fits: leave both unpatched (original HAL runs; the
+        // peripheral simply won't bridge until a smaller shim lands).
+        // Do NOT emit a JAL into an unpatched twin.
+        delete effectiveShims[symA];
+        delete effectiveShims[symB];
     };
 
     pair('spiTransferBytes', 'spiTransferBytesNL', shims.spiTransferBytesNL);

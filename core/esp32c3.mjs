@@ -32,7 +32,7 @@ export class ESP32C3 {
      * @param {WebAssembly.Memory} wasmMemory - WASM linear memory export
      * @param {string} [chip='esp32c3'] - Target chip
      */
-    constructor(wasmInstance, wasmMemory, chip = 'esp32c3') {
+    constructor(wasmInstance, wasmMemory, chip = 'esp32c3', emuCtor = null) {
         this.emu = wasmInstance;
         this.memory = wasmMemory;
         this.chip = chip;
@@ -42,7 +42,7 @@ export class ESP32C3 {
         // core only exposes the low 32-bit GPIO words, so pins >31 track
         // via API/masks until wider words land — see gpio.mjs header).
         this.gpio = new GPIOController(chip);
-        this.gpio.bindMemory(this.memory);
+        this.gpio.bindMemory(this.memory, emuCtor);
 
         this.i2c = new I2CBus();
         this.spi = new SPIBus();
@@ -124,7 +124,7 @@ export class ESP32C3 {
             } catch (_) {}
         }
 
-        return new ESP32C3(emu, wasmExports.memory, chip);
+        return new ESP32C3(emu, wasmExports.memory, chip, WasmEmulator);
     }
 
     /**

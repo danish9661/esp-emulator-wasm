@@ -642,16 +642,23 @@ function handleApcFrame(kind, body) {
         // each byte is classified cmd vs data at its true level.
         mirrorDcState();
         if (body[0] === 'W') {
-            const len = body.charCodeAt(1) & 0x7f;
+            // Write-only burst (spiWriteNL/spiWritePixelsNL): the W shim
+            // emits the RAW byte count as one control byte, NOT masked to 7
+            // bits (0.43 firmware sends 128/132-byte chunks whose low-7-bits
+            // alias to 0/4 — the old `& 0x7F` + `len === 64` reply gate
+            // starved the guest's RX poll and hung the ST7789 splash).
+            // Reply exactly one ACK byte per W frame; the guest polls one.
+            // Mirrors core/uart.mjs.
             const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
             const bytes = [];
             for (let j = 0; j + 1 < hex.length; j += 2) {
                 bytes.push((hex[j] << 4) | hex[j + 1]);
             }
             spiBus.write(bytes);
-            if (len === 64 && emulator) {
-                emulator.uart_input(new Uint8Array([0]));
-            }
+            // Paced ACKs (see reply_queue.mjs): a 128B burst pushed via
+            // uart_input at once overflows the guest HW RX FIFO and the
+            // shim's poll spins forever. Drizzle 16B/batch. Mirrors uart.
+            replyDribbler.push(new Uint8Array(bytes.map(() => 0)));
         } else if (body[0] === 'X') {
             const lenHi = body.charCodeAt(1) & 0x7f;
             const lenLo = body.charCodeAt(2) & 0x7f;

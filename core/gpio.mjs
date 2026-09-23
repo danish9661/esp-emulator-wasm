@@ -10,6 +10,19 @@
 // via ESP32C3 (which passes the chip) — never `new GPIOController()` bare
 // for a non-C3 target.
 
+// 80-byte RV32 calibration probe: writes 0xCAFE1234 to GPIO OUT and
+// 0xBEEF5678 to GPIO ENABLE, then halts. Byte-identical to worker.js
+// GPIO_CALIBRATION_PROBE (keep the two in sync).
+export const GPIO_CALIBRATION_PROBE = new Uint8Array([
+    233, 1, 2, 32, 0, 0, 56, 64, 238, 0, 0, 0,
+    5, 0, 0, 0, 0, 255, 255, 0, 0, 0, 0, 0,
+    0, 0, 56, 64, 44, 0, 0, 0, 183, 66, 0, 96,
+    147, 130, 2, 2, 55, 83, 239, 190, 19, 3, 131, 103,
+    35, 160, 98, 0, 183, 66, 0, 96, 147, 130, 66, 0,
+    55, 19, 254, 202, 19, 3, 67, 35, 35, 160, 98, 0,
+    111, 0, 0, 0, 0, 0, 0, 99,
+]);
+
 export class GPIOPin {
     constructor(pinNumber, controller) {
         this.pin = pinNumber;
@@ -80,9 +93,13 @@ export class GPIOController {
     /**
      * Bind the WASM linear memory for hardware register reads/writes.
      * @param {WebAssembly.Memory} memory
+     * @param {Function} [emuCtor] - Raw WasmEmulator constructor for the
+     *   probe-based GPIO discovery (see _probeGpioAddrs). Passed by
+     *   ESP32C3; without it only the heuristic + fallback apply.
      */
-    bindMemory(memory) {
+    bindMemory(memory, emuCtor = null) {
         this._memory = memory;
+        this._emuCtor = emuCtor || null;
     }
 
     /**
@@ -171,7 +188,15 @@ export class GPIOController {
      */
     sync() {
         if (!this._memory) return;
-        const u32 = new Uint32Array(this._memory.buffer);
+        // The WASM linear memory can GROW between steps (memory.grow
+        // detaches the old buffer); re-wrap every sync so reads never go
+        // stale (0.43 GPIO debug: OUT/EN froze at 0xFFFFFFFF after boot).
+        let u32;
+        try {
+            u32 = new Uint32Array(this._memory.buffer);
+        } catch (_) {
+            return;
+        }
 
         // Dynamic auto-calibration for register offsets
         if (this._gpioOutAddr === null) {
@@ -210,21 +235,83 @@ export class GPIOController {
     }
 
     _autoCalibrate(u32) {
-        // Known base address range for esp-emulator GPIO peripheral
-        for (let i = 0x820000 >> 2; i < 0x830000 >> 2; i++) {
-            // Pattern check: GPIO_OUT (offset 0x04), GPIO_ENABLE (offset 0x20), GPIO_IN (offset 0x3C)
-            if (u32[i] === 0 && u32[i + 7] === 0) {
-                this._gpioOutAddr = (i + 1) << 2;
-                this._gpioEnableAddr = (i + 8) << 2;
-                this._gpioInAddr = (i + 15) << 2;
-                break;
+        // Probe-marker discovery (robust across core versions): run the
+        // 80-byte calibration probe (writes 0xCAFE1234 to GPIO OUT and
+        // 0xBEEF5678 to GPIO ENABLE) in a THROWAWAY emulator instance and
+        // scan ITS memory for the markers. The GPIO peripheral MOVES between
+        // core versions (0.42 C3: 0x827850, 0.43 C3: 0x975e20) and the old
+        // zero-pattern heuristic latches onto the wrong idle words (0.43:
+        // OUT/EN froze at 0xFFFFFFFF, DC stuck high, zero TFT pixels).
+        // NOTE: this needs the raw WASM constructor, not ESP32C3.create
+        // (which would recurse). The probe bytes mirror worker.js
+        // GPIO_CALIBRATION_PROBE exactly.
+        if (this._probeGpioAddrs(u32)) return;
+        // Known base address range for esp-emulator GPIO peripheral.
+        for (let base = 0x820000; base < 0x9c0000; base += 0x10000) {
+            for (let i = base >> 2; i < (base + 0x10000) >> 2; i++) {
+                // Pattern check: GPIO_OUT (offset 0x04), GPIO_ENABLE (offset 0x20), GPIO_IN (offset 0x3C)
+                if (u32[i] === 0 && u32[i + 7] === 0) {
+                    this._gpioOutAddr = (i + 1) << 2;
+                    this._gpioEnableAddr = (i + 8) << 2;
+                    this._gpioInAddr = (i + 15) << 2;
+                    break;
+                }
             }
+            if (this._gpioOutAddr !== null) break;
         }
         if (this._gpioOutAddr === null) {
-            // Fallback default offsets
+            // Fallback default offsets (0.42 layout; 0.43 C3 = 0x975e20).
             this._gpioOutAddr = 0x827854;
             this._gpioEnableAddr = 0x827870;
             this._gpioInAddr = 0x82788c;
         }
+    }
+
+    // Run the GPIO calibration probe in a throwaway instance of the SAME
+    // wasm module and locate OUT/ENABLE by marker values. Returns true when
+    // both markers resolve to a sane adjacent pair.
+    _probeGpioAddrs(u32) {
+        try {
+            const mem = this._memory;
+            if (!mem || typeof mem.buffer === 'undefined') return false;
+            // The probe needs a fresh WasmEmulator of the same chip. Reach
+            // it via the constructor captured at bind time (see bindMemory).
+            const Ctor = this._emuCtor;
+            if (typeof Ctor !== 'function') return false;
+            const cal = new Ctor(this.chip || 'esp32c3');
+            try {
+                if (typeof cal.set_boot_from_rom === 'function') cal.set_boot_from_rom(false);
+                cal.load_firmware(GPIO_CALIBRATION_PROBE);
+                cal.run_batch(200);
+            } catch (_) {}
+            // Scan the CURRENT (shared, grown-by-now) memory for markers.
+            // NOTE: the probe leaves SEVERAL stale OUT hits (flash image
+            // copies, older instances); the ENABLE marker is unique. The true
+            // OUT register is the LAST OUT hit at or below the ENABLE hit
+            // (the probe writes OUT first, ENABLE 8 bytes later — same
+            // layout the worker's calibrateGpio asserts: EN = OUT + 8 in
+            // the gpioInOffset = gpioEnableOffset + 8 convention... here
+            // OUT/EN are adjacent words, EN = OUT + 8).
+            const view = new Uint32Array(mem.buffer);
+            let enAt = -1;
+            const outs = [];
+            for (let i = 0; i < view.length; i++) {
+                if (view[i] === 0xCAFE1234) outs.push(i << 2);
+                else if (view[i] === 0xBEEF5678 && enAt < 0) enAt = i << 2;
+            }
+            try { if (typeof cal.free === 'function') cal.free(); } catch (_) {}
+            // Walk OUT hits from the top: first one exactly 8 below EN wins.
+            let outAt = -1;
+            for (let k = outs.length - 1; k >= 0; k--) {
+                if (enAt >= 0 && outs[k] === enAt - 8) { outAt = outs[k]; break; }
+            }
+            if (outAt >= 0 && enAt >= 0) {
+                this._gpioOutAddr = outAt;
+                this._gpioEnableAddr = enAt;
+                this._gpioInAddr = enAt + 8;
+                return true;
+            }
+        } catch (_) {}
+        return false;
     }
 }

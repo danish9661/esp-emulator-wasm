@@ -166,12 +166,23 @@ export class UARTController {
                     }
                 }
                 if (body[0] === 'W') {
-                    const len = body.charCodeAt(1) & 0x7F;
+                    // Write-only burst (spiWriteNL/spiWritePixelsNL): the W
+                    // shim emits the RAW byte count as one control byte, NOT
+                    // masked to 7 bits (0.43 firmware sends 128/132-byte
+                    // chunks whose low-7-bits alias to 0/4 — the old
+                    // `& 0x7F` + `len === 64` reply gate starved the guest's
+                    // RX poll and hung the ST7789 splash). Reply one ACK per
+                    // DATA byte delivered (matches the pre-0.43 `len === 64`
+                    // behavior for 64B frames: 64 ACKs); the guest's RX poll
+                    // consumes one ACK per byte it waits for.
                     const hex = [...body.slice(2)].map(c => c.charCodeAt(0) - 97);
                     const bytes = [];
                     for (let j = 0; j + 1 < hex.length; j += 2) bytes.push((hex[j] << 4) | hex[j + 1]);
                     spi.write(bytes);
-                    if (len === 64) this.write(new Uint8Array([0]));
+                    // Paced ACKs (see reply_queue.mjs): a 128B burst pushed
+                    // via uart_input at once overflows the guest HW RX FIFO
+                    // and the shim's poll spins forever. Drizzle 16B/batch.
+                    this.dribbler.push(new Uint8Array(bytes.map(() => 0)));
                 } else if (body[0] === 'X') {
                     const lenHi = body.charCodeAt(1) & 0x7F;
                     const lenLo = body.charCodeAt(2) & 0x7F;

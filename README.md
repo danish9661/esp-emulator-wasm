@@ -267,7 +267,7 @@ esp-rv32-emulator/
 ├── shims.mjs               # Auto-generated RV32 machine bytecode shims
 ├── serve.py                # Local development server with no-cache headers
 ├── pkg/
-│   ├── esp_emu.js          # WASM JavaScript wrapper bindings (esp-emulator v0.41.0)
+│   ├── esp_emu.js          # WASM JavaScript wrapper bindings (esp-emulator v0.43.0)
 │   └── esp_emu_bg.wasm     # High-performance Rust-compiled RV32 emulator core
 ├── pkg.prev/               # Previous WASM build (v0.39.0) kept for bisection
 ├── samples/                # Pre-compiled .bin and .elf firmware sample binaries

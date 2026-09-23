@@ -1,4 +1,4 @@
-# espc3api.md — ESP32-C3/C6/H2/C5/P4/S31 (`esp-emu@0.42.0`) API reference + OpenHW contract
+# espc3api.md — ESP32-C3/C6/H2/C5/P4/S31 (`esp-emu@0.43.0`) API reference + OpenHW contract
 
 > Single entry point: **`index.mjs`** (122 names, verified live). OpenHW /
 > Wokwi-style hosts import ONLY from there — `core/*`, `spike/*` paths are
@@ -14,7 +14,7 @@ harness, per-chip sample matrix).
 
 ## 1. Package layout
 
-- `pkg/package.json`: `esp-emu` 0.42.0, ESM, Apache-2.0, `main esp_emu.js`,
+- `pkg/package.json`: `esp-emu` 0.43.0, ESM, Apache-2.0, `main esp_emu.js`,
   files = `esp_emu_bg.wasm` (3.4 MB) + `esp_emu.js` (17K, 518 lines).
 - `core/`: 22 files — `esp32c3, gpio, uart, i2c, spi, adc, pwm, i2s, twai,
   touch, dac, sdmmc, camera, lcd, neopixel, ble_controller, ble_hci_pump,

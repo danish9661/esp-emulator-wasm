@@ -334,7 +334,7 @@
         });
 
         terminal.writeln('\x1b[1;36m╔════════════════════════════════════════════════════════════════════════════╗');
-        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.42.0                                          ║');
+        terminal.writeln('║   ESP-EMU RISC-V Emulator v0.43.0                                          ║');
         terminal.writeln('║   Virtual Peripherals: ST7789 TFT, SSD1306 OLED, WS2812 NeoPixels, SPI/I2C ║');
         terminal.writeln('║   Nothing runs until you press Load Demo Firmware, then Run                ║');
         terminal.writeln('╚════════════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n');

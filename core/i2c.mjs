@@ -58,8 +58,12 @@ export class I2CBus {
      */
     write(address, data) {
         const dev = this.devices.get(address);
+        // Device dialect: core `i2cWrite` OR peripherals.mjs `onWrite`
+        // (the SDK exposes both buses; virtual devices use onWrite).
         if (dev && typeof dev.i2cWrite === 'function') {
             dev.i2cWrite(data);
+        } else if (dev && typeof dev.onWrite === 'function') {
+            dev.onWrite(data);
         }
 
         for (const listener of this._writeListeners) {
@@ -85,6 +89,8 @@ export class I2CBus {
         const dev = this.devices.get(address);
         if (dev && typeof dev.i2cRead === 'function') {
             reply = dev.i2cRead(length);
+        } else if (dev && typeof dev.onRead === 'function') {
+            reply = dev.onRead(length);
         }
 
         if (!reply) {
