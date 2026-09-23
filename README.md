@@ -10,6 +10,8 @@ A blazing-fast, **in-browser WebAssembly emulator** for Espressif **RISC-V 32-bi
 
 Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Arduino and ESP-IDF firmwares to interact with realistic displays, sensors, audio, automotive CAN bus, and storage peripherals directly in the browser with **zero guest modifications or re-compilation**.
 
+> We have not added support for ESP32-S3 and ESP32 (Xtensa) here — this repo stays focused on RV32 chips so those boards get more benefit. To get ESP Xtensa support see my other projects — ESP32: https://github.com/danish9661/esp32-emulator — ESP32-S3: https://github.com/danish9661/esp32s3-emulator.
+
 ---
 
 ## 🌟 Live Demo & Architecture Highlights
