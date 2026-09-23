@@ -69,7 +69,7 @@ THREAD_HANDOFF.md              # THIS file (Thread continuation focus)
 
 ### 4.1 Big picture
 
-- Principle: zero guest modifications. Unmodified Arduino OT binaries; ELFs used only for load-time symbol patching.
+- Principle: zero post-compilation guest modifications. Arduino OT binaries load as-is; ELFs used only for load-time symbol patching.
 - Shims are pure RV32I (`addi/lui/slli/srli/andi/or/lw/sw/sb/bne/beq/jalr`) — same bytes on all cores.
 - UART0 FIFO at `0x60000000` carries APC frames: `G<ch><len><psdu nibbles>` (TX tap), `H<ch>` (energy-scan tap). Nibble-encoded (`'a'+nibble`) because UART→JS is UTF-8.
 - `core/thread_controller.mjs` logs every TX as `{n, channel, len, psdu}`. `n` is the ABSOLUTE sequence — relay cursors MUST use `f.n`, never array indices (frames[] is a 256-cap ring; indices shift).

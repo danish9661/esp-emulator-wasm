@@ -1,18 +1,5 @@
 #include <Arduino.h>
-#include "soc/soc_caps.h"
-
-// Virtual touch pad API. Chips without touch hardware (SOC_TOUCH_SENSOR_SUPPORTED=0,
-// e.g. C3/C6/H2) need this `extern "C"` fallback so the linker has a symbol for
-// the emulator's load-time patcher to overwrite with the virtual-touch shim
-// (APC kind 'T'). Unpatched it returns an error sentinel. Chips with native
-// touch (e.g. P4) use the core's own declaration; the loader patches it too.
-#if !SOC_TOUCH_SENSOR_SUPPORTED
-extern "C" {
-uint16_t touchRead(uint8_t pin);
-void touchAttachInterrupt(uint8_t pin, void (*fn)(void), uint16_t threshold);
-void touchDetachInterrupt(uint8_t pin);
-}
-#endif
+#include "emu_api.h"  // touchRead/touchAttachInterrupt/touchDetachInterrupt (APC kind 'T')
 
 
 #define TOUCH_PIN 4

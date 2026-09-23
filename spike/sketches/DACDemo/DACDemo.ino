@@ -1,12 +1,5 @@
 #include <Arduino.h>
-
-// Virtual DAC API. No C3/C6/H2 Arduino DAC hardware exists, so this fallback
-// provides the link-time symbol; the emulator overwrites it with the 'D' shim.
-// Unpatched it reports failure (false).
-extern "C" {
-bool dacWrite(uint8_t pin, uint8_t value);
-void dacDisable(uint8_t pin);
-}
+#include "emu_api.h"  // dacWrite/dacDisable (APC kind 'D')
 
 
 #define DAC_PIN 25

@@ -1,17 +1,5 @@
 #include <Arduino.h>
-
-// Virtual MIPI-DSI / parallel LCD panel. The request uses 32-bit coordinate
-// fields so the 'L' shim can `lw` them straight off the struct:
-//   { x1, y1, x2, y2 (u32), px (ptr), len (u32) }.
-typedef struct {
-  uint32_t x1, y1, x2, y2;
-  const uint8_t *px;
-  uint32_t len;
-} EmuLcdReq;
-
-extern "C" {
-void emuLcdDraw(const EmuLcdReq *req);
-}
+#include "emu_api.h"  // EmuLcdReq + emuLcdDraw (APC kind 'L')
 
 #define LCD_W 240
 #define LCD_H 40

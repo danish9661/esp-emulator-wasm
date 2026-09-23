@@ -8,7 +8,7 @@
 
 A blazing-fast, **in-browser WebAssembly emulator** for Espressif **RISC-V 32-bit (RV32)** microcontrollers (**ESP32-C3, ESP32-C6, ESP32-H2, ESP32-C5, ESP32-P4, ESP32-S31**). 
 
-Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Arduino and ESP-IDF firmwares to interact with realistic displays, sensors, audio, automotive CAN bus, and storage peripherals directly in the browser with **zero guest modifications or re-compilation**.
+Features a **Wokwi-style virtual peripheral bridge** that enables standard Arduino and ESP-IDF firmwares to interact with realistic displays, sensors, audio, automotive CAN bus, and storage peripherals directly in the browser with **zero post-compilation guest modifications** — the `.bin` + `.elf` you built are loaded as-is; the loader only overwrites driver entry points in flash with RV32 shims at load time (no re-compilation).
 
 > We have not added support for ESP32-S3 and ESP32 (Xtensa) here — this repo stays focused on RV32 chips so those boards get more benefit. To get ESP Xtensa support see my other projects — ESP32: https://github.com/danish9661/esp32-emulator — ESP32-S3: https://github.com/danish9661/esp32s3-emulator.
 
@@ -16,7 +16,7 @@ Features a **Wokwi-style virtual peripheral bridge** that enables unmodified Ard
 
 ## 🌟 Live Demo & Architecture Highlights
 
-- **Zero Guest Overhead**: Runs unmodified compiled ELF & `.bin` firmware compiled with standard `arduino-cli` or ESP-IDF.
+- **Zero Post-Compilation Guest Changes**: Runs the ELF & `.bin` firmware you compiled with standard `arduino-cli` or ESP-IDF, as-is. Two modes, both honest: (1) **unmodified firmware** — everything on real silicon (GPIO/I2C/SPI/ADC/PWM/...) just works; drawback: the five virtual peripherals with no silicon (touch/DAC/SDMMC/camera/LCD) are unavailable without their patch targets in the source. (2) **helper firmware** — `#include "emu_api.h"` (`spike/sketches/emu_api/`, copied into the sketch dir) adds those patch targets; the built `.bin` + `.elf` still load as-is, the loader overwrites each symbol with its shim.
 - **Dynamic Load-Time Binary Patching**: Automatically detects HAL/driver entry points in the application's ELF symbol table and applies tiny, high-performance RV32 assembly trampolines and shims.
 - **APC Escape Frame Bridge**: High-bandwidth peripheral I/O (I2C, SPI, NeoPixel, ADC, PWM, I2S Audio, TWAI/CAN) is encoded into ANSI Application Program Command (`\x1b_...`) frames over UART0 with synchronous host delivery.
 - **Dynamic Memory Auto-Calibration**: Probes and discovers hardware register offsets inside WASM linear memory at boot time across different target chips and FreeRTOS heap layouts.

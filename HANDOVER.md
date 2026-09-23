@@ -16,7 +16,7 @@
 **SDK:** `index.mjs` re-exports `core/esp32c3.mjs` (`ESP32C3.create({chip})`, `loadFirmware(flash,elf)`, `step(n)`, `gpio/i2c/spi/adc/pwm/i2s/twai/touch/dac/sdmmc/camera/lcd/uart0` controllers) — `rp2040js`-style, works in browser & Node.  
 **Sibling gateway:** `../openhw-studio-gateway` (Go, gVisor) — **not** tracked in this repo; see `openhw-studio-gateway/ESP-EMU-INTEGRATION.md` for the client contract. Default port is now **5095** (`GW_PORT` env override).
 
-**First principle:** **zero guest modifications** — unmodified Arduino/IDF/MicroPython `.bin` + `.elf`. ELFs are only for **load-time symbol patching**.
+**First principle:** **zero post-compilation guest modifications** — the Arduino/IDF/MicroPython `.bin` + `.elf` you built load as-is. ELFs are only for **load-time symbol patching** (driver entry points overwritten in flash with RV32 shims; no re-compilation). Two modes: (1) **unmodified firmware** — everything on real silicon just works; drawback: the five virtual peripherals with no silicon (touch/DAC/SDMMC/camera/LCD) are unavailable without patch targets. (2) **helper firmware** — `emu_api.h` (`spike/sketches/emu_api/`, copied into the sketch dir) adds those targets; the built image still loads as-is (see `PROTOCOLS.md` §1).
 
 ### 1.1 Core idea in 30s
 

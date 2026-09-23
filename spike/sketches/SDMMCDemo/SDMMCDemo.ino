@@ -1,12 +1,5 @@
 #include <Arduino.h>
-
-// Virtual SDMMC host (4-bit SD bus, sector-level). The C3 has no SDMMC host,
-// so these `extern "C"` fallbacks give the patcher symbols to overwrite with
-// the 'M' shims. Unpatched they return -1 (error).
-extern "C" {
-int emuSdmmcReadSectors(uint32_t lba, uint8_t *buf, uint32_t count);
-int emuSdmmcWriteSectors(uint32_t lba, const uint8_t *buf, uint32_t count);
-}
+#include "emu_api.h"  // emuSdmmcReadSectors/emuSdmmcWriteSectors (APC kind 'M')
 
 
 static uint8_t sector[512];

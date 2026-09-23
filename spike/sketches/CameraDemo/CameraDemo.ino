@@ -1,12 +1,5 @@
 #include <Arduino.h>
-
-// Virtual camera (grayscale test-pattern frames). No CSI hardware exists, so
-// this fallback provides the patch target for the 'F' shim.
-// The frame is pulled in small bands (512B): some chips cannot sink
-// multi-KB host->firmware replies. Unpatched it returns -1.
-extern "C" {
-int emuCameraReadBand(uint8_t *buf, uint32_t offset, uint32_t len);
-}
+#include "emu_api.h"  // emuCameraReadBand (APC kind 'F'; pull in 512B bands)
 
 
 #define CAM_W 96
