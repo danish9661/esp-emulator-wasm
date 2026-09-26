@@ -35,6 +35,9 @@ export const BLE_SCRATCH = {
     esp32h2: 0x40810000,
     esp32c5: 0x40810000,
     esp32p4: 0x4ff44000,
+    // S31: UNVERIFIED (no toolchain firmware to probe) — null so callers
+    // fall back to C3 instead of stamping a guessed base (see shims.mjs).
+    esp32s31: null,
 };
 export const BLE_CB_OFF = 0;
 export const BLE_FLAG_OFF = 8;

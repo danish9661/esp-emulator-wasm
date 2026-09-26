@@ -8,6 +8,10 @@ export const UART0_BASE = {
     esp32h2: 0x60000000,
     esp32c5: 0x60000000,
     esp32p4: 0x500CA000,
+    // S31: UNVERIFIED (no toolchain firmware to probe — see 29-verify-s31).
+    // Deliberately null so relocateShimsForChip falls back to C3 instead of
+    // stamping a guessed base into shims.
+    esp32s31: null,
 };
 
 /** DRAM pointer returned by the spiStartBus shim (opaque bus struct). */
@@ -17,6 +21,8 @@ export const SPI_BUS_BASE = {
     esp32h2: 0x40810000,
     esp32c5: 0x40810000,
     esp32p4: 0x4ff40000,
+    // S31: UNVERIFIED — null (C3 fallback), see UART0_BASE note.
+    esp32s31: null,
 };
 
 /**
@@ -31,6 +37,8 @@ export const I2C_CELL_BASE = {
     esp32h2: 0x40820000,
     esp32c5: 0x40820000,
     esp32p4: 0x4ff48000,
+    // S31: UNVERIFIED — null (C3 fallback), see UART0_BASE note.
+    esp32s31: null,
 };
 
 /**

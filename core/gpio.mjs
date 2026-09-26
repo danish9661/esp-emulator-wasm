@@ -247,7 +247,10 @@ export class GPIOController {
         // GPIO_CALIBRATION_PROBE exactly.
         if (this._probeGpioAddrs(u32)) return;
         // Known base address range for esp-emulator GPIO peripheral.
-        for (let base = 0x820000; base < 0x9c0000; base += 0x10000) {
+        // Wide scan (0x820000-0xA00000): the peripheral MOVES per core
+        // version (0.42 C3 0x827850 → 0.43 C3 0x975e20); S31's window is
+        // unverified (no toolchain firmware to probe) so never assume C3's.
+        for (let base = 0x820000; base < 0xa00000; base += 0x10000) {
             for (let i = base >> 2; i < (base + 0x10000) >> 2; i++) {
                 // Pattern check: GPIO_OUT (offset 0x04), GPIO_ENABLE (offset 0x20), GPIO_IN (offset 0x3C)
                 if (u32[i] === 0 && u32[i + 7] === 0) {

@@ -568,8 +568,27 @@ function disconnectBle() {
 function drainTxToNetwork() {
     if (!ws || ws.readyState !== WebSocket.OPEN || !emulator) return;
 
-    const buf = emulator.wifi_tx_drain();
-    if (buf.length === 0) return;
+    // WiFi path (live): u32-LE length-prefixed batch from wifi_tx_drain.
+    drainPrefixedBatch(() => emulator.wifi_tx_drain());
+    // Ethernet / 802.15.4 / USB-Serial-JTAG paths (forward-compatible):
+    // pkg/esp_emu.js (0.43.0) exposes ONLY the wifi trio — no eth_tx_drain /
+    // thread_tx_drain / usb drain exists, so these are capability-gated and
+    // inert until upstream ships them (issue.md#1). When present they use
+    // the same length-prefixed framing, so one helper covers all four.
+    if (typeof emulator.eth_tx_drain === 'function') {
+        drainPrefixedBatch(() => emulator.eth_tx_drain());
+    }
+    if (typeof emulator.thread_tx_drain === 'function') {
+        drainPrefixedBatch(() => emulator.thread_tx_drain());
+    }
+}
+
+function drainPrefixedBatch(drainFn) {
+    let buf;
+    try {
+        buf = drainFn();
+    } catch (_) { return; }
+    if (!buf || buf.length === 0) return;
 
     let offset = 0;
     while (offset + 4 <= buf.length) {
