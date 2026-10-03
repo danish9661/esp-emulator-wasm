@@ -2,7 +2,7 @@
   "name": "esp-emu",
   "type": "module",
   "description": "Emulator for ESP32-C3/C5/C6/H2/P4/S3/S31 IDF binaries (RISC-V + Xtensa)",
-  "version": "0.43.0",
+  "version": "0.45.0",
   "license": "Apache-2.0",
   "files": [
     "esp_emu_bg.wasm",

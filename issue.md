@@ -1,9 +1,9 @@
-# Upstream issue packet (esp-emu 0.43.0)
+# Upstream issue packet (esp-emu 0.45.0)
 
 Six ready-to-paste issues (was five at 0.42.0). Issues 1–3, 5 and 6 go to
 `espressif/esp-emulator`; issue 4 goes to `arduino-esp32` (with an
 `esp-idf` counterpart for the toolchain half). Environment: `pkg/`
-esp-emu 0.43.0 (JS API byte-identical to 0.42.0 — all changes are inside
+esp-emu 0.45.0 (JS API adds set_wifi_auth + throttle_delay_ms vs 0.43.0 — all changes are inside
 the `.wasm`), `esp32:esp32` Arduino core 3.3.10, no `idf.py` toolchain
 installed.
 
@@ -14,12 +14,14 @@ installed.
 **Observed:** The native CLI models all three (OpenETH + P4 DesignWare GMAC
 with `--net tap/user`, smoltcp user-mode, ws-proxy; `--thread-sim`
 localhost-UDP bridge for 802.15.4; USB Serial JTAG peripheral used by
-esptool flows). But `WasmEmulator` in `pkg/esp_emu.js` (0.41.0) exposes
+esptool flows). But `WasmEmulator` in `pkg/esp_emu.js` (0.45.0) exposes
 only: `constructor`, `run_batch`, `pc`/`cycles`/`get_reg`,
 `load_firmware`/`load_rom_elf`/`load_default_rom`/`load_efuse`/`load_app_elf`,
 `set_boot_from_rom`, `restart`/`needs_restart`/`has_default_rom`,
-`uart_input`, and the WiFi trio `set_wifi_config` / `wifi_rx_push` /
-`wifi_tx_drain`. There is no path for ETH / 15.4 / USB-JTAG frames from JS.
+`uart_input`, the WiFi trio `set_wifi_config` / `wifi_rx_push` /
+`wifi_tx_drain` (+ `set_wifi_auth` for WPA3/Enterprise pinning) and
+`throttle_delay_ms` (real-time pacing query). There is still no path for
+ETH / 15.4 / USB-JTAG frames from JS.
 
 **Expected:** Mirror the WiFi pattern:
 

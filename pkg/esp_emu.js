@@ -201,6 +201,36 @@ export class WasmEmulator {
         wasm.wasmemulator_set_boot_from_rom(this.__wbg_ptr, on);
     }
     /**
+     * Like `set_wifi_config`, pinning the auth mode ("wpa2-wpa3",
+     * "wpa3-sae", "wpa2-psk", "open") and SAE PWE ("both", "h2e",
+     * "hunt-and-peck") — the `--wifi-auth` / `--wifi-sae-pwe` flags.
+     * @param {string} ssid
+     * @param {string} password
+     * @param {string} auth
+     * @param {string} sae_pwe
+     */
+    set_wifi_auth(ssid, password, auth, sae_pwe) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(ssid, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(password, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(auth, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(sae_pwe, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len3 = WASM_VECTOR_LEN;
+            wasm.wasmemulator_set_wifi_auth(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Configure WiFi soft AP SSID and optional WPA2-PSK password.
      * Pass empty string for password to use open mode.
      * @param {string} ssid
@@ -212,6 +242,16 @@ export class WasmEmulator {
         const ptr1 = passStringToWasm0(password, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
         const len1 = WASM_VECTOR_LEN;
         wasm.wasmemulator_set_wifi_config(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+    }
+    /**
+     * Milliseconds to wait before the next batch; 0 when emulation is not
+     * ahead of the host clock. `now_ms` is `performance.now()`.
+     * @param {number} now_ms
+     * @returns {number}
+     */
+    throttle_delay_ms(now_ms) {
+        const ret = wasm.wasmemulator_throttle_delay_ms(this.__wbg_ptr, now_ms);
+        return ret;
     }
     /**
      * Send UART input

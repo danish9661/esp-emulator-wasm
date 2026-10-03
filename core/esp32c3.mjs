@@ -344,6 +344,25 @@ export class ESP32C3 {
         this.emu.set_wifi_config(ssid, password);
     }
 
+    /**
+     * WiFi auth pinning passthrough (0.45.0 set_wifi_auth; WPA3/Enterprise).
+     * No-op on older glue. auth e.g. 'wpa3', 'wpa3-enterprise'; saePwe the
+     * SAE key-derivation method. Throws on 0.43 glue — callers gate on
+     * typeof this.emu.set_wifi_auth === 'function'.
+     */
+    setWifiAuth(ssid, password = '', auth = '', saePwe = '') {
+        this.emu.set_wifi_auth(ssid, password, auth, saePwe);
+    }
+
+    /**
+     * Real-time throttle query (0.45.0): ms to sleep before the next batch,
+     * 0 when emulation is not ahead of the host clock. nowMs is
+     * performance.now(). Throws on 0.43 glue — gate on typeof.
+     */
+    throttleDelayMs(nowMs) {
+        return this.emu.throttle_delay_ms(nowMs);
+    }
+
     /** Push one raw RX Ethernet/WiFi frame (gateway-shaped) into the guest. */
     wifiRxPush(bytes) {
         this.emu.wifi_rx_push(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));

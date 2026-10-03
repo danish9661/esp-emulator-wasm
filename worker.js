@@ -435,6 +435,17 @@ async function handleLoad(msg) {
         emulator = new wasm.WasmEmulator(chip);
         if (msg.ssid) {
             emulator.set_wifi_config(msg.ssid, msg.password || '');
+            // WPA3/Enterprise auth (0.45.0 set_wifi_auth): optional, applied
+            // when the host passes msg.wifiAuth = { auth, saePwe }.
+            if (msg.wifiAuth && typeof emulator.set_wifi_auth === 'function') {
+                try {
+                    emulator.set_wifi_auth(
+                        msg.ssid, msg.password || '',
+                        msg.wifiAuth.auth || '', msg.wifiAuth.saePwe || '');
+                } catch (e) {
+                    console.warn('WiFi auth rejected:', e);
+                }
+            }
         }
         if (msg.rom) {
             emulator.load_rom_elf(new Uint8Array(msg.rom));
@@ -571,10 +582,11 @@ function drainTxToNetwork() {
     // WiFi path (live): u32-LE length-prefixed batch from wifi_tx_drain.
     drainPrefixedBatch(() => emulator.wifi_tx_drain());
     // Ethernet / 802.15.4 / USB-Serial-JTAG paths (forward-compatible):
-    // pkg/esp_emu.js (0.43.0) exposes ONLY the wifi trio — no eth_tx_drain /
-    // thread_tx_drain / usb drain exists, so these are capability-gated and
-    // inert until upstream ships them (issue.md#1). When present they use
-    // the same length-prefixed framing, so one helper covers all four.
+    // pkg/esp_emu.js (0.45.0) exposes the wifi trio + set_wifi_auth +
+    // throttle_delay_ms — still no eth_tx_drain / thread_tx_drain / usb
+    // drain, so these stay capability-gated and inert until upstream ships
+    // them (issue.md#1). When present they use the same length-prefixed
+    // framing, so one helper covers all four.
     if (typeof emulator.eth_tx_drain === 'function') {
         drainPrefixedBatch(() => emulator.eth_tx_drain());
     }
@@ -1104,6 +1116,9 @@ function runLoop() {
     const startTime = performance.now();
     let batchCountThisSlice = 0;
     let accumulatedOutput = '';
+    // Sleep-before-next-batch reported by the 0.45.0 real-time throttle;
+    // the worker cannot block, so setTimeout sleeps (see loop tail).
+    let nextDelay = 0;
 
     while (running) {
         batchCountThisSlice++;
@@ -1131,6 +1146,18 @@ function runLoop() {
         }
 
         drainTxToNetwork();
+
+        // Real-time throttle (0.45.0): the core tracks virtual-vs-wall drift;
+        // when emulation runs ahead, sleep instead of racing (fixes TCP
+        // timeouts + fast timers). Capability-gated: 0.43 glue lacks it.
+        // Capped with the network up so queued frames are not left waiting.
+        if (typeof emulator.throttle_delay_ms === 'function') {
+            const drift = emulator.throttle_delay_ms(performance.now());
+            if (drift > 0) {
+                nextDelay = ws ? Math.min(drift, 5) : drift;
+                break;
+            }
+        }
 
         if (performance.now() - startTime > 12) break;
     }
@@ -1187,7 +1214,7 @@ function runLoop() {
     });
 
     if (running) {
-        setTimeout(runLoop, 0);
+        setTimeout(runLoop, nextDelay);
     }
 }
 
